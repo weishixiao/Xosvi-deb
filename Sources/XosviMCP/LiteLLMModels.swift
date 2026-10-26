@@ -178,6 +178,24 @@ struct LiteLLMConfig: Codable {
     var logRetention: Int = 200
     /// 是否记录费用估算
     var costTracking: Bool = true
+
+    // v7.14.4：带默认值的自定义 init 会屏蔽编译器合成的 Decodable/Encodable
+    // （CI 报 does not conform to protocol 'Decodable'），显式声明 CodingKeys 后即可合成。
+    init() {}
+
+    init(routingStrategy: RoutingStrategy = .simpleShuffle, numRetries: Int = 2,
+         cooldownSeconds: Int = 60, fallbacksEnabled: Bool = true,
+         fallbackChain: [String] = [], virtualKeysEnabled: Bool = true,
+         logRetention: Int = 200, costTracking: Bool = true) {
+        self.routingStrategy = routingStrategy
+        self.numRetries = numRetries
+        self.cooldownSeconds = cooldownSeconds
+        self.fallbacksEnabled = fallbacksEnabled
+        self.fallbackChain = fallbackChain
+        self.virtualKeysEnabled = virtualKeysEnabled
+        self.logRetention = logRetention
+        self.costTracking = costTracking
+    }
 }
 
 // MARK: 虚拟密钥（仅供展示/复制，真实 key 不出本机）

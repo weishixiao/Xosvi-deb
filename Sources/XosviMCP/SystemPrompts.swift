@@ -551,13 +551,16 @@ final class SystemPrompts {
       - jb {command:"devices"}                                  先发现设备；>1 台时每条命令带 device:<udid>
       - jb {command:"install"}                                  宿主二进制未安装时先装（设置 → jb-p1lot 也可）
       - jb {command:"pair", ssh_host:"<ip>"}                    首次配对（SSH 下发身份）
-      - jb {command:"run", subcommand:"tweak_cycle", project:"<设备上的工程目录>", timeout:1800}
+      - jb {command:"scaffold", name:"MyTweak", bundle_id:"<bundleId>"}   生成 rootless Theos 工程（AI 再改 Tweak.xm）
+      - jb {command:"push", project:"MyTweak"}                  推到设备 /var/jb/tweak/MyTweak
+      - jb {command:"run", subcommand:"tweak_cycle", project:"/var/jb/tweak/MyTweak", reload:"<进程>", processes:"<进程>", timeout:1800}
                                                                 构建→安装→reload→日志→心跳校验→崩溃回滚 一条龙
       - jb {command:"run", subcommand:"shell_exec", params:"{\"command\":\"uname -a\"}"}   root shell
       - jb {command:"run", subcommand:"ui_snapshot", application:"<bundleId>"} → ui_action 用当帧 nodeId
       - jb {command:"commands"}                                 全部 32 个子命令；jb {command:"skill"} 取完整路由指引
-    硬约束：nodeId 只在当帧有效；所有 reboot 都是 Dopamine 用户态重启（硬件重启被拒，别绕）；大结果走 artifactPath。
-    分工：本机自身操作仍用 shell.exec / app / inject / control —— jb 只用于被配对设备。
+    分工：你负责"生成"（写 .xm），jb 只负责"执行"（build/deploy/inject/verify/rollback），它不会替你写或替你判断钩子对错。
+    硬约束：nodeId 只在当帧有效；所有 reboot 都是 Dopamine 用户态重启（硬件重启被拒，别绕）；大结果走 artifactPath；没有日志/快照证据别说"已生效"。
+    本机自身操作仍用 shell.exec / app / inject / control —— jb 只用于被配对设备。
 
     === SELF-VERIFY (自主动手，优先于猜测) ===
     不确定就不要猜 —— 用现有工具验证：

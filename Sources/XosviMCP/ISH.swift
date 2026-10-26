@@ -240,3 +240,12 @@ enum ISH {
     }
 }
 
+// MARK: - v7.14.4：Log 命名空间
+// ISH 桥接里用的是 Log.browser(...)，但全仓没有定义（CI 报 cannot find 'Log' in scope）。
+// 这里补一个最小实现：同时写审计日志（设置 → 日志可见）和系统日志（log_query 可抓）。
+enum Log {
+    static func browser(_ message: String) {
+        AuditLog.shared.log("ish", detail: message)
+        NSLog("[ISH] %@", message)
+    }
+}

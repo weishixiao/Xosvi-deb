@@ -177,8 +177,8 @@ struct SettingsView: View {
                              icon: "terminal.fill", color: .teal,
                              destination: AnyView(RemoteAccessView())),
                 // v7.14.0：jb-p1lot——越狱设备直控桥（宿主二进制 / 配对 / 发现）
-                SettingsItem(title: "jb-p1lot",
-                             subtitle: "越狱设备直控 · 配对 · tweak 闭环",
+                SettingsItem(title: "构建与注入",
+                             subtitle: "jb-p1lot · 越狱设备配对 · tweak 闭环",
                              icon: "point.3.connected.trianglepath.dotted", color: .gray,
                              destination: AnyView(JBPlotSettingsView())),
                 // v7.5.0：内置浏览器已删除；改为「联网搜索」（多服务商 + 全文读取）

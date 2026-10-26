@@ -1,4 +1,6 @@
 import Foundation
+// Process / posix_spawn 在 iOS SDK 里归 Darwin 的 Foundation 扩展，必须显式导入
+import Darwin
 
 // MARK: - v7.14.0：jb-p1lot 桥接（rootless 越狱设备直控）
 //
@@ -17,7 +19,7 @@ import Foundation
 // 所以本文件不做协议层复刻（设备侧协议在 jb-p1lot 内部，且随版本演进），
 // 只做：二进制管理 / 进程执行 / 结果解析 / 设备发现缓存。
 
-enum JBPlot {
+public enum JBPlot {
 
     // MARK: - 常量
 
@@ -92,7 +94,7 @@ enum JBPlot {
             || s.contains("code signature") || s.contains("operation not permitted")
     }
 
-    struct RunResult {
+    public struct RunResult {
         var code: Int32
         var stdout: String
         var stderr: String
@@ -101,7 +103,7 @@ enum JBPlot {
 
         var isOK: Bool { code == 0 && !timedOut }
         /// 给 AI 看的一行结论
-        var brief: String {
+        public var brief: String {
             if timedOut { return "jb-p1lot 超时未返回（长任务请拆分或加 timeout 参数）" }
             if let j = json {
                 if let err = j["error"] as? String, !err.isEmpty { return err }
@@ -124,6 +126,7 @@ enum JBPlot {
                     device: String? = nil,
                     params: [String: Any] = [:],
                     project: String? = nil,
+                    rawParams: [String: String]? = nil,
                     json: Bool = true,
                     timeout: TimeInterval = defaultTimeout) -> RunResult {
         var args: [String] = [command]
@@ -135,8 +138,15 @@ enum JBPlot {
         else { dev = defaultDevice }
         if let dev = dev { args += ["--device", dev] }
         if let project = project, !project.isEmpty { args += ["--project", project] }
-        for (k, v) in params.sorted(by: { $0.key < $1.key }) {
+        // v7.14.3：原始值直传通道。上游 parseKeyValues 支持 `--param k v` 双参数形式、
+        // 且整数字符串会再 coerce 成 float64——含 '=' 的字符串（base64、命令行片段）走这里，
+        // 避免被按第一个 '=' 切断键值。
+        let raw = rawParams ?? [:]
+        for (k, v) in params.sorted(by: { $0.key < $1.key }) where !raw.keys.contains(k) {
             if let s = paramString(v) { args += ["--param", "\(k)=\(s)"] }
+        }
+        for (k, v) in raw.sorted(by: { $0.key < $1.key }) {
+            args += ["--param", k, v]
         }
         return exec(args, timeout: timeout)
     }
@@ -193,7 +203,7 @@ enum JBPlot {
         while proc.isRunning {
             if Date() > deadline {
                 timedOut = true
-                proc.terminate()
+                kill(proc.processIdentifier, SIGTERM)
                 let killAt = Date().addingTimeInterval(1.0)
                 while proc.isRunning && Date() < killAt { usleep(50_000) }
                 if proc.isRunning { kill(proc.processIdentifier, SIGKILL) }
@@ -270,6 +280,14 @@ enum JBPlot {
             return (false, "先安装宿主程序")
         }
         let dest = URL(fileURLWithPath: jailbreakPath)
+        // ① root spawn /bin/cp（Relaxin 下越狱路径只有 root 能写）
+        let mgr = InjectionManager.shared
+        _ = mgr.spawnRoot("/bin/mkdir", args: ["-p", dest.deletingLastPathComponent().path], timeout: 15)
+        if mgr.spawnRoot("/bin/cp", args: ["-f", binaryURL.path, dest.path], timeout: 60).0 == 0 {
+            _ = mgr.spawnRoot("/bin/chmod", args: ["755", dest.path], timeout: 10)
+            return (true, jailbreakPath)
+        }
+        // ② App 自身有权限时直接拷
         do {
             try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(),
                                                     withIntermediateDirectories: true)
@@ -298,38 +316,21 @@ enum JBPlot {
         return result
     }
 
-    /// ad-hoc 重签：优先 App 自带 ldid，其次系统 codesign
+    /// ad-hoc 重签：优先 App 自带 ldid，其次系统 codesign。Relaxin 下统一走
+    /// InjectionManager（先试普通 spawn，失败再转 root spawn）。
     @discardableResult
     static func signBinary(_ path: String) -> Bool {
+        let mgr = InjectionManager.shared
         let ldidCandidates = [
             Bundle.main.bundleURL.appendingPathComponent("bin/ldid").path,
             Bundle.main.bundleURL.appendingPathComponent("Resources/bin/ldid").path,
         ]
         if let ldid = ldidCandidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
-            let r = execAt(ldid, ["-S", path])
-            if r.code == 0 { return true }
+            if mgr.spawnRoot(ldid, args: ["-S", path], timeout: 60).0 == 0 { return true }
         }
-        let r = execAt("/usr/bin/codesign", ["-s", "-", "-f", path])
-        return r.code == 0
+        return mgr.spawnRoot("/usr/bin/codesign", args: ["-f", "-s", "-", path], timeout: 60).0 == 0
     }
 
-    private static func execAt(_ bin: String, _ args: [String]) -> RunResult {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: bin)
-        proc.arguments = args
-        let out = Pipe(); let err = Pipe()
-        proc.standardOutput = out; proc.standardError = err
-        do { try proc.run() } catch {
-            return RunResult(code: -1, stdout: "", stderr: error.localizedDescription, timedOut: false, json: nil)
-        }
-        let o = out.fileHandleForReading.readDataToEndOfFile()
-        let e = err.fileHandleForReading.readDataToEndOfFile()
-        proc.waitUntilExit()
-        return RunResult(code: proc.terminationStatus,
-                         stdout: String(data: o, encoding: .utf8) ?? "",
-                         stderr: String(data: e, encoding: .utf8) ?? "",
-                         timedOut: false, json: nil)
-    }
 
     // MARK: - 命令目录（tools/list 等价物）
 

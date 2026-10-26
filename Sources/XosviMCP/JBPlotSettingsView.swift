@@ -46,7 +46,7 @@ struct JBPlotSettingsView: View {
             }
         }
         .listStyle(.insetGrouped)
-        .navigationTitle("jb-p1lot")
+        .navigationTitle("构建与注入")
         .deepseekPage()
         .deepseekList()
         .onAppear {
@@ -255,7 +255,7 @@ struct JBPlotSettingsView: View {
     private func selfTest() {
         DispatchQueue.global(qos: .userInitiated).async {
             let v = JBPlot.exec(["--version"], timeout: 20)
-            let d = JBPlot.run("device_list", timeout: 40, json: true)
+            let d = JBPlot.run("device_list", json: true, timeout: 40)
             let text = """
             version: \(v.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? v.brief : v.stdout.trimmingCharacters(in: .whitespacesAndNewlines))
             devices: \(d.isOK ? "ok" : d.brief)
@@ -271,7 +271,7 @@ struct JBPlotSettingsView: View {
     private func scanDevices() {
         scanning = true
         DispatchQueue.global(qos: .userInitiated).async {
-            _ = JBPlot.run("device_list", timeout: 45, json: true)
+            _ = JBPlot.run("device_list", json: true, timeout: 45)
             let list = JBPlot.pairedDevices
             DispatchQueue.main.async {
                 scanning = false
@@ -300,7 +300,7 @@ struct JBPlotSettingsView: View {
         DispatchQueue.global(qos: .userInitiated).async {
             let r = JBPlot.exec(args, timeout: 600)
             let list = { () -> [[String: Any]] in
-                _ = JBPlot.run("device_list", timeout: 40, json: true)
+                _ = JBPlot.run("device_list", json: true, timeout: 40)
                 return JBPlot.pairedDevices
             }()
             DispatchQueue.main.async {

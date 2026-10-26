@@ -35,7 +35,7 @@ final class SkillStore {
 
     /// 内置技能版本：升级内置技能时递增，触发对已存在 skills.json 的合并补全
     /// v4 变更：mergeBuiltins 由"补全缺失"改为"补全+覆盖同名内置技能"，同步 v3.7.7 bind 新架构措辞
-    private static let builtinsVersion = 6   // v7.14.0：新增 jb-p1lot 技能
+    private static let builtinsVersion = 7   // v7.14.2：jb-p1lot 技能改为「生成→构建→注入→验证」三段式
 
     private var enabledKey = "xosvi.skills_enabled"
 

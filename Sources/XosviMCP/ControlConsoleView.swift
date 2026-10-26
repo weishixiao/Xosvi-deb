@@ -24,7 +24,11 @@ struct ControlConsoleView: View {
     // 输入
     @State private var tapX = ""
     @State private var tapY = ""
-    @State private var swX1 = "", swY1 = "", swX2 = "", swY2 = ""
+    // v7.14.4：@State 不能一次声明多个变量（property wrapper can only apply to a single variable）
+    @State private var swX1 = ""
+    @State private var swY1 = ""
+    @State private var swX2 = ""
+    @State private var swY2 = ""
     @State private var typeText = ""
 
     @State private var toast: String?
