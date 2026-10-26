@@ -101,7 +101,9 @@ struct OperationView: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .navigationTitle("操作")
+        .deepseekPage()
         }
     }
 
@@ -140,6 +142,7 @@ struct ApprovalSheet: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .navigationTitle("审批")
         }
     }
@@ -191,6 +194,7 @@ struct ConversationTranscriptView: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .toolbar {
                 if !messages.isEmpty {
                     // v6.9.7：副标题一直写着"导出"，但根本没有导出入口。
@@ -201,7 +205,7 @@ struct ConversationTranscriptView: View {
                 }
             }
         }
-        .background(Color(.systemGroupedBackground))
+        .background(DoubaoTheme.bg)
         .navigationTitle(L10n.t("page_transcripts"))
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -293,6 +297,7 @@ struct AssistantProfilesView: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .navigationTitle("助手角色")
             .toolbar {
                 Button(action: {
@@ -403,6 +408,7 @@ struct AttachmentBottomPanel: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .navigationTitle("附件")
             .toolbar {
                 Button("完成") { isPresented = false }
@@ -483,6 +489,7 @@ struct AutomationCenterView: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .toolbar {
                 Button(action: {
                     editing = AutomationStore.Task(name: "", schedule: "*/5 * * * *", action: "ping")
@@ -492,7 +499,7 @@ struct AutomationCenterView: View {
                 AutomationTaskEditor(task: task)
             }
         }
-        .background(Color(.systemGroupedBackground))
+        .background(DoubaoTheme.bg)
         .navigationTitle(L10n.t("page_automation"))
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -561,6 +568,7 @@ struct AutomationPermissionsView: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .navigationTitle("自动化权限")
         }
         .navigationViewStyle(.stack)
@@ -633,6 +641,7 @@ struct GatewaySettingsView: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .toolbar {
                 Button(action: { editing = GatewayServer(name: "", url: "ws://") }) { Image(systemName: "plus") }
             }
@@ -640,7 +649,7 @@ struct GatewaySettingsView: View {
                 GatewayEditorView(server: server)
             }
         }
-        .background(Color(.systemGroupedBackground))
+        .background(DoubaoTheme.bg)
         .navigationTitle(L10n.t("page_gateway"))
         .navigationBarTitleDisplayMode(.inline)
     }
@@ -717,6 +726,7 @@ struct InjectionDetailView: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .navigationTitle("注入详情")
         }
         .navigationViewStyle(.stack)
@@ -812,6 +822,7 @@ struct SettingsActivityView: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .navigationTitle("活动记录")
         }
         .navigationViewStyle(.stack)
@@ -975,6 +986,7 @@ struct APIKeyRecoverySheet: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .navigationTitle("API Key")
             .toolbar { Button("完成") { presentationMode.wrappedValue.dismiss() } }
         }
@@ -1031,6 +1043,7 @@ struct UpstreamModelPickerView: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .navigationTitle("上游模型")
             .toolbar {
                 Button(action: fetch) { Image(systemName: "arrow.clockwise") }

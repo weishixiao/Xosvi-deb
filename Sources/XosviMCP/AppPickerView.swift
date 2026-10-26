@@ -18,6 +18,7 @@ struct AppPickerView: View {
                 }
             )
             .navigationTitle("选择应用")
+            .deepseekPage()
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {

@@ -238,10 +238,7 @@ struct SettingsView: View {
                          subtitle: "点开浏览目录 · 预览 · 复制路径 · 分享",
                          icon: "folder", color: .blue,
                          destination: AnyView(WorkspaceBrowserView())),
-            SettingsItem(title: "清理中心",
-                         subtitle: "缓存 · 钥匙串 · 广告符 · 数据容器 · 系统清理",
-                         icon: "sparkles.rectangle.stack", color: .orange,
-                         destination: AnyView(CleanupCenterView())),
+            // v7.4.1：清理中心（含系统清理 / App 清理）整块删除（用户要求）
             // v6.9.15：Coruna 安全盾 / Web 注入已按用户要求删除
         ]))
 

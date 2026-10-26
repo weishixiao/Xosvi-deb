@@ -322,24 +322,57 @@ final class HaxBrowser: NSObject, ObservableObject {
         var title: String
         var isLoading: Bool
         var engineName: String
+        /// v7.4.1：默认引擎本身（回退顺序的起点）
+        var engineKind: HaxSearchEngine = .baidu
     }
 
     nonisolated static func state() -> PublicState {
         return onMainSync {
             let b = HaxBrowser.shared
+            let kind = b.engine
             return PublicState(url: b.webView.url?.absoluteString ?? b.currentURL,
                                title: b.webView.title ?? b.pageTitle,
                                isLoading: b.webView.isLoading,
-                               engineName: b.engine.displayName)
-        } ?? PublicState(url: "", title: "", isLoading: false, engineName: "百度")
+                               engineName: kind.displayName,
+                               engineKind: kind)
+        } ?? PublicState(url: "", title: "", isLoading: false, engineName: "百度", engineKind: .baidu)
     }
 
-    /// 后台线程入口：切到主线程执行搜索并同步等结果
+    /// 后台线程入口：**加载在主线程、等待在调用线程**——否则 waitUntilLoaded 里的
+    /// `DispatchQueue.main.async + semaphore` 会和自己所在的主线程互相等待（死锁，表现为"搜索没用"）。
+    /// v7.4.1：同时修正结果判定——原来用 `evalStringSync(...).isEmpty` 判断，
+    /// querySelectorAll 返回 "0" 也"非空"，等于永远判定成功，回退逻辑从来没生效过。
     nonisolated static func performSearch(_ query: String, engine preferred: HaxSearchEngine?,
                                           waitSeconds: Double) -> (engine: HaxSearchEngine, ok: Bool) {
-        return onMainSync {
-            HaxBrowser.shared.search(query, engine: preferred, waitSeconds: waitSeconds)
-        } ?? (preferred ?? HaxSearchEngine.baidu, false)
+        let primary = preferred ?? state().engineKind
+        var order: [HaxSearchEngine] = [primary]
+        for e in HaxSearchEngine.fallbackOrder where !order.contains(e) { order.append(e) }
+
+        var lastTried: HaxSearchEngine = primary
+        for e in order {
+            guard let u = e.url(for: query) else { continue }
+            lastTried = e
+            // ① 主线程：记录引擎并发起导航
+            _ = onMainSync { () -> Bool in
+                HaxBrowser.shared.lastEngine = e
+                HaxBrowser.shared.lastError = nil
+                HaxBrowser.shared.webView.load(
+                    URLRequest(url: u, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
+                return true
+            }
+            // ② 回调用线程等待（这里绝不能在主线程上同步等待）
+            let loaded = waitUntilLoaded(maxSeconds: waitSeconds)
+            // ③ 判定：结果容器数量 > 0，或正文够长（有些引擎结果容器 class 会变）
+            let sel = jsonEscape(e.resultsReadySelector)
+            let countStr = evalStringSync("document.querySelectorAll(\"\(sel)\").length")
+            let count = Int(countStr.trimmingCharacters(in: .whitespaces)) ?? 0
+            let bodyLen = readPageText(maxChars: 4000).count
+            Log.browser("\(e.displayName) loaded=\(loaded) results=\(count) body=\(bodyLen)")
+            if count > 0 || bodyLen > 800 {
+                return (e, true)
+            }
+        }
+        return (lastTried, false)
     }
 
     /// 后台线程入口：打开网址
@@ -501,31 +534,10 @@ final class HaxBrowser: NSObject, ObservableObject {
         return out
     }
 
-    // MARK: 搜索（百度优先 + 自动回退）
+    // MARK: 搜索
+    // v7.4.1：原来这里的 @MainActor search() 已删除——它在主线程上等自己必然死锁。
+    // 所有搜索走上面的 nonisolated performSearch（加载在主线程、等待在调用线程）。
 
-    /// 打开搜索结果页：先用指定/默认引擎，页面没出结果就按备用顺序换引擎。
-    /// - Returns: (最终引擎, 是否拿到结果)
-    @discardableResult
-    func search(_ query: String, engine preferred: HaxSearchEngine? = nil,
-                waitSeconds: Double = 12) -> (engine: HaxSearchEngine, ok: Bool) {
-        var order: [HaxSearchEngine] = [preferred ?? engine]
-        for e in HaxSearchEngine.fallbackOrder where !order.contains(e) { order.append(e) }
-        for e in order {
-            guard let u = e.url(for: query) else { continue }
-            lastEngine = e
-            let req = URLRequest(url: u, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30)
-            webView.load(req)
-            _ = HaxBrowser.waitUntilLoaded(maxSeconds: waitSeconds)
-            // 结果页就绪判断：出现结果容器 或 正文里已经有明显关键词
-            let hit = HaxBrowser.evalStringSync("document.querySelectorAll(\"\(e.resultsReadySelector)\").length").isEmpty ? false : true
-            let bodyLen = HaxBrowser.readPageText(maxChars: 4000).count
-            if hit || bodyLen > 800 {
-                return (e, hit || bodyLen > 800)
-            }
-            Log.browser("\(e.displayName) 结果为空，换下一个引擎")
-        }
-        return (lastEngine ?? .baidu, false)
-    }
 }
 
 // MARK: - WKNavigationDelegate

@@ -770,9 +770,9 @@ struct ChatView: View {
                 // v3.4.8：方形圆角瓦片（参考图：相机/图片/文件/打电话样式），不再是圆形
                 Image(systemName: icon)
                     .font(.system(size: 22, weight: .medium))
-                    .foregroundColor(.blue)
+                    .foregroundColor(.primary)
                     .frame(width: 52, height: 52)
-                    .background(Color.blue.opacity(0.12))
+                    .background(Color(UIColor.tertiarySystemFill))
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 Text(label)
                     .font(.caption)
@@ -1237,11 +1237,11 @@ struct ChatChip: View {
             }
             .frame(height: 36)
             .padding(.horizontal, 10)
-            .background(accent ? Color.blue.opacity(0.14) : Color(.systemGray5))
-            .foregroundColor(accent ? Color.blue : Color.secondary)
+            .background(accent ? Color(UIColor.tertiarySystemFill) : Color(.systemGray5))
+            .foregroundColor(accent ? Color.primary : Color.secondary)
             .overlay(
                 RoundedRectangle(cornerRadius: 16)
-                    .stroke(accent ? Color.blue.opacity(0.35) : Color.clear, lineWidth: 1)
+                    .stroke(accent ? Color(UIColor.separator).opacity(0.6) : Color.clear, lineWidth: 1)
             )
             .cornerRadius(16)
         }
@@ -1322,7 +1322,7 @@ struct ChatModelPickerSheet: View {
                             HStack(spacing: 10) {
                                 Image(systemName: cfg.isDefault ? "checkmark.circle.fill" : "circle")
                                     .font(.system(size: 20))
-                                    .foregroundColor(cfg.isDefault ? .blue : Color(UIColor.tertiaryLabel))
+                                    .foregroundColor(cfg.isDefault ? .primary : Color(UIColor.tertiaryLabel))
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(cfg.name)
                                         .font(.body)
@@ -1407,7 +1407,7 @@ struct UpstreamModelsView: View {
                     HStack(spacing: 10) {
                         Image(systemName: config.isDefault ? "checkmark.circle.fill" : "circle")
                             .font(.system(size: 20))
-                            .foregroundColor(config.isDefault ? .blue : Color(UIColor.tertiaryLabel))
+                            .foregroundColor(config.isDefault ? .primary : Color(UIColor.tertiaryLabel))
                         VStack(alignment: .leading, spacing: 2) {
                             Text("使用该配置")
                                 .foregroundColor(.primary)
@@ -1444,7 +1444,7 @@ struct UpstreamModelsView: View {
                         HStack(spacing: 10) {
                             Image(systemName: config.model == m ? "checkmark.circle.fill" : "circle")
                                 .font(.system(size: 20))
-                                .foregroundColor(config.model == m ? .blue : Color(UIColor.tertiaryLabel))
+                                .foregroundColor(config.model == m ? .primary : Color(UIColor.tertiaryLabel))
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(m)
                                     .font(.system(.body, design: .monospaced))
@@ -1512,7 +1512,7 @@ struct QuickActionCard: View {
     let icon: String
     let title: String
     let subtitle: String
-    var colors: [Color] = [.blue, .tmCyan]   // v2.9.78：渐变图标底
+    var colors: [Color] = []   // v7.4.1：已废弃（统一黑白），保留签名兼容
     let action: () -> Void
 
     var body: some View {
@@ -1733,13 +1733,34 @@ struct MessageBubble: View {
     private var selectionBadge: some View {
         Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
             .font(.system(size: 20))
-            .foregroundColor(isSelected ? .blue : Color.secondary)
+            .foregroundColor(isSelected ? .primary : Color.secondary)
             .padding(.bottom, 10)
     }
 
     // v4.4.11：AI 正文行内代码(反引号)→橙色(与"已深度思考"同色)。手动正则解析，
     // 容错流式打字机未闭合反引号(不配对则视为普通文本)。仅 assistant 生效, user 保持纯文本。
     // v4.4.12：正文 markdown 加粗(**xx**)→粗体(semibold)。代码段优先(橙色)，代码段外再匹配粗体。
+    /// v7.4.1：分块渲染——普通文本块 + 黑色代码预览块。
+    /// 只在正文含 ``` 围栏时走这里；其余消息仍走 messageTextView（保留 UITextView 的选字能力）。
+    @ViewBuilder
+    private func messageBlocksView(_ shown: String) -> some View {
+        let blocks = MessageBlockParser.parse(shown)
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(blocks) { block in
+                switch block.kind {
+                case .text(let t):
+                    Text(t.trimmingCharacters(in: .whitespacesAndNewlines))
+                        .font(.system(size: 16.5))
+                        .foregroundColor(.primary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                case .code(let lang, let body):
+                    CodeBlockView(lang: lang, code: body)
+                }
+            }
+        }
+    }
+
     /// v4.4.21：消息文本视图——流式/打字机/用户消息用轻量 Text（避免 UITextView 高频刷新闪跳）；assistant 完成消息用 SelectableText(UITextView) 长按选字/划词/复制
     @ViewBuilder
     private func messageTextView(_ shown: String) -> some View {
@@ -1769,8 +1790,10 @@ struct MessageBubble: View {
             if pos < range.lowerBound { out += styledBold(text[pos..<range.lowerBound]) }
             let inner = text[text.index(after: range.lowerBound)..<text.index(before: range.upperBound)]
             var c = AttributedString(inner)
-            c.foregroundColor = .orange
+            // v7.4.1：行内代码不再用橙色装饰——等宽 + 浅灰底，和黑块代码保持一致的中性风
+            c.foregroundColor = .primary
             c.font = .system(.body, design: .monospaced)
+            c.backgroundColor = Color(UIColor.tertiarySystemFill)
             out += c
             pos = range.upperBound
         }
@@ -1860,6 +1883,11 @@ struct MessageBubble: View {
                 let shown = (isStreaming || forceType) ? String(message.content.prefix(revealedCount)) : message.content
                 // v4.4.11：assistant 行内代码橙色高亮, user 纯文本
                 VStack(alignment: .leading, spacing: 3) {
+                    // v7.4.1：含代码围栏的消息走分块渲染（普通文本块 + 黑色代码预览块）；
+                    // 其余消息保持原渲染路径，避免影响普通对话的可选中/富文本行为。
+                    if !isUser && shown.contains("```") {
+                        messageBlocksView(shown)
+                    } else {
                     // v4.4.21：完成消息用 SelectableText(UITextView) 长按划词/复制；流式打字机+用户消息用 Text(轻量)
                     messageTextView(shown)
                         .padding(.horizontal, 14)
@@ -1883,15 +1911,16 @@ struct MessageBubble: View {
                         .cornerRadius(18)
                         .overlay(
                             RoundedRectangle(cornerRadius: 18)
-                                .strokeBorder(isSelected ? (isUser ? Color.white : Color.blue) : Color.clear, lineWidth: 2)
+                                .strokeBorder(isSelected ? Color.secondary.opacity(0.5) : Color.clear, lineWidth: 2)
                         )
+                    }
                     // v4.4.18：朗读喇叭按钮（assistant 消息）——点一下朗读这条全文；长按仍保留选字复制
                     if !isUser && !message.isTool {
                         HStack(spacing: 6) {
                             Button(action: { TTSService.shared.speakForced(id: message.id.uuidString, message.content) }) {
                                 Image(systemName: TTSService.shared.speakingId == message.id.uuidString ? "speaker.wave.2.fill" : "speaker.wave.2")
                                     .font(.system(size: 18, weight: .medium))
-                                    .foregroundColor(TTSService.shared.speakingId == message.id.uuidString ? .tmCyan : .secondary)
+                                    .foregroundColor(TTSService.shared.speakingId == message.id.uuidString ? .primary : .secondary)
                                     .padding(.vertical, 6)
                                     .contentShape(Rectangle())
                             }
@@ -1923,9 +1952,8 @@ struct MessageBubble: View {
                         .font(.system(size: 14))
                     // v3.5.4：思考中→"思考中…"；思考完→"已深度思考 N 字"(业界一致)
                     Text(isStreaming ? "思考中…" : "已深度思考 \(text.count) 字")
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                        .foregroundColor(.orange)
+                        .font(.system(size: 13))
+                        .foregroundColor(.secondary)
                     Spacer()
                     if thinkingExpanded {
                         Button(action: { UIPasteboard.general.string = text }) {
@@ -1948,7 +1976,7 @@ struct MessageBubble: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(height: min(max(CGFloat(text.count) * 0.5, 80), 220))
-                .background(Color.orange.opacity(0.08))
+                .background(Color(UIColor.tertiarySystemFill))
                 .cornerRadius(8)
             }
         }
@@ -1990,86 +2018,30 @@ struct MessageBubble: View {
     }
 
     private var toolBubble: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // 📝 1. 思考过程（独立橙色气泡）
-            // v3.5.31：加 thinkEnabled —— 思考关时不显示思考气泡
+        // v7.4.1（AI Agent 调试会话风格）：工具调用收成一张干净的圆角卡片——
+        // 图标 + 名称 + 耗时，状态只用 ✓ / ✗ / 转圈，不再有蓝底、蓝色文字、彩色徽章。
+        // 展开后才是参数与结果，默认收起（避免一屏全是工具噪声）。
+        VStack(alignment: .leading, spacing: 8) {
             if thinkEnabled, let thinking = message.thinking, !thinking.isEmpty {
                 thinkingMiniBubble(thinking)
             }
 
-            // 🔧✅ 2. 工具调用 + 工具结果（同一个灰色大气泡）
-            VStack(alignment: .leading, spacing: 6) {
-                        // 工具调用胶囊（工具名 + 耗时 + 执行命令，边做边说可见；结果在下方展开）
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "terminal.fill")
-                            .font(.system(size: 13))
-                            .foregroundColor(.blue)
-                        // v3.5.13：卡片标题=机械短标签(一短,像Minis)——从工具名+关键参数提炼(如
-                        // "shell.exec: ls -la" / "browser: dnf.qq.com")，简短稳定、次次一致，客观陈述跑了哪个
-                        // 工具干了什么，不代表模型说话；真正的解说由单独的 assistant 气泡(一长)承载。
-                        Text(toolShortLabel())
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                            .foregroundColor(.blue)
-                            .lineLimit(2)
-                            .layoutPriority(1)
-                        // v3.5.7：工具状态徽章（对齐 shadcn React AI Tool）——机制级：由真实执行结果渲染，
-                        // 不是模型说的话。v3.5.10：running 态显示"执行中…"转圈，完成=✓绿 / 出错=✗红。
-                        if message.isRunning {
-                            // v4.4.1：徽章只显示"执行中…"转圈——进度条只在工具结果迷你气泡内渲染，
-                            // 同一安装任务不再两处重复显示（此前 v4.3.75 双渲染导致"两个进度条"）。
-                            HStack(spacing: 4) {
-                                ProgressView().scaleEffect(0.7)
-                                Text("执行中…").font(.caption2.bold())
-                            }
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.blue.opacity(0.15))
-                            .foregroundColor(.blue)
-                            .cornerRadius(6)
-                        } else {
-                            Text(message.isError ? "✗ 出错" : "✓ 完成")
-                                .font(.caption2.bold())
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                // v4.4.11：完成绿→蓝(与执行中同色, 减颜色), 仅出错保留红
-                                .background(message.isError ? Color.red.opacity(0.15) : Color.blue.opacity(0.15))
-                                .foregroundColor(message.isError ? .red : .blue)
-                                .cornerRadius(6)
-                        }
-                        // v3.3.4：工具执行耗时（对齐 OpenMinis 步骤耗时样式）
-                        if let dur = message.toolDuration {
-                            Text(String(format: "%.1fs", dur))
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                        Spacer()
-                    }
-                    // v3.5.13：标题已是"工具名: 关键参数"机械短标签，无需再补一行副标题工具名。
-                    // v3.5.4：工具执行的命令/参数完整显示（5=A）——不再截 60 字符/单行，
-                    // 用等宽可换行，让用户看清这步到底执行了什么命令。
-                    if let args = message.toolArgs, !args.isEmpty {
-                        Text(args)
-                            .font(.system(.caption2, design: .monospaced))
-                            .foregroundColor(.secondary)
-                            .textSelection(.enabled)
-                    }
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color.blue.opacity(0.1))
-                .cornerRadius(8)
+            ToolCallCard(
+                name: message.toolName ?? "工具",
+                args: message.toolArgs,
+                duration: message.toolDuration,
+                isRunning: message.isRunning,
+                isError: message.isError,
+                expanded: expanded,
+                onTap: { if !message.isRunning { withAnimation { expanded.toggle() } } }
+            )
 
-                // 工具结果（可折叠）
+            if expanded {
                 toolResultMiniBubble
+                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
-            .padding(10)
-            // v3.1.66：修复"工具气泡浅色模式不显示"——tertiarySystemBackground 在浅色模式≈纯白，
-            // 与聊天背景融为一体；改用 secondarySystemBackground（与 AI 回复气泡同色，浅色=浅灰白/深色=深灰）
-            .background(Color(.secondarySystemBackground))
-            .cornerRadius(10)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // 📝 思考过程迷你气泡
@@ -2078,12 +2050,11 @@ struct MessageBubble: View {
             Button(action: { withAnimation { toggleThinking() } }) {
                 HStack(spacing: 6) {
                     Image(systemName: "brain.head.profile")
-                        .font(.system(size: 14))
-                        .foregroundColor(.orange)
+                        .font(.system(size: 13))
+                        .foregroundColor(.secondary)
                     Text(isStreaming ? "思考中…" : "已深度思考 \(text.count) 字")
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                        .foregroundColor(.orange)
+                        .font(.system(size: 13))
+                        .foregroundColor(.secondary)
                     Spacer()
                 }
             }
@@ -2094,7 +2065,7 @@ struct MessageBubble: View {
                     .foregroundColor(.secondary)
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.orange.opacity(0.08))
+                    .background(Color(UIColor.tertiarySystemFill))
                     .cornerRadius(8)
             }
         }
@@ -2115,7 +2086,7 @@ struct MessageBubble: View {
                                 Text(prog.progressText)
                                     .font(.subheadline)
                                     .fontWeight(.medium)
-                                    .foregroundColor(.blue)
+                                    .foregroundColor(.primary)
                                 if !prog.lastLine.isEmpty {
                                     Text(prog.lastLine)
                                         .font(.caption2)
@@ -2131,18 +2102,18 @@ struct MessageBubble: View {
                                 Text("工具执行中…")
                                     .font(.subheadline)
                                     .fontWeight(.medium)
-                                    .foregroundColor(.blue)
+                                    .foregroundColor(.secondary)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     } else {
                         Image(systemName: message.isError ? "exclamationmark.circle" : "checkmark.circle")
                             .font(.system(size: 14))
-                            .foregroundColor(message.isError ? .red : .blue)
+                            .foregroundColor(message.isError ? .red : .secondary)
                         Text(expanded ? "工具结果 ▴" : "工具结果 ▾")
                             .font(.subheadline)
                             .fontWeight(.medium)
-                            .foregroundColor(message.isError ? .red : .blue)
+                            .foregroundColor(message.isError ? .red : .secondary)
                     }
                     Spacer()
                 }
@@ -2312,7 +2283,7 @@ struct TrailCard: View {
                         .font(.system(size: 13))
                     Text(L10n.t("ui_158", steps.count))
                         .font(.caption.weight(.medium))
-                        .foregroundColor(.blue)
+                        .foregroundColor(.secondary)
                     Spacer()
                     Text(summaryText)
                         .font(.caption2)
@@ -2332,7 +2303,7 @@ struct TrailCard: View {
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.blue.opacity(0.06))
+        .background(Color(UIColor.tertiarySystemFill))
         .cornerRadius(12)
     }
 
@@ -2364,7 +2335,7 @@ struct TrailRow: View {
                 if step.status == .running {
                     Text(L10n.t("ui_64"))
                         .font(.caption2)
-                        .foregroundColor(.blue)
+                        .foregroundColor(.secondary)
                 } else if !step.detail.isEmpty {
                     if detailExpanded {
                         Text(step.detail)
@@ -2396,8 +2367,8 @@ struct TrailRow: View {
 
     private var colorFor: Color {
         switch step.status {
-        case .running: return .blue
-        case .success: return .blue
+        case .running: return .secondary
+        case .success: return .secondary
         case .failed: return .red
         }
     }

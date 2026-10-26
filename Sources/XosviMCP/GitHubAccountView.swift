@@ -20,7 +20,9 @@ struct GitHubAccountView: View {
             runsSection
         }
         .listStyle(.insetGrouped)
+        .deepseekList()
         .navigationTitle("GitHub 账号")
+        .deepseekPage()
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showAdd) {
             AddGitHubAccountView()

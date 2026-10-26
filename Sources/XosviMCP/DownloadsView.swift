@@ -54,11 +54,13 @@ struct DownloadsView: View {
                     }
                 }
                 .listStyle(.plain)
+        .deepseekList()
             }
             toolbar
         }
-        .background(Color(.systemGroupedBackground))
+        .background(DoubaoTheme.bg)
         .navigationTitle(L10n.t("page_downloads"))
+        .deepseekPage()
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarItems(
             leading: Button(editMode ? "完成" : "选择") {

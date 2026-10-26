@@ -34,8 +34,9 @@ struct ControlCenterView: View {
                 }
                 .padding()
             }
-            .background(Color(.systemGroupedBackground))
+            .background(DoubaoTheme.bg)
             .navigationTitle(L10n.t("ui_172", "AI 控制中心"))
+            .deepseekPage()
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {

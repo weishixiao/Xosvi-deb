@@ -42,10 +42,10 @@ struct AttachmentPanelView: View {
                 if selectedCount > 0 {
                     Text(L10n.t("ui_171", selectedCount))
                         .font(.caption.weight(.medium))
-                        .foregroundColor(.blue)
+                        .foregroundColor(.primary)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
-                        .background(Color.blue.opacity(0.12))
+                        .background(Color(UIColor.tertiarySystemFill))
                         .cornerRadius(10)
                         .padding(.trailing, 6)
                 }
@@ -54,7 +54,7 @@ struct AttachmentPanelView: View {
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundColor(.white)
                         .frame(width: 28, height: 28)
-                        .background(Color.blue)
+                        .background(Color.primary)
                         .clipShape(Circle())
                 }
             }
@@ -124,9 +124,9 @@ struct AttachmentOption: View {
             VStack(spacing: 10) {
                 Image(systemName: icon)
                     .font(.system(size: 26))
-                    .foregroundColor(.blue)
+                    .foregroundColor(.primary)
                     .frame(width: 60, height: 60)
-                    .background(Color.blue.opacity(0.1))
+                    .background(Color(UIColor.tertiarySystemFill))
                     .cornerRadius(16)
                 VStack(spacing: 2) {
                     Text(title)

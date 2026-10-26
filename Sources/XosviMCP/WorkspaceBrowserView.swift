@@ -310,11 +310,13 @@ struct WorkspaceBrowserView: View {
                     }
                 }
                 .listStyle(.insetGrouped)
+        .deepseekList()
                 .refreshable { reload() }
             }
         }
-        .background(Color(.systemGroupedBackground))
+        .background(DoubaoTheme.bg)
         .navigationTitle(L10n.t("page_workspace"))
+        .deepseekPage()
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             // v6.4.4：返回上一级（面包屑之外给一个显式按钮）
