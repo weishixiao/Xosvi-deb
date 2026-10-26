@@ -34,7 +34,9 @@ let package = Package(
                 .define("GUEST_ARM64", to: "1")
             ],
             linkerSettings: [
-                .unsafeFlags(["-L", "Sandbox/build/iphoneos", "-ObjC"]),
+                // -ObjC 必须经 -Xlinker 传给链接器，直接写会被 swiftc 当成编译参数
+                // （CI 报 error: unknown argument: '-ObjC'）
+                .unsafeFlags(["-L", "Sandbox/build/iphoneos", "-Xlinker", "-ObjC"]),
                 .linkedLibrary("ish"),
                 .linkedLibrary("ish_emu"),
                 .linkedLibrary("fakefs"),
