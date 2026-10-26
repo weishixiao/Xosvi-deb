@@ -169,54 +169,80 @@ public enum JBPlot {
         }
     }
 
-    /// 低层执行：直接把参数交给 Process 启动（不用 shell，避免引号问题）
+    /// 低层执行：posix_spawn 直接启动（不用 shell，避免引号问题）。
+    /// v7.14.5：iOS SDK 里 Process 即使 import Foundation/Darwin 也不在可用 API 范围
+    /// （CI: cannot find 'Process' in scope），改用仓库已验证的 posix_spawn 路径
+    /// （BuildRunner / InjectionManager 同款），输出落临时文件避免管道缓冲死锁。
     static func exec(_ args: [String], timeout: TimeInterval) -> RunResult {
         guard let bin = try? resolvedBinary() else {
             return RunResult(code: -1, stdout: "", stderr: "jb-p1lot binary missing", timedOut: false, json: nil)
         }
         ensureDirs()
 
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: bin)
-        proc.arguments = args
-        // 身份与状态目录全部落在 App 沙盒（JB_P1LOT_HOME 优先，其次 HOME 派生）
         var env = ProcessInfo.processInfo.environment
+        // 身份与状态目录全部落在 App 沙盒（JB_P1LOT_HOME 优先，其次 HOME 派生）
+        for (k, v) in EnvVars.current() { env[k] = v }
         env["HOME"] = supportDir.path
         env["JB_P1LOT_HOME"] = supportDir.path
         env["TMPDIR"] = NSTemporaryDirectory()
-        proc.environment = env
-        proc.currentDirectoryURL = supportDir
 
-        let outPipe = Pipe(); let errPipe = Pipe()
-        proc.standardOutput = outPipe
-        proc.standardError = errPipe
+        let outPath = NSTemporaryDirectory() + "jb_out_\(UUID().uuidString).log"
+        let errPath = NSTemporaryDirectory() + "jb_err_\(UUID().uuidString).log"
 
-        do {
-            try proc.run()
-        } catch {
-            return RunResult(code: -1, stdout: "", stderr: "启动失败: \(error.localizedDescription)", timedOut: false, json: nil)
+        var argv: [UnsafeMutablePointer<CChar>?] = ([bin] + args).map { strdup($0) }
+        argv.append(nil)
+        defer { for p in argv where p != nil { free(p) } }
+        var cenv: [UnsafeMutablePointer<CChar>?] = env.map { strdup("\($0.key)=\($0.value)") }
+        cenv.append(nil)
+        defer { for p in cenv where p != nil { free(p) } }
+
+        var actions: posix_spawn_file_actions_t?
+        posix_spawn_file_actions_init(&actions)
+        posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, outPath, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+        posix_spawn_file_actions_addopen(&actions, STDERR_FILENO, errPath, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+
+        var pid: pid_t = 0
+        let rc = posix_spawn(&pid, bin, &actions, nil, &argv, &cenv)
+        posix_spawn_file_actions_destroy(&actions)
+
+        guard rc == 0 else {
+            let errnoText = String(cString: strerror(rc))
+            if JBPlot.looksLikeSpawnBlocked(errnoText, code: rc) && rc == 85 {
+                return RunResult(code: rc, stdout: "", stderr: spawnBlockedHint, timedOut: false, json: nil)
+            }
+            return RunResult(code: Int32(rc), stdout: "", stderr: "posix_spawn failed: \(errnoText) (errno \(rc))",
+                             timedOut: false, json: nil)
         }
 
         // 超时守护：到点 SIGTERM，1 秒后再 SIGKILL
         let deadline = Date().addingTimeInterval(timeout)
         var timedOut = false
-        while proc.isRunning {
+        var status: Int32 = 0
+        while true {
+            let w = waitpid(pid, &status, WNOHANG)
+            if w == pid || (w == -1 && errno != EINTR) { break }
             if Date() > deadline {
                 timedOut = true
-                kill(proc.processIdentifier, SIGTERM)
+                kill(pid, SIGTERM)
                 let killAt = Date().addingTimeInterval(1.0)
-                while proc.isRunning && Date() < killAt { usleep(50_000) }
-                if proc.isRunning { kill(proc.processIdentifier, SIGKILL) }
+                while Date() < killAt {
+                    if waitpid(pid, &status, WNOHANG) == pid { break }
+                    usleep(50_000)
+                }
+                if waitpid(pid, &status, WNOHANG) == 0 { kill(pid, SIGKILL) }
+                _ = waitpid(pid, &status, 0)
                 break
             }
             usleep(30_000)
         }
-        proc.waitUntilExit()
+        let exitCode: Int32 = (status & 0x7f) == 0 ? ((status >> 8) & 0xff) : -(status & 0x7f)
 
-        let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-        let out = String(data: outData, encoding: .utf8) ?? ""
-        let err = String(data: errData, encoding: .utf8) ?? ""
+        let out = (try? String(contentsOfFile: outPath, encoding: .utf8)) ?? ""
+        let err = (try? String(contentsOfFile: errPath, encoding: .utf8)) ?? ""
+        try? FileManager.default.removeItem(atPath: outPath)
+        try? FileManager.default.removeItem(atPath: errPath)
+        let outData = Data(out.utf8)
+
         var parsed: [String: Any]?
         if let obj = try? JSONSerialization.jsonObject(with: outData) as? [String: Any] {
             parsed = obj
@@ -224,7 +250,7 @@ public enum JBPlot {
                   let d = String(out[start...end]).data(using: .utf8) {
             parsed = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any]
         }
-        return RunResult(code: proc.terminationStatus, stdout: out, stderr: err,
+        return RunResult(code: exitCode, stdout: out, stderr: err,
                          timedOut: timedOut, json: parsed)
     }
 

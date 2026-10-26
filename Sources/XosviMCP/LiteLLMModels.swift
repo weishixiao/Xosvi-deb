@@ -86,7 +86,9 @@ struct LiteLLMProvider: Identifiable, Hashable {
 
 // MARK: 路由策略（litellm Router 的 routing_strategy）
 
-enum RoutingStrategy: String, CaseIterable, Identifiable {
+// v7.14.5：原为 String, CaseIterable, Identifiable——缺 Codable，导致 LiteLLMConfig
+// 无法合成 Decodable/Encodable（CI 报 does not conform to protocol）
+enum RoutingStrategy: String, CaseIterable, Identifiable, Codable {
     case simpleShuffle = "simple-shuffle"    // 随机打散（litellm 默认）
     case leastBusy = "least-busy"            // 最少使用（在途请求最少）
     case usageBased = "usage-based-routing"  // 按用量均衡（token/请求数最少优先）
