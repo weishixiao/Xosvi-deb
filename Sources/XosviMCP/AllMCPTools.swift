@@ -560,7 +560,7 @@ final class ProcessListTool: MCPTool {
 // MARK: - M6 编译模式工具
 
 final class BuildRunnerTokenTool: MCPTool {
-    let definition = ToolDefinition(name: "build.runner.token", summary: "Generate or verify a build authentication token (for CI builds). Use for: authenticate with build system. Don't use for: trigger GitHub Actions build (use github.trigger_build), check GitHub login (use github.account_status). Example: user says 'generate build token' → generate token.",
+    let definition = ToolDefinition(name: "build.runner.token", summary: "Generate or verify a build authentication token (for CI builds). Use for: authenticate with build system. Don't use for: check network status (use device.status). Example: user says 'generate build token' → generate token.",
         parameters: ["action": "generate (create new token) or verify (check token validity)"], verified: true)
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         let action = params["action"] as? String ?? "generate"
@@ -574,7 +574,7 @@ final class BuildRunnerTokenTool: MCPTool {
 }
 
 final class ProjectGenerateTweakTool: MCPTool {
-    let definition = ToolDefinition(name: "project.generate_tweak", summary: "Generate a Tweak project template (Theos Makefile + Tweak.x + plist). Use for: start a new jailbreak tweak development project. Don't use for: compile existing tweak (use github.trigger_build), load dylib (use tool.load_dylib). Example: user says 'create a new tweak project' → generate template.",
+    let definition = ToolDefinition(name: "project.generate_tweak", summary: "Generate a Tweak project template (Theos Makefile + Tweak.x + plist). Use for: start a new jailbreak tweak development project. Don't use for: load dylib (use tool.load_dylib). Example: user says 'create a new tweak project' → generate template.",
         parameters: ["name": "Project name (e.g. MyTweak)", "bundle_id": "Target app bundle ID (optional)"], verified: true, category: "build")
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         let name = params["name"] as? String ?? "MyTweak"

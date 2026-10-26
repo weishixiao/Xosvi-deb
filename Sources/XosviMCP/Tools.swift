@@ -937,46 +937,5 @@ final class LocationExecTool: MCPTool {
     }
 }
 
-// MARK: - v3.1.52: github 大工具 + 子命令 (合并 4 个 github.* 工具）
+// v7.6.5：github 工具（线上编译触发/查运行/下载产物）已随 GitHub 账号功能整体移除
 
-final class GitHubExecTool: MCPTool {
-    let definition = ToolDefinition(
-        name: "github",
-        summary: "GitHub CI automation. Commands: account_status / trigger_build / fetch_runs / download_artifact. Params: workflow (build-xosvi-ios.yml or build-tweak.yml), tweak, ref (default main), run_id (for download_artifact).",
-        parameters: [
-            "command": "Subcommand: account_status / trigger_build / fetch_runs / download_artifact",
-            "workflow": "Workflow file for trigger_build: build-xosvi-ios.yml (default, build IPA) or build-tweak.yml (build tweak dylib)",
-            "tweak": "Only for tweak trigger_build: tweak project name (e.g. ProbeAgent / ConfigHook / NetworkTweak)",
-            "ref": "Git branch to build (default main)",
-            "run_id": "Run ID (for download_artifact)"
-        ],
-        verified: true, category: "system")
-    
-    func invoke(_ params: [String: Any]) throws -> [String: Any] {
-        guard let command = params["command"] as? String else {
-            throw MCPError.invalidParams("command required")
-        }
-        
-        AuditLog.shared.log("github", detail: command)
-        
-        switch command {
-        case "account_status":
-            return try GitHubAccountStatusTool().invoke([:])
-            
-        case "trigger_build":
-            return try GitHubTriggerBuildTool().invoke(params)
-            
-        case "fetch_runs":
-            return try GitHubFetchRunsTool().invoke(params)
-            
-        case "download_artifact":
-            guard let runId = params["run_id"] as? Int else {
-                throw MCPError.invalidParams("run_id required")
-            }
-            return try GitHubDownloadArtifactTool().invoke(["run_id": runId])
-            
-        default:
-            throw MCPError.invalidParams("Unknown command: \(command). Available: account_status/trigger_build/fetch_runs/download_artifact")
-        }
-    }
-}

@@ -434,7 +434,7 @@ private func systemToolchainProfile() -> ToolchainProfile {
 ///  - mode="clang"：clang -arch arm64 -fobjc-arc -isysroot <sdk> -dynamiclib 编译 .c/.m/.mm
 final class BuildRunTool: MCPTool {
     let definition = ToolDefinition(name: "build.run",
-        summary: "Compile/build a project. Use for: build a Theos tweak project, compile dylib. Don't use for: trigger GitHub CI build (use github.trigger_build), run tests (use test.run). Example: user says 'build this tweak project' → build project.",
+        summary: "Compile/build a project. Use for: build a Theos tweak project, compile dylib. Don't use for: run tests (use test.run). Example: user says 'build this tweak project' → build project.",
         parameters: [
             "project": "Project name in Workspace/projects/",
             "mode": "theos or clang (default: theos)",

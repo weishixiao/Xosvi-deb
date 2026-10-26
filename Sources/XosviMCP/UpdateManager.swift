@@ -62,9 +62,7 @@ final class UpdateManager: ObservableObject {
         var request = URLRequest(url: url)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let t = GitHubAccountStore.shared.activeToken {
-            request.setValue("Bearer \(t)", forHTTPHeaderField: "Authorization")
-        }
+        // v7.6.5：GitHub 账号功能已移除，更新检查走匿名请求（API 限流 60/小时，够用）
         return request
     }
 

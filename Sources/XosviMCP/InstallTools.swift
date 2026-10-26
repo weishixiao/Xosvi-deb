@@ -14,7 +14,7 @@ import Foundation
 final class ToolInstallTool: MCPTool {
     let definition = ToolDefinition(
         name: "tool.install",
-        summary: "统一工具安装入口. Params: name(工具名) / profile(re逆向/dev开发/network网络 批量) / source(原生iOS二进制GitHub repo URL, 触发CI build-tool.yml). 安装链: 内置原生bin → Alpine apk(即装即用,auto-bind直读iOS文件) → pip → CI. Use for: AI 缺工具时一键装. 装tweak走github.trigger_build; 注dylib走inject.",
+        summary: "统一工具安装入口. Params: name(工具名) / profile(re逆向/dev开发/network网络 批量) / source(原生iOS二进制GitHub repo URL, 触发CI build-tool.yml). 安装链: 内置原生bin → Alpine apk(即装即用,auto-bind直读iOS文件) → pip → CI. Use for: AI 缺工具时一键装. 注dylib走inject.",
         parameters: [
             "name": "Tool name to install (e.g. jq / jtool2 / class-dump)",
             "profile": "Optional curated batch: re(逆向工具链) / dev(开发环境) / network(网络工具)",

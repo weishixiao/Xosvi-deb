@@ -44,7 +44,7 @@ final class RemoteTerminalServer {
         "artifact", "artifact", "shell.exec", "shell.exec", "shell.exec", "shell.exec", "shell.exec",
         "fs.container", "container.", "app.decrypt", "app.reinstall", "app.install", "app.uninstall",
         "device.fake.", "device.restore", "memory.write", "network.capture", "network.redirect",
-        "automation.run", "cron.", "webhooks.", "github.trigger_build",
+        "automation.run", "cron.", "webhooks.",
         "ui.tap", "ui.swipe", "ui.long_press", "control.",
     ]
     private func isDangerous(_ name: String) -> Bool {

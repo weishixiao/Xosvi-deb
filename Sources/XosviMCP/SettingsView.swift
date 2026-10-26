@@ -145,17 +145,7 @@ struct SettingsView: View {
                          destination: AnyView(NetworkDebugView()))
         ]))
 
-        // 线上编译
-        groups.append(SettingsGroup(header: L10n.t("sec_build"), items: [
-            SettingsItem(title: L10n.t("row_github"),
-                         subtitle: "线上编译 · \(githubAccountSubtitle())",
-                         icon: "person.crop.circle.fill.badge.checkmark", color: .black,
-                         destination: AnyView(GitHubAccountView())),
-            SettingsItem(title: L10n.t("row_downloads"),
-                         subtitle: "线上编译产物 · 勾选删除",
-                         icon: "arrow.down.circle.fill", color: .green,
-                         destination: AnyView(DownloadsView()))
-        ]))
+        // v7.6.5：线上编译 / GitHub 账号 / 下载管理已按用户要求整体移除
 
         // 环境（v6.6.19：环境变量）
         groups.append(SettingsGroup(header: "环境", items: [
@@ -425,14 +415,6 @@ struct SettingsView: View {
 
     private func permissionCount() -> Int {
         7
-    }
-
-    private func githubAccountSubtitle() -> String {
-        if let login = GitHubAccountStore.shared.activeLogin {
-            return "@\(login)"
-        }
-        let count = GitHubAccountStore.shared.accounts.count
-        return count == 0 ? "未登录 · 多账号" : "\(count) 个账号"
     }
 
     private func devInstructionsSubtitle() -> String {

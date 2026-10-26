@@ -475,8 +475,7 @@ public final class ToolRegistry: ObservableObject {
         // v4.3.66：按需绑定 App 数据容器（bind_app 只读安全，bind_app_write 可写先备份，
         // app_write_file 原生直写先备份）——否则"小白一句话分析/改 App 数据"时 AI 看不到这些工具
         "bind_app", "bind_app_write", "app_write_file",
-        // v4.3.66：GitHub CI 工具（tool.install 触发 CI 后的查进度/取产物闭环）
-        "github"
+        // v7.6.5：github 工具已移除
     ]
 
     /// v2.9.31：常驻核心工具名集合 (UI 用只读访问）
@@ -1457,7 +1456,6 @@ public final class ToolRegistry: ObservableObject {
         register(WebFetchTool())
         // v4.3.66：注册 github 大工具（CI 触发/查进度/下载产物）——tool.install 触发 CI 后，
         // AI 需按提示调 github.fetch_runs / github.download_artifact 取产物；此前该工具漏注册导致后续断链
-        register(GitHubExecTool())
         // v3.7.7c: 移除 ish.bind 注册——bind mount 已由 autoBind 全自动（命令引用 iOS 路径自动挂载+改写），
         // 手动 bind 工具对 AI 是误导（会以为要手动挂载）。类定义保留供开发者调试/真机验证。
         // v6.9.10：模式自动路由——AI 按需拉取某个模式的完整细则（懒加载，避免 2.1 万字符全量进 context）
