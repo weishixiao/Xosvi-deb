@@ -1,43 +1,321 @@
 import SwiftUI
 import UIKit
 
-// MARK: - v7.6.0 环境（移植 Kelivo 的 Environment 页）
+// MARK: - v7.9.0 环境（严格按 Kelivo 的页面结构重排）
 //
-// 三个部分，和 Kelivo 的截图一一对应：
-//   · 环境预设：Python / Node.js / Git / SSH / 网络工具 / 压缩工具，可检测与一键安装
-//   · 环境：Alpine 版本、大小、架构、状态；浏览文件系统；挂载外部文件夹
-//   · 镜像：APK / pip / npm 源 + 测速
-//   底部还有「修复」（重新解压 rootfs）
+// 三页对应 Kelivo 的三张截图：
+//   ① 环境：Alpine 卡片（状态/大小/安装于/架构）+ 浏览 + 镜像
+//   ② 环境预设：6 个预设（点进去是详情页）+ 刷新工具状态 + 环境变量 + 操作（修复/检查更新/重置）
+//   ③ 预设详情（如 Python）：标题卡 + 软件包源 + 安装按钮
+
+// MARK: - ① 环境
 
 struct EnvironmentView: View {
-    @State private var deps: [EnvDependency: Bool?] = [:]   // nil=检测中 / true / false
-    @State private var checking = false
-    @State private var installing: EnvDependency?
+    @ObservedObject private var installer = EnvironmentInstaller.shared
     @State private var booted = false
-    @State private var rootfsVersion = ""
-    @State private var rootfsSize: Int64 = 0
-    @State private var mirrorNote = ""
-    @State private var speedRows: [(String, Double)] = []
-    @State private var speedTesting = false
-    @State private var showMountPicker = false
+    @State private var version = ""
+    @State private var size: Int64 = 0
+    @State private var installedAt: Date?
+    @State private var mountPicker = false
     @State private var mounts: [(name: String, path: String)] = []
+    @State private var speedRows: [(AlpineMirror, Double)] = []
+    @State private var speedBusy = false
     @State private var toast: String?
-
-    private let apkMirrorKey = "ish.mirror.apk"
-    private let pipMirrorKey = "ish.mirror.pip"
-    private let npmMirrorKey = "ish.mirror.npm"
 
     var body: some View {
         List {
-            // ── 环境预设 ─────────────────────────────
+            // ── 环境 ─────────────────────────────
+            Section {
+                HStack(spacing: 10) {
+                    Image(systemName: "cube.box")
+                        .font(.system(size: 20))
+                        .foregroundColor(.primary)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Alpine \(version.isEmpty ? "—" : version) (iSH)")
+                            .font(.system(size: 16))
+                        Text(booted ? "就绪" : "未启动")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(.vertical, 4)
+
+                infoRow("状态", booted || ISH.rootfsInstalled ? "已安装" : "未安装", check: ISH.rootfsInstalled)
+                infoRow("大小", size > 0 ? String(format: "%.2f MB", Double(size) / 1048576) : "—")
+                infoRow("安装于", installedAt.map { relative($0) } ?? "—")
+                infoRow("架构", "arm64 · \(version.isEmpty ? "—" : version)")
+            } header: {
+                Text("环境")
+            } footer: {
+                if !booted {
+                    Button {
+                        startSandbox()
+                    } label: {
+                        Label("启动沙盒", systemImage: "play")
+                    }
+                }
+            }
+
+            // ── 浏览 ─────────────────────────────
+            Section {
+                NavigationLink {
+                    GuestFilesystemView(path: "/")
+                } label: {
+                    row("浏览文件系统", "查看沙盒中的完整目录", "externaldrive")
+                }
+                Button {
+                    mountPicker = true
+                } label: {
+                    row("挂载外部文件夹", "所选文件夹挂载到 /mounts/<name>，供模型与终端访问", "folder")
+                }
+                ForEach(mounts, id: \.path) { m in
+                    HStack(spacing: 10) {
+                        Image(systemName: "folder")
+                            .foregroundColor(.secondary).frame(width: 24)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(m.name).font(.system(size: 15))
+                            Text("/mounts/\(m.name)").font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                    }
+                }
+            } header: {
+                Text("浏览")
+            }
+
+            // ── 镜像 ─────────────────────────────
+            Section {
+                Button {
+                    runSpeedTest()
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "speedometer").frame(width: 24)
+                        Text(speedBusy ? "测速中…" : "检测快速镜像")
+                        Spacer()
+                        if speedBusy { ProgressView().scaleEffect(0.7) }
+                    }
+                }
+                .disabled(speedBusy)
+
+                Picker(selection: Binding(
+                    get: { MirrorCatalog.current("apk").id },
+                    set: { id in
+                        if let m = MirrorCatalog.apk.first(where: { $0.id == id }) {
+                            MirrorCatalog.setCurrent("apk", m); applyMirrors()
+                        }
+                    }
+                )) {
+                    ForEach(MirrorCatalog.apk) { Text($0.displayName).tag($0.id) }
+                } label: {
+                    Label("APK", systemImage: "cube.box")
+                }
+
+                Picker(selection: Binding(
+                    get: { MirrorCatalog.current("pip").id },
+                    set: { id in
+                        if let m = MirrorCatalog.pip.first(where: { $0.id == id }) {
+                            MirrorCatalog.setCurrent("pip", m); applyMirrors()
+                        }
+                    }
+                )) {
+                    ForEach(MirrorCatalog.pip) { Text($0.displayName).tag($0.id) }
+                } label: {
+                    Label("pip", systemImage: "cube.box")
+                }
+
+                Picker(selection: Binding(
+                    get: { MirrorCatalog.current("npm").id },
+                    set: { id in
+                        if let m = MirrorCatalog.npm.first(where: { $0.id == id }) {
+                            MirrorCatalog.setCurrent("npm", m); applyMirrors()
+                        }
+                    }
+                )) {
+                    ForEach(MirrorCatalog.npm) { Text($0.displayName).tag($0.id) }
+                } label: {
+                    Label("npm", systemImage: "cube.box")
+                }
+
+                if !speedRows.isEmpty {
+                    ForEach(speedRows, id: \.0.id) { row in
+                        HStack {
+                            Text(row.0.name).font(.system(size: 14))
+                            Spacer()
+                            Text(String(format: "%.1fs", row.1))
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+            } header: {
+                Text("镜像")
+            }
+
+            // ── 环境预设（入口）──────────────────
+            Section {
+                NavigationLink {
+                    EnvironmentPresetsView()
+                } label: {
+                    row("环境预设", "Python · Node.js · Git · SSH · 网络 / 压缩工具", "square.stack.3d.up")
+                }
+            }
+        }
+        .navigationTitle("环境")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear(perform: refresh)
+        .sheet(isPresented: $mountPicker) {
+            DocumentFolderPicker { url in
+                let name = url.lastPathComponent
+                    .replacingOccurrences(of: " ", with: "_").lowercased()
+                let rc = ISH.mountExternal(hostPath: url.path, name: name)
+                if rc == 0 {
+                    mounts.append((name, url.path)); saveMounts()
+                    toast = "已挂载到 /mounts/\(name)"
+                } else { toast = "挂载失败 rc=\(rc)" }
+            }
+        }
+        .overlay(alignment: .bottom) { toastView }
+    }
+
+    // MARK: 组件
+
+    private func infoRow(_ label: String, _ value: String, check: Bool = false) -> some View {
+        HStack {
+            Text(label).foregroundColor(.primary)
+            Spacer()
+            Text(value).foregroundColor(.secondary)
+            if check {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(.green)
+            }
+        }
+    }
+
+    private func row(_ title: String, _ subtitle: String, _ icon: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 16)).foregroundColor(.primary).frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.system(size: 15)).foregroundColor(.primary)
+                Text(subtitle).font(.system(size: 11.5)).foregroundColor(.secondary).lineLimit(2)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var toastView: some View {
+        if let t = toast {
+            Text(t)
+                .font(.footnote)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .background(Capsule().fill(Color.black.opacity(0.78)))
+                .foregroundColor(.white)
+                .padding(.bottom, 24)
+                .onAppear {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+                        withAnimation { toast = nil }
+                    }
+                }
+        }
+    }
+
+    // MARK: 动作
+
+    private func refresh() {
+        booted = ISH.isBooted
+        version = ISH.runtimeVersion
+        size = ISH.rootfsSize
+        let ts = UserDefaults.standard.double(forKey: "ishInstalledAt")
+        installedAt = ts > 0 ? Date(timeIntervalSince1970: ts) : nil
+        loadMounts()
+    }
+
+    private func startSandbox() {
+        toast = "正在启动…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let rc = ISH.boot()
+            DispatchQueue.main.async {
+                refresh()
+                toast = rc == 0 ? "沙盒已就绪" : "启动失败 rc=\(rc)"
+            }
+        }
+    }
+
+    private func applyMirrors() {
+        let apk = MirrorCatalog.current("apk")
+        let pip = MirrorCatalog.current("pip")
+        let npm = MirrorCatalog.current("npm")
+        DispatchQueue.global(qos: .userInitiated).async {
+            _ = ISH.run("""
+            set -e
+            mkdir -p /etc/apk /etc/pip /root
+            printf '%s\\n%s\\n' '\(apk.base)v3.21/main' '\(apk.base)v3.21/community' > /etc/apk/repositories
+            printf '[global]\\nindex-url = \(pip.pipIndexURL())\\n' > /etc/pip.conf
+            printf 'registry=\(npm.npmRegistry)\\n' > /root/.npmrc
+            """, timeout: 30)
+            DispatchQueue.main.async { toast = "已切换源：\(apk.displayName)" }
+        }
+    }
+
+    private func runSpeedTest() {
+        speedBusy = true
+        speedRows = []
+        DispatchQueue.global(qos: .userInitiated).async {
+            let rows = MirrorCatalog.speedTest(MirrorCatalog.apk)
+            DispatchQueue.main.async {
+                speedRows = rows
+                speedBusy = false
+                if let best = rows.first {
+                    MirrorCatalog.setCurrent("apk", best.0)
+                    applyMirrors()
+                    toast = "已选最快：\(best.0.displayName)（\(String(format: "%.1fs", best.1))）"
+                } else {
+                    toast = "测速全部超时，保留当前源"
+                }
+            }
+        }
+    }
+
+    private func loadMounts() {
+        guard let arr = UserDefaults.standard.array(forKey: "ish.mounts") as? [[String: String]] else { return }
+        mounts = arr.compactMap { d in
+            guard let n = d["name"], let p = d["path"] else { return nil }
+            return (n, p)
+        }
+    }
+    private func saveMounts() {
+        UserDefaults.standard.set(mounts.map { ["name": $0.name, "path": $0.path] }, forKey: "ish.mounts")
+    }
+
+    private func relative(_ d: Date) -> String {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .full
+        f.locale = Locale(identifier: "zh_CN")
+        return f.localizedString(for: d, relativeTo: Date())
+    }
+}
+
+// MARK: - ② 环境预设
+
+struct EnvironmentPresetsView: View {
+    @ObservedObject private var installer = EnvironmentInstaller.shared
+    @State private var confirmReset = false
+    @State private var toast: String?
+
+    var body: some View {
+        List {
             Section {
                 ForEach(EnvDependency.allCases) { dep in
-                    Button {
-                        install(dep)
+                    NavigationLink {
+                        DependencyDetailView(dependency: dep)
                     } label: {
                         HStack(spacing: 10) {
                             Image(systemName: dep.icon)
-                                .font(.system(size: 15))
+                                .font(.system(size: 16))
                                 .foregroundColor(.primary)
                                 .frame(width: 24)
                             VStack(alignment: .leading, spacing: 2) {
@@ -47,172 +325,90 @@ struct EnvironmentView: View {
                                     .foregroundColor(.secondary)
                             }
                             Spacer()
-                            statusLabel(dep)
+                            statusText(dep)
                         }
                     }
-                    .buttonStyle(PlainButtonStyle())
                 }
                 Button {
-                    checkAll(force: true)
+                    installer.refresh()
                 } label: {
-                    Label(checking ? "检测中…" : "刷新工具状态", systemImage: "arrow.clockwise")
+                    HStack(spacing: 10) {
+                        Image(systemName: "arrow.clockwise").frame(width: 24)
+                        Text(installer.busy ? "检测中…" : "刷新工具状态")
+                        Spacer()
+                        if installer.busy { ProgressView().scaleEffect(0.7) }
+                    }
                 }
-                .disabled(checking || installing != nil)
+                .disabled(installer.busy)
             } header: {
                 Text("环境预设")
             } footer: {
-                Text("安装到共享沙盒，所有工作区均可使用。点一下即安装（apk add）。")
+                Text("安装到共享沙盒，所有工作区均可使用。")
                     .font(.caption2)
             }
 
-            // ── 环境 ────────────────────────────────
-            Section {
-                HStack(spacing: 10) {
-                    Image(systemName: "cube.box")
-                        .font(.system(size: 16)).foregroundColor(.primary).frame(width: 24)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Alpine \(rootfsVersion.isEmpty ? "—" : rootfsVersion) (iSH)")
-                            .font(.system(size: 15))
-                        Text(booted ? "就绪" : "未启动")
-                            .font(.system(size: 11.5)).foregroundColor(.secondary)
-                    }
-                    Spacer()
-                }
-                row("状态", booted ? "运行中" : (ISH.rootfsInstalled ? "已安装" : "未安装"))
-                row("大小", ISH.rootfsSize > 0 ? String(format: "%.2f MB", Double(rootfsSize) / 1048576) : "—")
-                row("架构", "arm64 · \(rootfsVersion.isEmpty ? "—" : rootfsVersion)")
-                Button {
-                    bootNow()
-                } label: {
-                    Label(booted ? "已启动" : "启动沙盒", systemImage: "play")
-                }
-                .disabled(booted)
-            } header: {
-                Text("环境")
-            }
-
-            // ── 浏览 ────────────────────────────────
             Section {
                 NavigationLink {
-                    GuestFilesystemView(path: "/")
+                    EnvVarsView()
                 } label: {
-                    Label("浏览文件系统", systemImage: "externaldrive")
-                }
-                Button {
-                    showMountPicker = true
-                } label: {
-                    Label("挂载外部文件夹", systemImage: "folder.badge.plus")
-                }
-                ForEach(mounts, id: \.path) { m in
-                    HStack {
-                        Image(systemName: "folder")
-                            .foregroundColor(.secondary).frame(width: 22)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(m.name).font(.system(size: 14))
-                            Text(m.path).font(.system(size: 10.5, design: .monospaced))
-                                .foregroundColor(.secondary).lineLimit(1)
+                    HStack(spacing: 10) {
+                        Image(systemName: "key").frame(width: 24)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("环境变量").font(.system(size: 15))
+                            Text("管理命令使用的变量与输出隐私")
+                                .font(.system(size: 11.5)).foregroundColor(.secondary)
                         }
-                        Spacer()
-                        Text("/mounts/\(m.name)")
-                            .font(.system(size: 10.5, design: .monospaced))
-                            .foregroundColor(.secondary)
                     }
                 }
             } header: {
-                Text("浏览")
-            } footer: {
-                Text("挂载后可访问目录会出现在沙盒的 /mounts/<name>，模型与终端都能读写。")
-                    .font(.caption2)
+                Text("环境变量")
             }
 
-            // ── 镜像 ────────────────────────────────
             Section {
                 Button {
-                    runSpeedTest()
+                    repair()
                 } label: {
-                    Label(speedTesting ? "测速中…" : "检测快速镜像", systemImage: "speedometer")
-                }
-                .disabled(speedTesting || installing != nil)
-
-                Picker("APK", selection: Binding(
-                    get: { UserDefaults.standard.string(forKey: apkMirrorKey) ?? "官方" },
-                    set: { v in
-                        UserDefaults.standard.set(v, forKey: apkMirrorKey)
-                        applyMirror()
-                    }
-                )) {
-                    ForEach(ISH.Mirror.allCases) { Text($0.rawValue).tag($0.rawValue) }
-                }
-                Picker("pip", selection: Binding(
-                    get: { UserDefaults.standard.string(forKey: pipMirrorKey) ?? "官方" },
-                    set: { v in
-                        UserDefaults.standard.set(v, forKey: pipMirrorKey)
-                        applyMirror()
-                    }
-                )) {
-                    ForEach(ISH.Mirror.allCases) { Text($0.rawValue).tag($0.rawValue) }
-                }
-                Picker("npm", selection: Binding(
-                    get: { UserDefaults.standard.string(forKey: npmMirrorKey) ?? "官方" },
-                    set: { v in
-                        UserDefaults.standard.set(v, forKey: npmMirrorKey)
-                        applyMirror()
-                    }
-                )) {
-                    ForEach(ISH.Mirror.allCases) { Text($0.rawValue).tag($0.rawValue) }
-                }
-
-                ForEach(speedRows, id: \.0) { row in
-                    HStack {
-                        Text(row.0).font(.system(size: 14))
-                        Spacer()
-                        Text(String(format: "%.1fs", row.1))
-                            .font(.system(size: 12, design: .monospaced))
-                            .foregroundColor(.secondary)
+                    HStack(spacing: 10) {
+                        Image(systemName: "wrench.and.screwdriver").frame(width: 24)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("修复").font(.system(size: 15)).foregroundColor(.primary)
+                            Text("重新校验并修补文件")
+                                .font(.system(size: 11.5)).foregroundColor(.secondary)
+                        }
                     }
                 }
-            } header: {
-                Text("镜像")
-            } footer: {
-                if !mirrorNote.isEmpty {
-                    Text(mirrorNote).font(.caption2)
-                } else {
-                    Text("改源会写入沙盒的 /etc/apk/repositories、/etc/pip.conf、/root/.npmrc。")
-                        .font(.caption2)
+                Button {
+                    installer.refresh()
+                    toast = "已重新检测环境"
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "arrow.triangle.2.circlepath").frame(width: 24)
+                        Text("检查更新").font(.system(size: 15)).foregroundColor(.primary)
+                    }
                 }
-            }
-
-            // ── 操作 ────────────────────────────────
-            Section {
                 Button(role: .destructive) {
-                    repairRootfs()
+                    confirmReset = true
                 } label: {
-                    Label("修复", systemImage: "wrench.and.screwdriver")
+                    HStack(spacing: 10) {
+                        Image(systemName: "trash").frame(width: 24)
+                        Text("重置").font(.system(size: 15))
+                    }
                 }
             } header: {
                 Text("操作")
             } footer: {
-                Text("重新校验并修补文件：会重新解压 Alpine rootfs（已装的包会丢失）。需完全退出 App 后重开生效。")
+                Text("环境是沙盒使用的 Linux 根文件系统。工作区单独存放，重置环境不会删除工作区文件。数据保存在本机已解压的 rootfs 中。")
                     .font(.caption2)
             }
         }
-        .navigationTitle("环境")
+        .navigationTitle("环境预设")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear(perform: refresh)
-        .sheet(isPresented: $showMountPicker) {
-            DocumentFolderPicker { url in
-                let name = url.lastPathComponent
-                    .replacingOccurrences(of: " ", with: "_")
-                    .lowercased()
-                let rc = ISH.mountExternal(hostPath: url.path, name: name)
-                if rc == 0 {
-                    mounts.append((name, url.path))
-                    saveMounts()
-                    toast = "已挂载到 /mounts/\(name)"
-                } else {
-                    toast = "挂载失败 rc=\(rc)"
-                }
-            }
+        .onAppear { installer.refresh() }
+        .alert("重置环境？", isPresented: $confirmReset) {
+            Button("取消", role: .cancel) {}
+            Button("重置", role: .destructive) { reset() }
+        } message: {
+            Text("会重新解压 Alpine rootfs，已安装的软件包会丢失。需要完全退出 App 后重开才能重新启动内核。")
         }
         .overlay(alignment: .bottom) {
             if let t = toast {
@@ -231,169 +427,202 @@ struct EnvironmentView: View {
         }
     }
 
-    // MARK: 行
-
-    private func row(_ label: String, _ value: String) -> some View {
-        HStack {
-            Text(label).foregroundColor(.primary)
-            Spacer()
-            Text(value).foregroundColor(.secondary).font(.system(size: 13))
-        }
-    }
-
     @ViewBuilder
-    private func statusLabel(_ dep: EnvDependency) -> some View {
-        if installing == dep {
+    private func statusText(_ dep: EnvDependency) -> some View {
+        if installer.installing == dep {
             HStack(spacing: 5) {
                 ProgressView().scaleEffect(0.7)
                 Text("安装中").font(.system(size: 12)).foregroundColor(.secondary)
             }
-        } else if let ok = deps[dep] {
-            if ok == true {
+        } else {
+            switch installer.status(dep) {
+            case .installed:
                 Image(systemName: "checkmark")
                     .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(.secondary)
-            } else {
+                    .foregroundColor(.green)
+            case .missing:
                 Text("未安装").font(.system(size: 12)).foregroundColor(.secondary)
-            }
-        } else {
-            Text("—").font(.system(size: 12)).foregroundColor(.secondary)
-        }
-    }
-
-    // MARK: 动作
-
-    private func refresh() {
-        booted = ISH.isBooted
-        rootfsVersion = ISH.runtimeVersion
-        rootfsSize = ISH.rootfsSize
-        loadMounts()
-        checkAll(force: false)
-    }
-
-    private func bootNow() {
-        toast = "正在启动…"
-        DispatchQueue.global(qos: .userInitiated).async {
-            let rc = ISH.boot()
-            DispatchQueue.main.async {
-                booted = ISH.isBooted
-                rootfsVersion = ISH.runtimeVersion
-                rootfsSize = ISH.rootfsSize
-                toast = rc == 0 ? "沙盒已就绪" : "启动失败 rc=\(rc)"
-                checkAll(force: true)
+            case .unknown:
+                Text("—").font(.system(size: 12)).foregroundColor(.secondary)
             }
         }
     }
 
-    private func checkAll(force: Bool) {
-        guard !checking else { return }
-        checking = true
-        DispatchQueue.global(qos: .userInitiated).async {
-            // 一次性把 6 个都探一遍，少起几次 shell
-            let cmd = EnvDependency.allCases
-                .map { "printf '%@=' \($0.rawValue); \($0.probe) >/dev/null 2>&1 && echo ok || echo missing" }
-                .joined(separator: "; ")
-            let out = ISH.run(cmd, timeout: 40).output
-            var result: [EnvDependency: Bool] = [:]
-            for line in out.components(separatedBy: "\n") {
-                let parts = line.components(separatedBy: "=")
-                guard parts.count == 2, let d = EnvDependency(rawValue: parts[0]) else { continue }
-                result[d] = parts[1].trimmingCharacters(in: .whitespaces) == "ok"
-            }
-            DispatchQueue.main.async {
-                deps = result
-                checking = false
-                booted = ISH.isBooted
-            }
-        }
-        _ = force
-    }
-
-    private func install(_ dep: EnvDependency) {
-        guard installing == nil else { return }
-        installing = dep
-        DispatchQueue.global(qos: .userInitiated).async {
-            let r = ISHEngine.apkAdd(dep.packages.components(separatedBy: " "), timeout: 240)
-            DispatchQueue.main.async {
-                installing = nil
-                if r.exitCode == 0 {
-                    deps[dep] = true
-                    toast = "\(dep.title) 已安装"
-                } else {
-                    deps[dep] = false
-                    toast = ISHEngine.installDiagnose(r.output, timedOut: r.timedOut, exitCode: r.exitCode)
-                }
-            }
-        }
-    }
-
-    private func applyMirror() {
-        let apk = UserDefaults.standard.string(forKey: apkMirrorKey) ?? "官方"
-        let pip = UserDefaults.standard.string(forKey: pipMirrorKey) ?? "官方"
-        let npm = UserDefaults.standard.string(forKey: npmMirrorKey) ?? "官方"
-        mirrorNote = "正在写入源配置…"
-        DispatchQueue.global(qos: .userInitiated).async {
-            if let m = ISH.Mirror(rawValue: apk) { ISH.applyMirror(m) }
-            // pip / npm 单独覆盖
-            var cmd = ""
-            if let m = ISH.Mirror(rawValue: pip) {
-                cmd += "mkdir -p /etc/pip; printf '[global]\\nindex-url = \(m.pipHost ?? "")\\n' > /etc/pip.conf; "
-            }
-            if let m = ISH.Mirror(rawValue: npm) {
-                cmd += "printf 'registry=\(m.npmRegistry)\\n' > /root/.npmrc; "
-            }
-            _ = ISH.run(cmd, timeout: 60)
-            DispatchQueue.main.async {
-                mirrorNote = "已应用：APK \(apk) · pip \(pip) · npm \(npm)"
-            }
-        }
-    }
-
-    private func runSpeedTest() {
-        speedTesting = true
-        speedRows = []
-        DispatchQueue.global(qos: .userInitiated).async {
-            let rows = ISH.speedTest().map { ($0.0.rawValue, $0.1) }
-            DispatchQueue.main.async {
-                speedRows = rows
-                speedTesting = false
-                if let best = rows.first { mirrorNote = "最快：\(best.0)（\(String(format: "%.1fs", best.1))）" }
-            }
-        }
-    }
-
-    private func repairRootfs() {
-        toast = "正在重装 rootfs…"
+    private func repair() {
+        toast = "正在修复…"
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 try ISH.repair()
-                DispatchQueue.main.async {
-                    toast = "已重装，请完全退出 App 后重开"
-                    rootfsSize = ISH.rootfsSize
-                }
+                DispatchQueue.main.async { toast = "已重装 rootfs，请完全退出 App 后重开" }
             } catch {
                 DispatchQueue.main.async { toast = error.localizedDescription }
             }
         }
     }
 
-    // MARK: 挂载记录
-
-    private func saveMounts() {
-        let arr = mounts.map { ["name": $0.name, "path": $0.path] }
-        UserDefaults.standard.set(arr, forKey: "ish.mounts")
-    }
-
-    private func loadMounts() {
-        guard let arr = UserDefaults.standard.array(forKey: "ish.mounts") as? [[String: String]] else { return }
-        mounts = arr.compactMap { d in
-            guard let n = d["name"], let p = d["path"] else { return nil }
-            return (n, p)
+    private func reset() {
+        toast = "正在重置…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try ISH.repair()
+                DispatchQueue.main.async {
+                    toast = "已重置，请完全退出 App 后重开"
+                    installer.refresh()
+                }
+            } catch {
+                DispatchQueue.main.async { toast = error.localizedDescription }
+            }
         }
     }
 }
 
-// MARK: - guest 文件系统浏览
+// MARK: - ③ 单个预设详情（Kelivo 的 Python 页）
+
+struct DependencyDetailView: View {
+    let dependency: EnvDependency
+    @ObservedObject private var installer = EnvironmentInstaller.shared
+    @State private var speedBusy = false
+    @State private var showLog = false
+
+    var body: some View {
+        List {
+            Section {
+                HStack(spacing: 10) {
+                    Image(systemName: dependency.icon)
+                        .font(.system(size: 20))
+                        .foregroundColor(.primary)
+                        .frame(width: 28)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(dependency.title).font(.system(size: 16))
+                        Text(dependency.subtitle)
+                            .font(.system(size: 12)).foregroundColor(.secondary)
+                    }
+                    Spacer()
+                    if installer.status(dependency) == .installed {
+                        Text("已安装").font(.system(size: 12)).foregroundColor(.secondary)
+                    } else {
+                        Text("未安装").font(.system(size: 12)).foregroundColor(.secondary)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+
+            Section {
+                Picker(selection: Binding(
+                    get: { MirrorCatalog.current("apk").id },
+                    set: { id in
+                        if let m = MirrorCatalog.apk.first(where: { $0.id == id }) {
+                            MirrorCatalog.setCurrent("apk", m)
+                        }
+                    }
+                )) {
+                    ForEach(MirrorCatalog.apk) { Text($0.displayName).tag($0.id) }
+                } label: {
+                    Label("APK", systemImage: "cube.box")
+                }
+                Picker(selection: Binding(
+                    get: { MirrorCatalog.current("pip").id },
+                    set: { id in
+                        if let m = MirrorCatalog.pip.first(where: { $0.id == id }) {
+                            MirrorCatalog.setCurrent("pip", m)
+                        }
+                    }
+                )) {
+                    ForEach(MirrorCatalog.pip) { Text($0.displayName).tag($0.id) }
+                } label: {
+                    Label("pip", systemImage: "cube.box")
+                }
+                Button {
+                    speedBusy = true
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let rows = MirrorCatalog.speedTest(MirrorCatalog.apk)
+                        DispatchQueue.main.async {
+                            speedBusy = false
+                            if let best = rows.first { MirrorCatalog.setCurrent("apk", best.0) }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "speedometer").frame(width: 24)
+                        Text(speedBusy ? "测速中…" : "检测快速镜像")
+                        Spacer()
+                        if speedBusy { ProgressView().scaleEffect(0.7) }
+                    }
+                }
+                .disabled(speedBusy)
+            } header: {
+                Text("软件包源")
+            } footer: {
+                Text("预设使用所选 apt/apk 源安装；pip 和 npm 源用于后续安装的软件包。")
+                    .font(.caption2)
+            }
+
+            Section {
+                if installer.installing == dependency {
+                    HStack(spacing: 8) {
+                        ProgressView().scaleEffect(0.8)
+                        Text("正在安装 \(dependency.packages)…")
+                            .font(.system(size: 13)).foregroundColor(.secondary)
+                    }
+                } else {
+                    Button {
+                        installer.install(dependency)
+                    } label: {
+                        HStack {
+                            Spacer()
+                            Image(systemName: "arrow.down.circle")
+                            Text(installer.status(dependency) == .installed ? "重新安装" : "安装")
+                                .font(.system(size: 16, weight: .medium))
+                            Spacer()
+                        }
+                        .padding(.vertical, 6)
+                    }
+                }
+
+                if installer.failure != nil, installer.installing == nil,
+                   installer.status(dependency) != .installed, !installer.log.isEmpty {
+                    Button {
+                        showLog = true
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "exclamationmark.triangle")
+                                .foregroundColor(.orange)
+                            Text(installer.diagnose(dependency))
+                                .font(.system(size: 12))
+                                .foregroundColor(.secondary)
+                                .lineLimit(3)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 11)).foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+        .navigationTitle(dependency.title)
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear { installer.refresh() }
+        .sheet(isPresented: $showLog) {
+            NavigationView {
+                ScrollView {
+                    Text(installer.log)
+                        .font(.system(size: 11, design: .monospaced))
+                        .padding()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .navigationTitle("安装日志")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("完成") { showLog = false }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// MARK: - 沙盒文件浏览
 
 struct GuestFilesystemView: View {
     let path: String
@@ -411,15 +640,9 @@ struct GuestFilesystemView: View {
                 if e.isDir {
                     NavigationLink {
                         GuestFilesystemView(path: join(path, e.name))
-                    } label: {
-                        entryRow(e)
-                    }
+                    } label: { entryRow(e) }
                 } else {
-                    Button {
-                        // 文件：预览文本
-                    } label: {
-                        entryRow(e)
-                    }
+                    entryRow(e)
                 }
             }
         }
@@ -439,9 +662,7 @@ struct GuestFilesystemView: View {
     private func entryRow(_ e: ISH.Entry) -> some View {
         HStack(spacing: 10) {
             Image(systemName: e.isDir ? "folder" : "doc")
-                .font(.system(size: 14))
-                .foregroundColor(.secondary)
-                .frame(width: 22)
+                .font(.system(size: 14)).foregroundColor(.secondary).frame(width: 22)
             Text(e.name).font(.system(size: 14)).lineLimit(1)
             Spacer()
             if !e.isDir {

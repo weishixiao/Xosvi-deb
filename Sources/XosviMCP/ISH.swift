@@ -115,6 +115,7 @@ enum ISH {
             }
         }
         UserDefaults.standard.set(bundledVersion, forKey: rootfsVersionKey)
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "ishInstalledAt")
         return true
     }
 
@@ -207,66 +208,7 @@ enum ISH {
         KelivoISHKernel.shared().bindUnmountPath("/mounts/\(name)")
     }
 
-    // MARK: 镜像源
-
-    enum Mirror: String, CaseIterable, Identifiable {
-        case ustc = "USTC"
-        case aliyun = "阿里云"
-        case tsinghua = "清华"
-        case official = "官方"
-        var id: String { rawValue }
-        var apkURL: String? {
-            switch self {
-            case .ustc: return "https://mirrors.ustc.edu.cn/alpine/v3.21/main"
-            case .aliyun: return "https://mirrors.aliyun.com/alpine/v3.21/main"
-            case .tsinghua: return "https://mirrors.tuna.tsinghua.edu.cn/alpine/v3.21/main"
-            case .official: return "https://dl-cdn.alpinelinux.org/alpine/v3.21/main"
-            }
-        }
-        var pipHost: String? {
-            switch self {
-            case .ustc: return "https://mirrors.ustc.edu.cn/pypi/simple"
-            case .aliyun: return "https://mirrors.aliyun.com/pypi/simple"
-            case .tsinghua: return "https://pypi.tuna.tsinghua.edu.cn/simple"
-            case .official: return "https://pypi.org/simple"
-            }
-        }
-        var npmRegistry: String {
-            switch self {
-            case .official: return "https://registry.npmjs.org"
-            default: return "https://registry.npmmirror.com"
-            }
-        }
-    }
-
-    static func applyMirror(_ m: Mirror) {
-        guard let apk = m.apkURL, let pip = m.pipHost else { return }
-        let repo = """
-        \(apk)
-        \(apk.replacingOccurrences(of: "/main", with: "/community"))
-        """
-        _ = run("""
-        set -e
-        printf '%s\\n' '\(repo)' > /etc/apk/repositories
-        mkdir -p /etc/pip
-        printf '[global]\\nindex-url = \(pip)\\n' > /etc/pip.conf
-        mkdir -p /root
-        printf 'registry=\(m.npmRegistry)\\n' > /root/.npmrc
-        apk update >/dev/null 2>&1 || true
-        """, timeout: 90)
-    }
-
-    /// 测速：返回每个镜像的耗时（秒），用于「检测快速镜像」
-    static func speedTest() -> [(Mirror, Double)] {
-        var rows: [(Mirror, Double)] = []
-        for m in Mirror.allCases {
-            guard let url = m.apkURL else { continue }
-            let start = CFAbsoluteTimeGetCurrent()
-            _ = run("wget -q -T 6 -O /dev/null '\(url)/APKINDEX.tar.gz' 2>/dev/null", timeout: 12)
-            rows.append((m, CFAbsoluteTimeGetCurrent() - start))
-        }
-        return rows.sorted { $0.1 < $1.1 }
-    }
+    // MARK: 镜像源（见 EnvironmentCore.swift 的 MirrorCatalog）
 
     // MARK: 文件系统浏览
 
@@ -298,72 +240,3 @@ enum ISH {
     }
 }
 
-// MARK: - 环境依赖（移植 Kelivo 的 6 个预设）
-
-enum EnvDependency: String, CaseIterable, Identifiable {
-    case python, node, git, ssh, network, archive
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .python: return "Python"
-        case .node: return "Node.js"
-        case .git: return "Git"
-        case .ssh: return "SSH"
-        case .network: return "网络工具"
-        case .archive: return "压缩工具"
-        }
-    }
-    var subtitle: String {
-        switch self {
-        case .python: return "Python、pip 和虚拟环境"
-        case .node: return "Node.js 和 npm"
-        case .git: return "克隆仓库与版本管理"
-        case .ssh: return "SSH、SCP、SFTP 与密钥生成"
-        case .network: return "curl · wget"
-        case .archive: return "zip · unzip"
-        }
-    }
-    var icon: String {
-        switch self {
-        case .python: return "chevron.left.forwardslash.chevron.right"
-        case .node: return "cube"
-        case .git: return "point.topleft.down.curvedto.point.bottomright.up"
-        case .ssh: return "key"
-        case .network: return "globe"
-        case .archive: return "archivebox"
-        }
-    }
-    /// apk 包名（对应 Kelivo 的 alpine: true 分支）
-    var packages: String {
-        switch self {
-        case .python: return "python3 py3-pip py3-virtualenv"
-        case .node: return "nodejs npm"
-        case .git: return "git"
-        case .ssh: return "openssh-client"
-        case .network: return "curl wget"
-        case .archive: return "zip unzip"
-        }
-    }
-    /// 检测是否已装
-    var probe: String {
-        switch self {
-        case .python: return "python3 --version"
-        case .node: return "node --version"
-        case .git: return "git --version"
-        case .ssh: return "ssh -V"
-        case .network: return "curl --version"
-        case .archive: return "unzip -v"
-        }
-    }
-}
-
-// MARK: - 轻量日志
-
-enum Log {
-    static func browser(_ msg: String) {
-        #if DEBUG
-        print("[ISH] \(msg)")
-        #endif
-    }
-}
