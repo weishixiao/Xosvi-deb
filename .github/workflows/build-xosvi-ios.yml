@@ -595,7 +595,10 @@ jobs:
           ./prepare_alpine_rootfs.sh
           echo "=== sandbox artifacts ==="
           ls -la build/iphoneos/ 2>/dev/null | head
-          du -sh build include resources 2>/dev/null
+          # include 在 build/ 下面（OUTPUT_INCLUDE=$OUTPUT_DIR/include），别写成 Sandbox/include
+          du -sh build build/include resources 2>/dev/null || true
+          test -f build/iphoneos/libish.a || { echo "!! libish.a 缺失"; exit 1; }
+          test -d build/include/ish || { echo "!! ish 头文件缺失"; exit 1; }
 
       - name: Prepare iSH rootfs zip
         # 缓存命中时 build/ 已就绪，但 rootfs zip 体积大不进缓存 → 每次单独准备
