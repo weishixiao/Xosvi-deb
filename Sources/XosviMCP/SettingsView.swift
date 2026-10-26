@@ -209,6 +209,11 @@ struct SettingsView: View {
                              subtitle: "服务商 / API Key / 自动读全文",
                              icon: "magnifyingglass", color: .gray,
                              destination: AnyView(WebSearchSettingsView())),
+                // v7.6.0：环境（移植 Kelivo 的 Environment 页：环境预设 / 镜像 / 挂载 / 修复）
+                SettingsItem(title: "环境",
+                             subtitle: "Python · Node · Git · 镜像 · 挂载",
+                             icon: "cube.box", color: .gray,
+                             destination: AnyView(EnvironmentView())),
                 // v7.5.0：工作区（移植 Kelivo workspace）
                 SettingsItem(title: "工作区",
                              subtitle: "绑定目录 · 命令执行 · 文件读写",

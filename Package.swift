@@ -20,7 +20,27 @@ let package = Package(
         .package(url: "https://github.com/p-x9/MachOKit.git", from: "0.55.0")
     ],
     targets: [
-        // v7.3.0：CISH（iSH 引擎 C 包装层）已移除——引擎在 arm64 上反复段错误，整套下掉。
+        // v7.6.0：iSH 沙盒桥接层（移植自 Kelivo 的 ios/Runner/Workspace/KelivoISH*）
+        // 产物由 Sandbox/build_ish.sh 生成到 Sandbox/build/{include,iphoneos}，
+        // 构建设置与 Kelivo 的 Xcode 配置保持一致（ISH_INTERNAL / GUEST_ARM64）。
+        .target(
+            name: "ISHBridge",
+            path: "Sources/ISHBridge",
+            publicHeadersPath: ".",
+            cSettings: [
+                .headerSearchPath("../../Sandbox/build/include"),
+                .headerSearchPath("../../Sandbox/build/include/ish"),
+                .define("ISH_INTERNAL", to: "1"),
+                .define("GUEST_ARM64", to: "1")
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L", "Sandbox/build/iphoneos", "-ObjC"]),
+                .linkedLibrary("ish"),
+                .linkedLibrary("ish_emu"),
+                .linkedLibrary("fakefs"),
+                .linkedLibrary("sqlite3")
+            ]
+        ),
         // v3.3.0：MITM 内核 C 桥接层（OpenSSL）。依赖 scripts/build-openssl.sh 产出的 openssl-stage/
         .target(
             name: "CMitm",
@@ -134,6 +154,7 @@ let package = Package(
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
                 // v6.8.0：Mach-O 静态解析（macho 工具的后端）
                 .product(name: "MachOKit", package: "MachOKit"),
+                "ISHBridge",
                 "MitmCore",
                 "CMitm",
                 "CLaunch",
