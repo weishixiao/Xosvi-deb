@@ -290,6 +290,7 @@ struct SettingsView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .deepseekList()
         .actionSheet(isPresented: $showLanguagePicker) {
             ActionSheet(
                 title: Text(L10n.t("row_lang")),

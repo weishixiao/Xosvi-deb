@@ -156,6 +156,7 @@ struct FakeDeviceView: View {
             }
         }
         .navigationTitle("设备伪装")
+        .deepseekPage()
         .navigationBarTitleDisplayMode(.inline)
     }
 

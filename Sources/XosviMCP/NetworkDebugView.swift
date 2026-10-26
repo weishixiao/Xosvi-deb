@@ -128,6 +128,7 @@ struct NetworkDebugView: View {
             }
         }
         .navigationTitle(L10n.t("page_netlog"))
+        .deepseekPage()
         .navigationBarTitleDisplayMode(.inline)
     }
 

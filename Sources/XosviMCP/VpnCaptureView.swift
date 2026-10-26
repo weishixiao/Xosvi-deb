@@ -17,11 +17,11 @@ struct VpnCaptureView: View {
                 HStack(spacing: 14) {
                     ZStack {
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .fill(Color.tmCyan.opacity(0.15))
+                            .fill(Color(UIColor.tertiarySystemFill))
                             .frame(width: 50, height: 50)
                         Image(systemName: "antenna.radiowaves.left.and.right")
                             .font(.system(size: 22, weight: .semibold))
-                            .foregroundColor(.tmCyan)
+                            .foregroundColor(.primary)
                     }
                     VStack(alignment: .leading, spacing: 3) {
                         Text("抓包 VPN")
@@ -43,7 +43,7 @@ struct VpnCaptureView: View {
                             }
                         }))
                     .labelsHidden()
-                    .tint(.tmCyan)
+                    .tint(DoubaoTheme.accent)
                 }
                 .padding(.vertical, 4)
             }
@@ -118,6 +118,7 @@ struct VpnCaptureView: View {
             }
         }
         .navigationTitle("抓包 VPN")
+        .deepseekPage()
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { refresh() }
     }
@@ -176,7 +177,7 @@ struct VpnCaptureView: View {
                 .font(.system(size: 12, weight: .bold))
                 .foregroundColor(.white)
                 .frame(width: 22, height: 22)
-                .background(Circle().fill(Color.tmCyan))
+                .background(Circle().fill(Color.primary))
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.subheadline)

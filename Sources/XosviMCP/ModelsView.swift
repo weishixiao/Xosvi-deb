@@ -62,6 +62,7 @@ struct ModelsView: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
         }
         .navigationTitle("模型 API")
         .toolbar {
@@ -203,8 +204,8 @@ struct ModelRow: View {
                         Text(L10n.t("ui_144"))
                             .font(.caption2)
                             .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(Color.blue.opacity(0.15))
-                            .foregroundColor(.blue)
+                            .background(Color(UIColor.tertiarySystemFill))
+                            .foregroundColor(.secondary)
                             .cornerRadius(4)
                     }
                     if info.state != .closed {
@@ -607,6 +608,7 @@ struct ModelEditorView: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .navigationTitle(config == nil ? "添加模型" : name)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -866,11 +868,11 @@ struct QuickConfigPicker: View {
                     HStack(spacing: 12) {
                         ZStack {
                             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color.blue)
+                                .fill(Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.24, alpha: 1) : UIColor(white: 0.92, alpha: 1) }))
                                 .frame(width: 34, height: 34)
                             Image(systemName: "sparkles")
                                 .font(.system(size: 17, weight: .semibold))
-                                .foregroundColor(.white)
+                                .foregroundColor(.primary)
                         }
                         VStack(alignment: .leading, spacing: 2) {
                             Text(preset.name)
@@ -885,6 +887,7 @@ struct QuickConfigPicker: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .navigationTitle("供应商快速配置")
             .toolbar {
                 Button("关闭") { presentationMode.wrappedValue.dismiss() }
@@ -920,6 +923,7 @@ struct ModelPickerSheet: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .navigationTitle("选择模型")
             .toolbar {
                 Button("关闭") { presentationMode.wrappedValue.dismiss() }
@@ -977,7 +981,7 @@ struct UsageStatsView: View {
                                         .foregroundColor(.secondary)
                                 }
                                 ProgressView(value: row.total > 0 ? Double(row.ok) / Double(row.total) : 0)
-                                    .accentColor(.green)
+                                    .accentColor(DoubaoTheme.accent)
                             }
                             .padding(.vertical, 2)
                         }
@@ -993,6 +997,7 @@ struct UsageStatsView: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .navigationTitle("用量统计")
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {

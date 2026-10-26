@@ -61,7 +61,7 @@ struct AppCleanupView: View {
                 VStack(spacing: 12) {
                     Image(systemName: "sparkles.rectangle.stack")
                         .font(.system(size: 44))
-                        .foregroundColor(.tmCyan)
+                        .foregroundColor(.primary)
                     Text(L10n.t("ui_160", name))
                         .font(.headline)
                     Text(L10n.t("ui_123"))
@@ -72,8 +72,8 @@ struct AppCleanupView: View {
                         Label("开始扫描", systemImage: "magnifyingglass")
                             .font(.headline)
                             .padding(.horizontal, 28).padding(.vertical, 10)
-                            .background(Color.tmCyan)
-                            .foregroundColor(.white)
+                            .background(Color.primary)
+                            .foregroundColor(Color(UIColor.systemBackground))
                             .clipShape(Capsule())
                     }
                 }
@@ -95,7 +95,7 @@ struct AppCleanupView: View {
                     Button("重试") { scan() }
                         .font(.headline)
                         .padding(.horizontal, 24).padding(.vertical, 8)
-                        .background(Color.tmCyan).foregroundColor(.white)
+                        .background(Color.primary).foregroundColor(Color(UIColor.systemBackground))
                         .clipShape(Capsule())
                 }
                 Spacer()
@@ -161,6 +161,7 @@ struct AppCleanupView: View {
                     }
                 }
                 .listStyle(.insetGrouped)
+        .deepseekList()
                 .refreshable { scan() }
             }
         }

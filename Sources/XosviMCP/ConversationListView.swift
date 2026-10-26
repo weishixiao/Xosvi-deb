@@ -74,6 +74,33 @@ enum DoubaoTheme {
     }
 }
 
+// MARK: - v7.4.0 设置二级页统一样式（DeepSeek 黑白简洁）
+
+/// 所有「设置 → 某功能」的二级页面统一套这个：
+/// - 底色跟主界面一致（浅色白 / 深色近黑），不再是系统分组灰
+/// - 强调色统一 DeepSeek 蓝，不再让各页自己用 .blue/.green 拼色
+/// - 列表行背景用卡片色，分隔线压得很淡
+extension View {
+    func deepseekPage() -> some View {
+        self
+            .tint(DoubaoTheme.accent)
+            .background(DoubaoTheme.bg.ignoresSafeArea())
+    }
+
+    /// 二级页里的分组列表（scrollContentBackground 需 iOS16+，低版本忽略）
+    @ViewBuilder
+    func deepseekList() -> some View {
+        if #available(iOS 16.0, *) {
+            self
+                .scrollContentBackground(.hidden)
+                .background(DoubaoTheme.bg)
+                .listRowBackground(DoubaoTheme.card)
+        } else {
+            self
+        }
+    }
+}
+
 // MARK: - 列表页
 
 struct ConversationListView: View {

@@ -107,6 +107,7 @@ struct AboutAuthorView: View {
             }
         }
         .navigationTitle(L10n.t("about_title"))
+        .deepseekPage()
         .navigationBarTitleDisplayMode(.inline)
     }
 

@@ -160,6 +160,7 @@ struct RemoteControlView: View {
             }
         }
         .navigationTitle(L10n.t("page_remote"))
+        .deepseekPage()
         .navigationBarTitleDisplayMode(.inline)
     }
 

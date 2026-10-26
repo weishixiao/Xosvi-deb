@@ -279,6 +279,7 @@ struct AuditLogView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .deepseekList()
     }
 
     // MARK: Tab2 健康度——失败归因（用户/AI 都能看到"哪些工具有问题、为什么"）
@@ -356,6 +357,7 @@ struct AuditLogView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .deepseekList()
     }
 
     // MARK: Tab3 文件日志（按天滚动，读当天）
@@ -481,6 +483,7 @@ struct BuildView: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .navigationTitle("编译")
         }
         .navigationViewStyle(.stack)
@@ -518,6 +521,7 @@ struct SystemCapabilitiesView: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
         }
         .background(Color(.systemGroupedBackground))
         .navigationTitle(L10n.t("page_capabilities"))
@@ -740,7 +744,7 @@ struct ToolPermissionPoliciesView: View {
                 // v2.9.23：并入原"本机工具审计"的过滤
                 Section(header: SettingSectionHeader(title: "过滤")) {
                     Toggle("仅显示真实实现", isOn: $showOnlyReal)
-                        .accentColor(.tmCyan)
+                        .accentColor(DoubaoTheme.accent)
                     Text(L10n.t("ui_17"))
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -796,10 +800,10 @@ struct ToolPermissionPoliciesView: View {
                                     Text(L10n.t("ui_56"))
                                         .font(.caption2)
                                         .fontWeight(.semibold)
-                                        .foregroundColor(.blue)
+                                        .foregroundColor(.secondary)
                                         .padding(.horizontal, 8)
                                         .padding(.vertical, 3)
-                                        .background(Color.blue.opacity(0.12))
+                                        .background(Color(UIColor.tertiarySystemFill))
                                         .cornerRadius(6)
                                 } else {
                                     Text(L10n.t("ui_70"))
@@ -818,6 +822,7 @@ struct ToolPermissionPoliciesView: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
         }
         .background(Color(.systemGroupedBackground))
         .navigationTitle(L10n.t("page_tool_policy"))
@@ -898,6 +903,7 @@ struct DataManagementView: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .toolbar {
                 Button(action: refresh) { Image(systemName: "arrow.clockwise") }
             }
@@ -1023,7 +1029,7 @@ struct DeveloperInstructionsView: View {
                                 Button(action: { toggleEnabled(item) }) {
                                     Image(systemName: item.enabled ? "checkmark.circle.fill" : "circle")
                                         .font(.system(size: 24))
-                                        .foregroundColor(item.enabled ? .tmCyan : Color(.systemGray4))
+                                        .foregroundColor(item.enabled ? DoubaoTheme.accent : Color(.systemGray4))
                                         .frame(width: 44, height: 44)
                                         .contentShape(Rectangle())
                                 }
@@ -1073,6 +1079,7 @@ struct DeveloperInstructionsView: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .onAppear(perform: reload)
             .toolbar {
                 Button(action: { creating = true }) { Image(systemName: "plus") }
@@ -1326,6 +1333,7 @@ struct KnowledgeBaseView: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .toolbar {
                 Button(action: refresh) { Image(systemName: "arrow.clockwise") }
             }
@@ -1448,6 +1456,7 @@ struct WebhooksView: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
         }
         .background(Color(.systemGroupedBackground))
         .navigationTitle(L10n.t("page_webhooks"))
@@ -1507,7 +1516,7 @@ struct AgentsAndSkillsView: View {
                 icon: "person.2.fill",
                 title: L10n.t("page_agents"),
                 subtitle: L10n.t("page_agents_sub"),
-                colors: [.tmCyan, .blue]
+                colors: [Color(white: 0.35), Color(white: 0.55)]
             )
             .padding(.vertical, 8)
 
@@ -1534,7 +1543,7 @@ struct AgentsAndSkillsView: View {
                                     set: { SkillStore.shared.setEnabled(s.name, $0); reload() }
                                 ))
                                 .labelsHidden()
-                                .accentColor(.tmCyan)
+                                .accentColor(DoubaoTheme.accent)
                                 .frame(width: 46)
                                 Button(action: {
                                     SkillStore.shared.delete(named: s.name)
@@ -1580,6 +1589,7 @@ struct AgentsAndSkillsView: View {
                 }
             }
             .listStyle(.insetGrouped)
+        .deepseekList()
             .onAppear {
                 SkillStore.shared.seedIfEmpty()
                 reload()

@@ -61,6 +61,7 @@ struct EnvVarsView: View {
             }
         }
         .navigationTitle("环境变量")
+        .deepseekPage()
     }
 
     private func addVar() {

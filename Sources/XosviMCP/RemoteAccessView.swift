@@ -44,6 +44,7 @@ struct RemoteAccessView: View {
             }
         }
         .navigationTitle("远程访问")
+        .deepseekPage()
         .onAppear {
             terminalRunning = RemoteTerminalServer.shared.isRunning
         }
