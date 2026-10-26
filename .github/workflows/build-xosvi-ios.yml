@@ -926,9 +926,6 @@ jobs:
           name: native-llvm
           path: llvm-out/*
           if-no-files-found: warn
-    runs-on: macos-latest
-    timeout-minutes: 25
-    steps:
       - uses: actions/checkout@v4
 
       - uses: actions/cache@v4
