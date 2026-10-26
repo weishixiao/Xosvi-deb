@@ -573,7 +573,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: Sandbox/build
-          key: ish-sandbox-${{ hashFiles('Sandbox/build_ish.sh', 'Sandbox/patches/*.patch', 'Sandbox/overlay/**') }}-v2
+          key: ish-sandbox-${{ hashFiles('Sandbox/build_ish.sh', 'Sandbox/patches/*.patch', 'Sandbox/overlay/**') }}-v3
 
       - name: Build iSH sandbox
         if: steps.cache-sandbox.outputs.cache-hit != 'true'
@@ -593,17 +593,7 @@ jobs:
           chmod +x build_ish.sh prepare_alpine_rootfs.sh
           ./build_ish.sh iphoneos
           ./prepare_alpine_rootfs.sh
-          # fakefsify 链的是 Homebrew 的 libarchive 动态库；缓存命中那轮没装 libarchive 时
-          # 运行会直接 Abort（上次构建就是这样挂的：Library not loaded libarchive.13.dylib）。
-          # 这里把依赖的 dylib 一起收进 build/lib 并改写成 @loader_path，做到自包含。
-          mkdir -p build/lib
-          for dylib in /opt/homebrew/opt/libarchive/lib/libarchive*.dylib; do
-            [ -e "$dylib" ] || continue
-            cp -f "$dylib" build/lib/ || true
-            base=$(basename "$dylib")
-            install_name_tool -change "$dylib" "@loader_path/lib/$base" build/fakefsify 2>/dev/null || true
-            install_name_tool -id "@loader_path/lib/$base" "build/lib/$base" 2>/dev/null || true
-          done
+          bash "$GITHUB_WORKSPACE/scripts/fix-fakefsify-deps.sh"
           echo "=== fakefsify 依赖 ==="
           otool -L build/fakefsify 2>/dev/null | head -8 || true
 
@@ -619,10 +609,16 @@ jobs:
         run: |
           cd Sandbox
           chmod +x build_ish.sh prepare_alpine_rootfs.sh || true
-          # 兜底：若 fakefsify 仍指向 /opt/homebrew 且该路径不存在，先补依赖
-          if [ -f build/fakefsify ] && [ -d build/lib ]; then
-            export DYLD_LIBRARY_PATH="$PWD/build/lib:$DYLD_LIBRARY_PATH"
+          # 缓存命中路径：这个 job 上一步被 skip，没有装 meson/ninja/libarchive，也没有修依赖。
+          # fakefsify 因此会在 rootfs 阶段 Abort trap 6（Library not loaded: libb2.1.dylib，
+          # 由 libarchive.13.dylib 间接依赖）。这里补装 + 统一走依赖自包含脚本。
+          brew install libarchive brotli libb2 xz zstd lz4 openssl@3 >/dev/null 2>&1 || true
+          if [ ! -x build/fakefsify ]; then
+            echo "!! fakefsify 缺失（缓存损坏？）——清缓存或重跑 Build iSH sandbox"
+            exit 1
           fi
+          bash "$GITHUB_WORKSPACE/scripts/fix-fakefsify-deps.sh"
+          export DYLD_LIBRARY_PATH="$PWD/build/lib:$DYLD_LIBRARY_PATH"
           if [ ! -f resources/alpine-rootfs.zip ]; then
             ./prepare_alpine_rootfs.sh
           fi
