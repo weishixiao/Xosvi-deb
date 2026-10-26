@@ -209,6 +209,11 @@ struct SettingsView: View {
                              subtitle: "服务商 / API Key / 自动读全文",
                              icon: "magnifyingglass", color: .gray,
                              destination: AnyView(WebSearchSettingsView())),
+                // v7.8.0：深度思考（方言 / 采样策略 / 回传 / token 预算）
+                SettingsItem(title: "深度思考",
+                             subtitle: "参数方言 · 采样策略 · token 预算",
+                             icon: "brain", color: .gray,
+                             destination: AnyView(ReasoningSettingsView())),
                 // v7.6.0：环境（移植 Kelivo 的 Environment 页：环境预设 / 镜像 / 挂载 / 修复）
                 SettingsItem(title: "环境",
                              subtitle: "Python · Node · Git · 镜像 · 挂载",

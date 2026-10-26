@@ -637,10 +637,15 @@ struct ChatView: View {
                         thinkEnabled.toggle()
                     }
                     .contextMenu {
-                        ForEach(0..<5, id: \.self) { i in
-                            Button(String(repeating: "●", count: i + 1) + " " + reasoningNames[i]) {
-                                reasoning = i
-                                thinkEnabled = true
+                        ForEach(ReasoningLevel.allCases) { level in
+                            Button {
+                                ReasoningSettings.shared.level = level
+                                ReasoningSettings.shared.enabled = (level != .off)
+                                reasoning = level.legacyIndex
+                                thinkEnabled = (level != .off)
+                            } label: {
+                                Label(level.displayName,
+                                      systemImage: ReasoningSettings.shared.level == level ? "checkmark" : "")
                             }
                         }
                         Divider()
@@ -717,12 +722,12 @@ struct ChatView: View {
     }
 
     /// v6.9.15：推理档位名（思考胶囊长按菜单用）
-    private var reasoningNames: [String] { ["低", "中", "高", "最高", "极限"] }
+    /// v7.8.0：档位改用 ReasoningLevel（自动/关/最低/低/中/高/最高/极限）
+    private var reasoningNames: [String] { ReasoningLevel.allCases.map { $0.displayName } }
 
     private func reasoningLabel() -> String {
-        // v4.3.40：档位扩为 低/中/高/最高/极限——最高档=xhigh, 极限档=max (破甲站 gpt-6.1-sol 实测支持 low/medium/high/xhigh/max)
-        let labels = ["低", "中", "高", "最高", "极限"]
-        return reasoning >= 0 && reasoning < labels.count ? labels[reasoning] : "高"
+        // v7.8.0：直接读 ReasoningSettings（兼容旧 chat_reasoning 整数）
+        ReasoningSettings.shared.level.displayName
     }
 
     /// v3.3.4：+ 展开的快捷附件行（应用 / 相册 / 文件 / 浏览器），对齐微信式附件栏
@@ -1656,6 +1661,14 @@ struct MessageBubble: View {
     private var thinkingExpanded: Bool {
         isStreaming ? true : expandedToolIds.contains(message.id.uuidString)
     }
+    /// v7.7.0：ReasoningBlock 需要可写绑定（原 thinkingExpanded 是只读计算属性）
+    private var thinkingExpandedBinding: Binding<Bool> {
+        Binding(get: { thinkingExpanded },
+                set: { newValue in
+                    if newValue != thinkingExpanded { toggleThinking() }
+                })
+    }
+
     private func toggleThinking() {
         let id = message.id.uuidString
         if expandedToolIds.contains(id) { expandedToolIds.remove(id) }
@@ -1942,43 +1955,10 @@ struct MessageBubble: View {
 
     /// v2.9.20：思考记录（reasoning）折叠视图
     private func thinkingView(_ text: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Button(action: { withAnimation { toggleThinking() } }) {
-                HStack(spacing: 6) {
-                    Image(systemName: thinkingExpanded ? "chevron.down.circle" : "chevron.right.circle")
-                        .font(.system(size: 14))
-                    // v3.5.4：思考中→"思考中…"；思考完→"已深度思考 N 字"(业界一致)
-                    Text(isStreaming ? "思考中…" : "已深度思考 \(text.count) 字")
-                        .font(.system(size: 13))
-                        .foregroundColor(.secondary)
-                    Spacer()
-                    if thinkingExpanded {
-                        Button(action: { UIPasteboard.general.string = text }) {
-                            Image(systemName: "doc.on.doc")
-                                .font(.system(size: 13))
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-            if thinkingExpanded {
-                // v6.5.6：思考区固定高度 + 内部滚动（对齐 OpenMinis 固定思考区）——
-                // 旧实现文本多长就撑多高，长思考内容让会话页布局越来越卡。
-                ScrollView(.vertical, showsIndicators: true) {
-                    Text(text)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(height: min(max(CGFloat(text.count) * 0.5, 80), 220))
-                .background(Color(UIColor.tertiarySystemFill))
-                .cornerRadius(8)
-            }
-        }
-        .padding(.horizontal, 6)
-        .padding(.bottom, 4)
+        // v7.7.0：统一走 ReasoningBlock（preview 渐变折叠 / 展开全量 + 代码块渲染）
+        ReasoningBlock(text: text, isStreaming: isStreaming, expanded: thinkingExpandedBinding)
+            .padding(.horizontal, 6)
+            .padding(.bottom, 4)
     }
 
     /// v2.9.10：data URL → UIImage
@@ -2043,32 +2023,10 @@ struct MessageBubble: View {
 
     // 📝 思考过程迷你气泡
     private func thinkingMiniBubble(_ text: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Button(action: { withAnimation { toggleThinking() } }) {
-                HStack(spacing: 6) {
-                    Image(systemName: "brain.head.profile")
-                        .font(.system(size: 13))
-                        .foregroundColor(.secondary)
-                    Text(isStreaming ? "思考中…" : "已深度思考 \(text.count) 字")
-                        .font(.system(size: 13))
-                        .foregroundColor(.secondary)
-                    Spacer()
-                }
-            }
-            .buttonStyle(.plain)
-            if thinkingExpanded {
-                Text(text)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(UIColor.tertiarySystemFill))
-                    .cornerRadius(8)
-            }
-        }
+        // v7.7.0：与正文里的思考块同一套渲染
+        ReasoningBlock(text: text, isStreaming: isStreaming, expanded: thinkingExpandedBinding)
     }
 
-    // ✅ 工具结果迷你气泡
     private var toolResultMiniBubble: some View {
         VStack(alignment: .leading, spacing: 4) {
             Button(action: { withAnimation { if !message.isRunning { expanded.toggle() } } }) {

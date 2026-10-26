@@ -424,15 +424,17 @@ final class OpenAIClient {
                 let hasReasoningText = (msgDict?["reasoning_content"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
                 let ctd = (json["usage"] as? [String: Any])?["completion_tokens_details"] as? [String: Any]
                 let reasoningTokens = ctd?["reasoning_tokens"] as? Int ?? 0
-                let lowMid = (self.currentReasoningLevel == 0 || self.currentReasoningLevel == 1)
+                // v7.8.0：档位改由 ReasoningSettings 统一管理，自动升档也走它
+                let curLevel = ReasoningSettings.shared.level
+                let lowMid = (curLevel == .low || curLevel == .medium || curLevel == .minimal)
                 if !hasReasoningText, reasoningTokens <= 0, lowMid, !self.didAutoEscalateReasoning {
                     self.didAutoEscalateReasoning = true
-                    let saved = self.currentReasoningLevel
-                    self.currentReasoningLevel = 4   // v4.3.40：升到极限档 max (破甲站支持, 思考最多)
+                    let saved = ReasoningSettings.shared.level
+                    ReasoningSettings.shared.level = .max   // 升到极限档重试一次
                     NetworkLog.shared.log("\(self.config.name): 低/中档响应无思考痕迹 (reasoning_tokens=\(reasoningTokens))，自动升为 max 重试")
                     onStatus?("该中转低/中档未触发思考，已自动升为最高档重试…")
                     self.attempt(level: level, isFirst: false, messages: messages, tools: tools, onStatus: onStatus, onDelta: onDelta, onThinking: onThinking, avoidL5: avoidL5, completion: completion)
-                    self.currentReasoningLevel = saved
+                    ReasoningSettings.shared.level = saved
                     return
                 }
                 if level != self.currentCompatLevel {
@@ -543,7 +545,12 @@ final class OpenAIClient {
         // 低档仍比 none 有思考但显著提速；中档为默认。
         // 级别 4 (最小载荷）不带该字段——若中转连这个字段都不认，还有最后一级兜底。
         if config.isReasoningModel {
-            body["reasoning_effort"] = reasoningEffortName()
+            // v7.8.0：改成「按模型选方言」写法（移植 Kelivo 的 reasoning_dialects）
+            // —— 原来是硬写 reasoning_effort，Anthropic/Gemini/Qwen 全都不适配。
+            let spec = ReasoningSettings.shared.spec(for: config.model, protocol: config.apiProtocol)
+            let wanted = ReasoningSettings.shared.effectiveLevel
+            let applied = ReasoningWriter.apply(&body, spec: spec, level: wanted, transport: config.apiProtocol)
+            ReasoningWriter.applySamplingPolicy(&body, spec: spec, effective: applied, transport: config.apiProtocol)
             // v3.1.74：思考/回复语言跟随 App 设置 (设置 → 语言），不再硬编码中文
             // v3.1.33 曾强制简体中文思考；现在按 LanguageManager.shared.language 动态下发
             // v3.5.11：追加"先解说后执行"指令（对齐 Codex/Claude Code 一次流式先思考后行动）——
@@ -1069,6 +1076,12 @@ final class OpenAIClient {
             "max_tokens": config.maxTokens,
             "messages": trimmedMessages(messages).map { messageDict($0) }
         ]
+        // v7.8.0：Anthropic 也支持思考了——原来这里一个 thinking 参数都没有，
+        // 用 Claude 时永远不思考。按方言写 thinking / budget_tokens，并按策略剥离温度类参数。
+        let anthSpec = ReasoningSettings.shared.spec(for: config.model, protocol: "Anthropic Messages")
+        let anthApplied = ReasoningWriter.apply(&body, spec: anthSpec, level: ReasoningSettings.shared.effectiveLevel,
+                                                transport: "Anthropic Messages")
+        ReasoningWriter.applySamplingPolicy(&body, spec: anthSpec, effective: anthApplied, transport: "Anthropic Messages")
         // v2.9.175：Anthropic 协议也传工具 (此前完全没传 tools，AI 一个 schema 都看不到，
         // 只能靠 system prompt 文字描述脑补工具名——"app.decrypt 够不到"的根因之一）。
         // OpenAI function schema → Anthropic tools 格式转换。
