@@ -63,6 +63,36 @@ final class ToolInstallTool: MCPTool {
                 "hint": "可用的是 App 内置原生工具（lua/node/r2/cstool/jq/bsdtar/llvm-*/jtool2 等）与内置 python3。\n需要额外命令行工具请先在设置里确认是否内置；apk add / pip install 已无可用路径。"]
     }
 
+    /// v7.3.0：冒烟验证（原实现依赖 Alpine python，已简化为内置二进制的版本检验）
+    private func smokeTest(_ name: String, importMode: Bool = false) -> (ok: Bool, note: String) {
+        if importMode {
+            // 内置 python3 是原生 ARM64，import 直接跑原生即可
+            do {
+                let safe = name.replacingOccurrences(of: "[^A-Za-z0-9_.-]", with: "_", options: .regularExpression)
+                let r = try ShellExecTool().invoke(["command": "python3 -c 'import \(safe); print(\"IMPORT_OK\")'", "timeout": 30])
+                let out = (r["stdout"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if (r["exit_code"] as? Int ?? 1) == 0, out.contains("IMPORT_OK") {
+                    return (true, "内置 python3 冒烟 import \(safe) OK")
+                }
+                return (false, "内置 python3 里 import \(safe) 失败——该包未随 App 内置")
+            } catch {
+                return (false, "冒烟异常：\(error)")
+            }
+        }
+        for flag in ["--version", "-v", "--help", "-h"] {
+            do {
+                let r = try ShellExecTool().invoke(["command": "\(name) \(flag)", "timeout": 20])
+                let out = (r["stdout"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                let exit = r["exit_code"] as? Int ?? 1
+                if exit == 0 && !out.isEmpty {
+                    let first = out.split(separator: "\n").first.map(String.init) ?? ""
+                    return (true, "冒烟 `\(name) \(flag)` OK（" + String(first.prefix(90)) + "）")
+                }
+            } catch { }
+        }
+        return (false, "冒烟 `\(name)` 全部失败——工具可能已内置但不可调用，或它没有版本/帮助参数")
+    }
+
     // MARK: - 批量安装（profile）
 
     private func installBatch(_ pkgs: [String], profile: String) -> [String: Any] {

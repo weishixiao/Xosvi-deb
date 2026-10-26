@@ -26,7 +26,7 @@ final class BindAppTool: MCPTool {
         }
         // v7.3.0：Alpine 已移除，"把容器挂载进 Linux"没有意义了。
         // 直接给出 iOS 真实路径，AI 用原生工具（ReadTool / sqlite3 / python3）照样能读。
-        guard let container = Self.containerPath(for: bundleId) else {
+        guard let container = BindAppTool.containerPath(for: bundleId) else {
             throw MCPError.failed("bind_app: 找不到 \(bundleId) 的数据容器（App 未安装或不可见）")
         }
         return [
@@ -91,11 +91,11 @@ final class BindAppWriteTool: MCPTool {
             throw MCPError.invalidParams("bundle_id required")
         }
         // v7.3.0：Alpine 已移除；可写模式改为"先备份再直接写 iOS 路径"
-        guard let container = Self.containerPath(for: bundleId) else {
+        guard let container = BindAppTool.containerPath(for: bundleId) else {
             throw MCPError.failed("bind_app_write: 找不到 \(bundleId) 的数据容器")
         }
         // 先备份（原来由引擎的 bindAppContainer 负责，现在在原生侧做）
-        let backup = Self.backupContainer(container, app: bundleId)
+        let backup = BindAppTool.backupContainer(container, app: bundleId)
         return [
             "ok": true,
             "bundle_id": bundleId,

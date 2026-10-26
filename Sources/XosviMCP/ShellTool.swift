@@ -570,28 +570,6 @@ final class ShellExecTool: MCPTool {
                 "runtime_actual": "ainot_available",
                 "stdout": "该命令没有可用的执行环境（Alpine/iSH 运行时已移除，且不是内置原生命令）。\n可用：ls/cat/stat/find/du/grep/sed/wc/plutil/sqlite3/strings/nm/hexdump/objdump/python3/bsdtar 及 App 内置工具。",
                 "hint": "改用原生命令或 App 内置工具"]
-
-        // 过滤杂散调试噪音
-        var stdout = ShellExecTool.filterNoise(rOut)
-        if outLimit > 0 && stdout.count > outLimit {
-            let spillPath = ToolRegistry.spillLarge("shell", stdout)
-            stdout = String(stdout.prefix(outLimit / 2)) + "\n…[输出太长total \(stdout.count) 字符，已截断；完整输出: \(spillPath)]…\n" + String(stdout.suffix(outLimit / 2))
-        }
-
-        AuditLog.shared.log("shell.exec", detail: String(command.prefix(100)))
-
-        var result: [String: Any] = [
-            "command": command,
-            "exit_code": rExit,
-            "stdout": stdout,
-            "cwd": newPwd,
-            "hint": provNote + "Alpine Linux environment: full command set (ls/cat/grep/find/tar/curl/python...), apk add to install packages. iOS 路径自动 bind 直读。cd remembers directory."
-        ]
-        if rTimed {
-            result["timed_out"] = true
-            result["hint"] = (provNote.isEmpty ? "" : provNote + " ") + "command did not finish within \(Int(timeout))s, process group SIGKILLed"
-        }
-        return result
     }
     
     // MARK: - v3.1.33 shell 语法识别 + iOS 原生管道执行器
