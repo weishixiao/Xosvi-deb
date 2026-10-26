@@ -192,7 +192,7 @@ struct ConversationDrawerView: View {
         VStack(spacing: 0) {
             header
             searchBar
-            countLabel
+            // v7.2.1：去掉"N 个本机对话"计数条（DeepSeek 抽屉里没这行）
             conversationList
             bottomWorkbench
         }
@@ -212,9 +212,10 @@ struct ConversationDrawerView: View {
                 store.newConversation()
                 NotificationCenter.default.post(name: .tmNewConversation, object: nil)
             }) {
-                Image(systemName: "plus.square.fill")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundColor(.blue)
+                // v7.2.1（DeepSeek）：蓝色实心方块 → 黑色细线图标，与整体黑白一致
+                Image(systemName: "square.and.pencil")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(.primary)
             }
             // v6.6.8：抽屉头部设置齿轮用户要求删除（改为会话页侧滑直达抽屉）
             Button(action: { withAnimation { ui.drawerOpen = false } }) {
@@ -252,12 +253,9 @@ struct ConversationDrawerView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
-        .background(Color(.secondarySystemBackground))
-        .cornerRadius(12)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.blue.opacity(searchText.isEmpty ? 0 : 0.4), lineWidth: 1)
-        )
+        // v7.2.1（DeepSeek）：灰底圆角矩形，不再用蓝色描边提示聚焦
+        .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(Color(.secondarySystemBackground)))
         .padding(.horizontal, 16)
     }
 
@@ -322,7 +320,7 @@ struct ConversationDrawerView: View {
                 .frame(width: swipeReveal)
                 .frame(maxHeight: .infinity)
                 .background(Color.red)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
             .buttonStyle(PlainButtonStyle())
             .opacity(offset < -8 ? 1 : 0)
@@ -342,13 +340,16 @@ struct ConversationDrawerView: View {
                     .background(
                         Group {
                             if store.selectedId == conv.id {
-                                LinearGradient(colors: [Color.blue.opacity(0.16), Color.blue.opacity(0.05)], startPoint: .leading, endPoint: .trailing)
+                                // v7.2.1（DeepSeek）：选中行是浅灰底，不再是蓝色渐变
+                                Color(UIColor { $0.userInterfaceStyle == .dark
+                                    ? UIColor(white: 0.18, alpha: 1)
+                                    : UIColor(white: 0.96, alpha: 1) })
                             } else {
                                 Color(.systemBackground)
                             }
                         }
                     )
-                    .cornerRadius(12)
+                    .cornerRadius(10)
             }
             .buttonStyle(PlainButtonStyle())
             .offset(x: offset)
@@ -391,30 +392,33 @@ struct ConversationDrawerView: View {
         .clipped()
     }
 
+    /// v7.2.1（DeepSeek 风格）：去掉蓝色方形气泡图标和"日期时间"副标题，
+    /// 改成 标题 + 最后一条消息摘要 + 右侧相对时间，与对话列表页保持一致。
     private func conversationRow(_ conv: ChatConversation) -> some View {
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 9)
-                    .fill(store.selectedId == conv.id ? Color.blue : Color(.secondarySystemBackground))
-                    .frame(width: 34, height: 34)
-                Image(systemName: store.selectedId == conv.id ? "bubble.left.fill" : "message.fill")
-                    .font(.system(size: 15))
-                    .foregroundColor(store.selectedId == conv.id ? .white : .blue)
-            }
+        let isSel = store.selectedId == conv.id
+        let last = conv.messages.last { !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let preview = (last?.content ?? "")
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return HStack(alignment: .center, spacing: 8) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(conv.title)
-                    .font(.body)
-                    .fontWeight(store.selectedId == conv.id ? .semibold : .regular)
+                    .font(.system(size: 15, weight: isSel ? .semibold : .regular))
                     .foregroundColor(.primary)
                     .lineLimit(1)
-                Text(Self.formatter.string(from: conv.updatedAt))
-                    .font(.caption2)
+                Text(preview.isEmpty ? "空对话" : preview)
+                    .font(.system(size: 12))
                     .foregroundColor(.secondary)
+                    .lineLimit(1)
             }
-            Spacer()
+            Spacer(minLength: 6)
+            Text(ConversationRow.shortTime(conv.updatedAt))
+                .font(.system(size: 11))
+                .foregroundColor(.secondary.opacity(0.85))
+                .fixedSize()
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.vertical, 9)
     }
 
     private func delete(at offsets: IndexSet) {

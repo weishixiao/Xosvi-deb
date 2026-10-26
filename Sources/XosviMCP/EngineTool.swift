@@ -45,15 +45,13 @@ final class EngineTool: MCPTool {
 
     private func status() -> [String: Any] {
         let enabled = UserDefaults.standard.bool(forKey: "alpineEngineEnabled")
-        let autoStart = (UserDefaults.standard.object(forKey: "autoStartEngine") as? Bool) ?? true
         let booted = ISHEngine.isBooted
         let isolated = TrollishRunner.enabled
 
         var message: String
         if !enabled {
-            message = autoStart
-                ? "引擎关闭（autoStartEngine=on：下次需要时 exec 会自动开启）"
-                : "引擎关闭（autoStartEngine=off：需显式 engine {command:\"on\"}）"
+            // v7.3.0：自动开启恒为开，用户不用管
+            message = "引擎关闭（下次需要时 exec 会自动开启）"
         } else if booted {
             message = "引擎运行中"
         } else {

@@ -3,11 +3,12 @@ import UIKit
 import RSKGrowingTextView
 import UniformTypeIdentifiers
 
-/// v6.9.12：App 首页 = 历史对话列表；点「新对话」或某条历史进入聊天页。
-/// `chatHome` 表示已进入聊天页（false 时展示列表）。
+/// v7.2.1：**启动直接进聊天页**——原来 v6.9.12 让 App 先落在一个"对话列表页"，
+/// 用户反馈那个页面是多余的（历史会话在抽屉里已经有了），所以默认值改成 true。
+/// 列表页代码保留（ChatRootView 仍能切过去），只是不再作为启动首屏。
 struct ChatRootView: View {
     @ObservedObject private var store = ConversationStore.shared
-    @State private var chatHome = false
+    @State private var chatHome = true
 
     var body: some View {
         Group {
@@ -458,17 +459,10 @@ struct ChatView: View {
         // v6.6.14：按用户要求——新会话页只保留空白（欢迎语 / 主卡 / 快捷卡片都在 git 历史里，提交 8d59de6）。
         // v6.9.15：「技能」从输入框挪出后，首页右上角留一个入口（v6.9.16 起是悬浮圆钮），功能不丢。
         // v6.9.19：左下角设置圆钮用户要求删除——设置入口只保留在抽屉底部。
-        ZStack(alignment: .topTrailing) {
-            Color.clear
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // v6.9.16：右上角也改成悬浮圆形功能键（与左上角同款），去掉「技能」两个字
-            Button(action: { AppUIState.shared.quickSkillsPresented = true }) {
-                FloatingCircleButton(icon: "bolt")
-            }
-            .buttonStyle(PlainButtonStyle())
-            .padding(.top, 8)
-            .padding(.trailing, 16)
-        }
+        // v7.3.0：右上角闪电图标的「技能」指令入口已按要求删除，新会话页回到纯空白。
+        // 技能面板本身还在（quickSkillsPresented），只是不再从这里进入。
+        Color.clear
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// v2.9.78：首页能力小卡片（两列网格）
@@ -661,21 +655,6 @@ struct ChatView: View {
                     .padding(.top, 6)
 
                 HStack(spacing: 10) {
-                    // + 号 → 展开"应用/相册/文件/浏览器"快捷行；再点变 x 收起
-                    Button(action: {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                            attachExpanded.toggle()
-                        }
-                    }) {
-                        Image(systemName: attachExpanded ? "xmark" : "plus")
-                            .font(.system(size: 15, weight: .medium))
-                            .foregroundColor(DoubaoTheme.subText)
-                            .frame(width: 30, height: 30)
-                            .background(Circle().fill(Color(UIColor.secondarySystemBackground)))
-                            .contentShape(Circle())
-                    }
-                    .buttonStyle(PlainButtonStyle())
-
                     // v6.9.15：原来的「技能」换成「思考 + 搜索」——两个开关就待在输入框里的工具行上。
                     // 思考 = 原「推理·高」+「思考·开」合并：点一下开关，长按弹菜单调强度。
                     DeepSeekPillButton(
@@ -722,6 +701,21 @@ struct ChatView: View {
                         .buttonStyle(.plain)
                         .disabled(inputText.isEmpty)
                     }
+
+                    // v7.3.0：+ 号从工具行最左边移到发送键左侧，两者用固定间距并排
+                    Button(action: {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            attachExpanded.toggle()
+                        }
+                    }) {
+                        Image(systemName: attachExpanded ? "xmark" : "plus")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundColor(DoubaoTheme.subText)
+                            .frame(width: 32, height: 32)
+                            .background(Circle().fill(Color(UIColor.secondarySystemBackground)))
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(PlainButtonStyle())
                 }
                 .padding(.horizontal, 6)
                 .padding(.bottom, 8)

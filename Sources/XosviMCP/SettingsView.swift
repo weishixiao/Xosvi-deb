@@ -235,12 +235,8 @@ struct SettingsView: View {
                          icon: "cpu", color: .gray,
                          isOn: { UserDefaults.standard.bool(forKey: "alpineEngineEnabled") },
                          onToggle: { UserDefaults.standard.set($0, forKey: "alpineEngineEnabled") }),
-            // v6.6.12：AI 按需自动开启（用户诉求：AI 调工具时自己打开，不用手动去设置里开）
-            SettingsItem(title: "AI 自动开启引擎",
-                         subtitle: "AI 调用依赖 Alpine 的工具时自动开引擎（关掉则需手动开启）",
-                         icon: "sparkles", color: .purple,
-                         isOn: { (UserDefaults.standard.object(forKey: "autoStartEngine") as? Bool) ?? true },
-                         onToggle: { UserDefaults.standard.set($0, forKey: "autoStartEngine") }),
+            // v7.3.0：本项已从设置里删除——该行为恒为开启（见 SearchAlwaysOn 同款的做法），
+            // 由 AI 自行判断何时需要引擎，用户无需干预。
             SettingsItem(title: "重置所有数据",
                          subtitle: "清空配置 · 会话 · 工作区 · Keychain（恢复到全新安装）",
                          icon: "arrow.counterclockwise.circle.fill", color: .red,
@@ -538,12 +534,7 @@ struct SettingRowContent: View {
                 Text(item.title)
                     .font(.system(size: 16))
                     .foregroundColor(.primary)
-                if !item.subtitle.isEmpty {
-                    Text(item.subtitle)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
+                // v7.3.0：只保留主设置名，副标题说明小字不再显示（用户要求）
             }
             Spacer(minLength: 0)
             // v4.3.39：行尾红点提醒（新版更新等）——红点在行尾右侧，点击行即处理

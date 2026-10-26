@@ -477,15 +477,10 @@ enum ISHEngine {
         // 由于已有 TrollishRunner 子进程隔离（引擎段错误只死子进程，主 App 不闪退），
         // 自动开启的风险已大幅降低。
         if !UserDefaults.standard.bool(forKey: "alpineEngineEnabled") {
-            let autoStart = (UserDefaults.standard.object(forKey: "autoStartEngine") as? Bool) ?? true
-            if autoStart {
-                UserDefaults.standard.set(true, forKey: "alpineEngineEnabled")
-                ShellDiag.log("alpine engine auto-enabled on demand cmd=\(command.prefix(60))")
-                AuditLog.shared.log("engine.auto_enable", detail: "AI 调用需要 Alpine 的工具，已自动开启引擎")
-            } else {
-                return ("[iSH 已关闭·防闪退] Alpine/iSH 引擎未启用（实测在 arm64 上执行会段错误闪退）。\n原生替代：ls/cat/grep/find/du/plutil/sqlite3/strings/nm/hexdump/objdump/python3(内置原生)。\n需要 apk add / git / 完整 tar 时：调 engine {command:\"on\"} 开启，或到 设置 → 安全 → 开启「Alpine/iSH 引擎」。",
-                        127, false)
-            }
+            // v7.3.0：自动开启恒为开（设置里的开关已删除），按需打开后继续执行
+            UserDefaults.standard.set(true, forKey: "alpineEngineEnabled")
+            ShellDiag.log("alpine engine auto-enabled on demand cmd=\(command.prefix(60))")
+            AuditLog.shared.log("engine.auto_enable", detail: "AI 调用需要 Alpine 的工具，已自动开启引擎")
         }
         // v6.6.10：rootfs 已重置但内核仍挂在旧树上——iSH 无法在进程内卸载内核，
         // 继续 spawn 只会重复 rc=-2，直接给出唯一有效的下一步。
