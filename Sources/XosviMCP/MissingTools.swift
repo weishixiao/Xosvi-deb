@@ -98,463 +98,85 @@ final class DeviceSnapshotTool: MCPTool {
 
 final class WebSearchTool: MCPTool {
     let definition = ToolDefinition(name: "web.search",
-        summary: "Search the web with multi-engine fallback (Baidu → Bing → DuckDuckGo) and multi-query support. Use for: find information online, look up facts, search tutorials/docs. Don't use for: open a specific website (use haxbrowser {command:'open'}), search saved knowledge (use knowledge.search). v4.3.65: queries:[...] 并行拆词检索并自动去重合并；sort=true 官方/媒体优先；save=true 自动沉淀知识库。Example: user says 'when was iPhone 16 released' → search web.",
-        parameters: ["query": "Search keywords (e.g. 'iOS 17 jailbreak guide')",
-                     "queries": "Array of search terms to run in parallel & merge (optional, preferred for complex topics)",
-                     "limit": "Max results per query (default 8)",
-                     "sort": "true=official/third-party sources first (default false, keep engine relevance)",
-                     "save": "true=auto-save top results to knowledge base (default false)"],
-        verified: true, category: "browser")
+        summary: "Search the web. Providers: Bing / DuckDuckGo / SearXNG (free, no key) and Tavily / Exa / Brave / Serper / 博查 / 秘塔 / 智谱 / Jina / Firecrawl / Perplexity / LinkUp / You.com (need API key, set in Settings → 联网搜索). Use for: find information, look up facts/docs. Don't use for: read a specific page (use web.fetch), search local knowledge (use knowledge.search). Params: query, provider (optional), limit. Example: 'when was iPhone 16 released' → web.search.",
+        parameters: ["query": "Search keywords",
+                     "provider": "Optional provider name: bing/duckduckgo/searxng/tavily/exa/brave/serper/bocha/metaso/zhipu/jina/firecrawl/perplexity/linkup/you",
+                     "limit": "Max results (default from settings, max 20)"],
+        verified: true, category: "browser",
+        uiSummary: "联网检索（多服务商，本地引擎免费可用）")
+
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
-        // v4.3.65：多 query 并行 + 多引擎回退（Bing→DuckDuckGo→Baidu）+ 去重/来源分级 + 可选沉淀知识库
-        let queries: [String]
-        if let qs = params["queries"] as? [String], !qs.isEmpty {
-            queries = qs.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-        } else if let qstr = params["queries"] as? String, !qstr.isEmpty {
-            // fix3cl6: 容错——第三方客户端(Botcf 等)可能把数组序列化成字符串("[\"a\",\"b\"]" 或 "a,b")，
-            // as? [String] 失败会误报 "query or queries required"。手动解析字符串数组形态。
-            var parts: [String] = []
-            let t = qstr.trimmingCharacters(in: .whitespacesAndNewlines)
-            if t.hasPrefix("[") && t.hasSuffix("]") {
-                let inner = String(t.dropFirst().dropLast())
-                for it in inner.components(separatedBy: ",") {
-                    let s = it.trimmingCharacters(in: .whitespacesAndNewlines)
-                        .replacingOccurrences(of: "\"", with: "")
-                        .replacingOccurrences(of: "'", with: "")
-                    if !s.isEmpty { parts.append(s) }
-                }
-            } else {
-                parts = t.components(separatedBy: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-            }
-            queries = parts
-        } else if let q = params["query"] as? String, !q.isEmpty {
-            queries = [q.trimmingCharacters(in: .whitespacesAndNewlines)]
-        } else {
-            throw MCPError.invalidParams("query or queries required")
+        guard let q = (params["query"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !q.isEmpty else {
+            throw MCPError.invalidParams("query required")
         }
-        let limit = min(max(params["limit"] as? Int ?? 8, 1), 30)
-        let sortBySource = params["sort"] as? Bool ?? false   // true=官方/媒体优先
-        let save = params["save"] as? Bool ?? false           // true=结果自动沉淀知识库
+        let limit = min(max(params["limit"] as? Int ?? SearchSettings.shared.resultSize, 1), 20)
+        let preferred = (params["provider"] as? String)
+            .flatMap { SearchProvider(rawValue: $0.lowercased()) }
 
-        var all: [[String: String]] = []
-        var engineCounts: [String: Int] = [:]
-        for q in queries {
-            let enc = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q
-            // v7.0.0：搜索引擎顺序改为 百度 → 必应 → DuckDuckGo（用户要求百度为默认、主流做备用）
-            var res = fetchBaidu(query: enc, limit: limit)
-            if res.isEmpty {
-                res = fetchBing(query: enc, limit: limit)
-                engineCounts["Bing", default: 0] += res.count
-            } else {
-                engineCounts["Baidu", default: 0] += res.count
-            }
-            if res.isEmpty {
-                res = fetchDuckDuckGo(query: enc, limit: limit)
-                engineCounts["DuckDuckGo", default: 0] += res.count
-            }
-            all += res
-        }
-
-        // 去重（按 URL 保留首个）+ 截断摘要（防 token 爆炸）
-        var seen = Set<String>()
-        var deduped: [[String: String]] = []
-        for r in all {
-            if let u = r["url"], seen.insert(u).inserted {
-                deduped.append(r)
-            }
-        }
-        for i in deduped.indices {
-            if var sn = deduped[i]["snippet"], sn.count > 300 {
-                sn = String(sn.prefix(300)) + "…"
-                deduped[i]["snippet"] = sn
-            }
-        }
-        // 来源分级排序（可选，默认保持引擎相关性顺序）
-        if sortBySource {
-            deduped.sort { Self.sourceRank($0["source_type"] ?? "") < Self.sourceRank($1["source_type"] ?? "") }
-        }
-        let results = Array(deduped.prefix(limit * queries.count))
-        let officialCount = results.filter { $0["source_type"] == "official" }.count
-        let engines = engineCounts.filter { $0.value > 0 }.keys.sorted()
+        let r = WebSearchService.search(query: q, provider: preferred, limit: limit)
+        AuditLog.shared.log("web.search", detail: "\(r.provider): \(q.prefix(60)) hits=\(r.hits.count)")
 
         var out: [String: Any] = [
-            "query": queries.count == 1 ? queries[0] : queries,
-            "engine": engines.isEmpty ? "none" : engines.joined(separator: "+"),
-            "count": results.count, "results": results,
-            "official_count": officialCount,
-            "source_note": Self.sourceNote,
+            "provider": r.provider,
+            "query": q,
+            "count": r.hits.count,
+            "results": r.hits.map { ["title": $0.title, "url": $0.url, "snippet": $0.snippet] }
         ]
-        if save && !results.isEmpty {
-            out["saved_to_knowledge"] = saveToKnowledge(queries: queries, results: results)
+        if let a = r.answer, !a.isEmpty { out["answer"] = a }
+        if let e = r.error, r.hits.isEmpty {
+            out["error"] = e
+            out["hint"] = "该服务商不可用或未配置 Key。设置 → 联网搜索 可配置；免费选项：必应 / DuckDuckGo / SearXNG。"
         }
-        AuditLog.shared.log("web.search", detail: "\(queries.joined(separator: "|")) → \(engines.joined(separator: "+")) \(results.count) 条")
-        return out
-    }
-
-    private static func sourceRank(_ t: String) -> Int {
-        t == "official" ? 0 : (t == "third_party" ? 1 : 2)
-    }
-
-    /// v4.3.65：结果自动沉淀到知识库（供后续 knowledge.search 免搜复用）
-    private func saveToKnowledge(queries: [String], results: [[String: String]]) -> String {
-        KnowledgeStore.shared.ensure()
-        let date = DateFormatter.localizedString(from: Date(), dateStyle: .short, timeStyle: .short)
-            .replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
-        let safeQ = String(queries.joined(separator: "_").replacingOccurrences(of: " ", with: "-").prefix(30))
-        let name = "web-\(date)-\(safeQ).md"
-        var md = "# 搜索结果：\(queries.joined(separator: " | "))\n\n"
-        for (i, r) in results.prefix(10).enumerated() {
-            md += "\(i + 1). [\(r["title"] ?? "")](\(r["url"] ?? ""))\n   \(r["snippet"] ?? "")\n"
-        }
-        let file = KnowledgeStore.shared.dir.appendingPathComponent(name)
-        try? md.write(to: file, atomically: true, encoding: .utf8)
-        return name
-    }
-
-    /// v4.3.26：来源分级说明——AI 看到 unknown 小站应交叉验证，不直接采信
-    private static let sourceNote = "source_type 分级：official=官方/权威站点（优先采信）；third_party=媒体/知名社区/百科（可参考，但与官方文档冲突时以官方为准）；unknown=未知名小站/个人页（可信度低，勿直接采信，需交叉验证）。"
-
-    /// v4.3.26：按域名分级搜索结果来源——official / third_party / unknown
-    private static func sourceType(for urlString: String) -> String {
-        let host = (URL(string: urlString)?.host ?? "").lowercased()
-        let bare = host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-        if bare.isEmpty { return "unknown" }
-        // 官方权威域名：政府/教育/官方文档子域
-        if bare.hasSuffix(".gov") || bare.hasSuffix(".gov.cn") || bare.hasSuffix(".edu") ||
-           bare.hasSuffix(".edu.cn") || bare.hasSuffix(".ac.cn") || bare.hasSuffix(".mil") { return "official" }
-        if bare.contains("official") { return "official" }
-        // 官方产品/公司域名
-        let officialDomains: Set<String> = [
-            "apple.com", "google.com", "microsoft.com", "openai.com", "anthropic.com", "meta.com",
-            "amazon.com", "tencent.com", "qq.com", "alibaba.com", "taobao.com", "tmall.com",
-            "bytedance.com", "douyin.com", "xiaomi.com", "huawei.com", "baidu.com", "aliyun.com",
-            "jd.com", "weibo.com", "github.com", "gitlab.com", "gitee.com", "linux.org", "python.org",
-            "developer.apple.com", "learn.microsoft.com", "cloud.google.com", "aws.amazon.com",
-            "x.com", "twitter.com", "youtube.com", "netflix.com", "spotify.com", "telegram.org",
-            "whatsapp.com", "paypal.com", "stripe.com", "binance.com", "coinbase.com",
-            "nytimes.com", "wsj.com", "reuters.com", "bloomberg.com", "cnn.com", "bbc.com",
-            "ft.com", "theguardian.com", "economist.com", "forbes.com", "time.com", "cctv.com",
-            "people.com.cn", "xinhuanet.com", "gov.cn", "china.com.cn", "cas.cn", "cuhk.edu.hk"
-        ]
-        if officialDomains.contains(bare) { return "official" }
-        // fix3cl8: 子域归属——dnf.qq.com / aid.qq.com 等官方产品子域应归属 qq.com(official)。
-        // 旧实现精确匹配白名单，子域全部落 unknown → 官网标 unknown、official_count=0、sort 失效。
-        for d in officialDomains where bare.hasSuffix("." + d) { return "official" }
-        // 媒体 / 知名社区 / 百科（可参考但非官方）
-        let thirdPartyDomains: Set<String> = [
-            "wikipedia.org", "zhihu.com", "zhuanlan.zhihu.com", "xiaohongshu.com", "xhs.cn",
-            "bilibili.com", "douban.com", "quora.com", "reddit.com", "stackoverflow.com",
-            "stackexchange.com", "medium.com", "csdn.net", "cnblogs.com", "juejin.cn",
-            "segmentfault.com", "36kr.com", "ithome.com", "sina.com.cn", "sohu.com", "163.com",
-            "toutiao.com", "sspai.com", "v2ex.com", "huxiu.com", "pingwest.com", "leiphone.com",
-            "ifanr.com", "engadget.com", "theverge.com", "techcrunch.com", "wired.com",
-            "arstechnica.com", "news.ycombinator.com", "baike.baidu.com", "zh.wikipedia.org",
-            "wikiwand.com", "gitbooks.io", "readthedocs.io", "mdn.mozilla.org", "freecodecamp.org",
-            "geekpark.net", "jiqizhixin.com", "qbitai.com", "wanqu.co", "solidot.org", "cnbeta.com",
-            "colg.cn", "bbs.colg.cn", "ali213.net", "gamersky.com", "3dmgame.com", "17173.com", "duowan.com"
-        ]
-        if thirdPartyDomains.contains(bare) { return "third_party" }
-        for d in thirdPartyDomains where bare.hasSuffix("." + d) { return "third_party" }
-        return "unknown"
-    }
-
-    private func fetchBing(query: String, limit: Int) -> [[String: String]] {
-        guard let url = URL(string: "https://www.bing.com/search?q=\(query)") else { return [] }
-        guard let html = fetchHTML(url) else { return [] }
-        return parseBing(html: html, limit: limit)
-    }
-
-    private func fetchDuckDuckGo(query: String, limit: Int) -> [[String: String]] {
-        guard let url = URL(string: "https://html.duckduckgo.com/html/?q=\(query)") else { return [] }
-        guard let html = fetchHTML(url) else { return [] }
-        return parseDuckDuckGo(html: html, limit: limit)
-    }
-
-    /// v4.3.65：Baidu 回退引擎（返回 GBK，需 GB18030 解码）
-    private func fetchBaidu(query: String, limit: Int) -> [[String: String]] {
-        guard let url = URL(string: "https://www.baidu.com/s?wd=\(query)") else { return [] }
-        guard let data = fetchData(url) else { return [] }
-        return parseBaidu(html: decodeHTMLText(data), limit: limit)
-    }
-
-    /// v4.3.65：Baidu 结果解析——h3.t + a 标题 + c-abstract 摘要；跳转链接剥回真实 URL
-    private func parseBaidu(html: String, limit: Int) -> [[String: String]] {
-        guard let re = try? NSRegularExpression(
-            pattern: "<h3[^>]*class=\"[^\"]*t[^\"]*\"[^>]*>[\\s\\S]*?<a[^>]*href=\"([^\"]+)\"[^>]*>([\\s\\S]*?)</a>[\\s\\S]*?</h3>",
-            options: [.dotMatchesLineSeparators]) else { return [] }
-        let ns = html as NSString
-        let matches = re.matches(in: html, range: NSRange(location: 0, length: ns.length))
-        var out: [[String: String]] = []
-        var seen = Set<String>()
-        for m in matches {
-            var url = ns.substring(with: m.range(at: 1)).replacingOccurrences(of: "&amp;", with: "&")
-            let title = ns.substring(with: m.range(at: 2)).stripHTMLTags()
-            if let real = Self.realBaiduURL(url) { url = real }
-            guard !title.isEmpty, !url.isEmpty, seen.insert(url).inserted else { continue }
-            let blockRange = NSRange(location: m.range.location, length: min(ns.length - m.range.location, 800))
-            let block = ns.substring(with: blockRange)
-            let snippet = (block.firstCapture(pattern: "class=\"c-abstract\"[^>]*>([\\s\\S]*?)</div>") ?? "")
-                .stripHTMLTags()
-            out.append(["title": title, "url": url, "snippet": snippet, "source_type": Self.sourceType(for: url)])
-            if out.count >= limit { break }
-        }
-        return out
-    }
-
-    /// Baidu 跳转链接（www.baidu.com/link?url=xxx）→ 真实 URL；解不出时返回 nil 保留原样
-    private static func realBaiduURL(_ url: String) -> String? {
-        guard url.contains("baidu.com/link?url="),
-              let comps = URLComponents(string: url),
-              let u = comps.queryItems?.first(where: { $0.name == "url" })?.value else { return nil }
-        return u.removingPercentEncoding ?? u
-    }
-
-    /// v4.3.65：GB18030 优先解码（Baidu/GBK 站点），失败回退 UTF-8
-    private func decodeHTMLText(_ data: Data) -> String {
-        let enc = CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue))
-        if let s = String(data: data, encoding: String.Encoding(rawValue: enc)) { return s }
-        return String(data: data, encoding: .utf8) ?? ""
-    }
-
-    /// 同步抓取原始数据 (15 秒超时，桌面 Chrome UA）
-    private func fetchData(_ url: URL) -> Data? {
-        var data: Data?
-        let sem = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
-            var req = URLRequest(url: url, timeoutInterval: 15)
-            req.setValue("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36", forHTTPHeaderField: "User-Agent")
-            let task = URLSession.shared.dataTask(with: req) { d, _, _ in
-                data = d
-                sem.signal()
+        // 搜索后按设置自动读前 N 条正文（Kelivo 的做法：搜索结果直接带全文）
+        let autoN = min(SearchSettings.shared.autoFetchTop, r.hits.count)
+        if autoN > 0 {
+            var pages: [[String: Any]] = []
+            for h in r.hits.prefix(autoN) {
+                let page = WebFetchService.fetch(url: h.url, preferProvider: preferred)
+                pages.append(["url": page.url, "title": page.title, "via": page.via,
+                              "content": String(page.content.prefix(6000))])
             }
-            task.resume()
-        }
-        sem.wait()
-        return data
-    }
-
-    /// 同步抓取网页并 UTF-8 解码 (15 秒超时）
-    /// v2.9.129：UA 改桌面 Chrome —— Bing 移动版 HTML 结构与桌面版不同且不稳定，
-    /// 桌面版 b_algo 结构多年稳定，解析命中率高
-    private func fetchHTML(_ url: URL) -> String? {
-        guard let data = fetchData(url) else {
-            AuditLog.shared.log("web.search", detail: "fetch failed: \(url.absoluteString)")
-            return nil
-        }
-        return String(data: data, encoding: .utf8)
-    }
-
-    /// v2.9.129：Bing 解析增强——三级兜底，不再"只出一条"
-    /// 1) 严格 b_algo 块  2) 宽松 b_algo 块(class 带附加项)  3) 通用 h2>a 兜底
-    private func parseBing(html: String, limit: Int) -> [[String: String]] {
-        var out = parseBingBlocks(html: html, pattern: "<li class=\"b_algo\">(.*?)</li>", limit: limit)
-        if out.count < limit {
-            out += parseBingBlocks(html: html, pattern: "<li class=\"b_algo[^\"]*\">(.*?)</li>", limit: limit - out.count)
-        }
-        if out.isEmpty {
-            out = parseBingGeneric(html: html, limit: limit)
-        }
-        return out
-    }
-
-    private func parseBingBlocks(html: String, pattern: String, limit: Int) -> [[String: String]] {
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else { return [] }
-        let ns = html as NSString
-        let matches = regex.matches(in: html, range: NSRange(location: 0, length: ns.length))
-        var out: [[String: String]] = []
-        for m in matches {
-            let block = ns.substring(with: m.range(at: 1))
-            // 标题：<h2> 下第一个 <a>，容许多行/嵌套 span
-            let head = block.firstMatch(pattern: "<h2[^>]*>[\\s\\S]*?<a[^>]*href=\"([^\"]+)\"[^>]*>([\\s\\S]*?)</a>")
-            // 摘要：取 b_caption 或第一个 <p> (去除标签）
-            // fix3cl8: Bing 新版 HTML 摘要常不在 <p> 而在 b_caption/div.caption——多标签兜底
-            let snippet = (block.firstCapture(pattern: "<p[^>]*>([\\s\\S]*?)</p>")
-                           ?? block.firstCapture(pattern: "<div[^>]*class=\"[^\"]*b_caption[^\"]*\"[^>]*>([\\s\\S]*?)</div>")
-                           ?? block.firstCapture(pattern: "<div[^>]*class=\"[^\"]*caption[^\"]*\"[^>]*>([\\s\\S]*?)</div>")
-                           ?? "").stripHTMLTags()
-            if let caps = head, caps.count == 2 {
-                let title = caps[1].stripHTMLTags()
-                if !title.isEmpty {
-                    out.append(["title": title, "url": caps[0], "snippet": snippet, "source_type": Self.sourceType(for: caps[0])])
-                }
-            }
-            if out.count >= limit { break }
-        }
-        return out
-    }
-
-    /// 通用兜底：任意 <h2><a href="...">标题</a></h2> (Bing 改版时仍能出结果）
-    private func parseBingGeneric(html: String, limit: Int) -> [[String: String]] {
-        guard let regex = try? NSRegularExpression(pattern: "<h2[^>]*>[\\s\\S]*?<a[^>]*href=\"([^\"]+)\"[^>]*>([\\s\\S]*?)</a>[\\s\\S]*?</h2>", options: [.dotMatchesLineSeparators]) else { return [] }
-        let ns = html as NSString
-        let matches = regex.matches(in: html, range: NSRange(location: 0, length: ns.length))
-        var out: [[String: String]] = []
-        var seen = Set<String>()
-        for m in matches {
-            let url = ns.substring(with: m.range(at: 1))
-            let title = ns.substring(with: m.range(at: 2)).stripHTMLTags()
-            guard !title.isEmpty, !url.hasPrefix("javascript:"), seen.insert(url).inserted else { continue }
-            out.append(["title": title, "url": url, "snippet": "", "source_type": Self.sourceType(for: url)])
-            if out.count >= limit { break }
-        }
-        return out
-    }
-
-    private func parseDuckDuckGo(html: String, limit: Int) -> [[String: String]] {
-        guard let re = try? NSRegularExpression(pattern: "<a[^>]*class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>", options: [.dotMatchesLineSeparators]) else { return [] }
-        let ns = html as NSString
-        let matches = re.matches(in: html, range: NSRange(location: 0, length: ns.length))
-        var out: [[String: String]] = []
-        for m in matches.prefix(limit) {
-            let url = ns.substring(with: m.range(at: 1)).replacingOccurrences(of: "&amp;", with: "&")
-            let title = ns.substring(with: m.range(at: 2)).stripHTMLTags()
-            if url.hasPrefix("//") { continue }
-            // 摘要 (紧随其后的 result__snippet）
-            let snipRange = NSRange(location: m.range.location, length: min(ns.length - m.range.location, 600))
-            let snipBlock = ns.substring(with: snipRange)
-            let snippet = snipBlock.firstCapture(pattern: "class=\"result__snippet\"[^>]*>(.*?)</a>")?.stripHTMLTags() ?? ""
-            if !title.isEmpty {
-                out.append(["title": title, "url": url, "snippet": snippet, "source_type": Self.sourceType(for: url)])
-            }
-            if out.count >= limit { break }
+            out["pages"] = pages
+            out["note"] = "已在结果后附带前 \(autoN) 条的正文（设置 → 联网搜索 → 自动读取前 N 条）"
         }
         return out
     }
 }
-
-// MARK: - 网页抓取 (web.fetch，对齐 OpenClaw web_fetch 设计：搜索结果 → 抓原文）
 
 final class WebFetchTool: MCPTool {
     let definition = ToolDefinition(name: "web.fetch",
-        summary: "Fetch and read text content from a web page URL. Use for: read an article/webpage without opening browser, scrape page text. Don't use for: search web (use web.search), interact with page (use haxbrowser). Example: user says 'read this webpage content' → fetch web page.",
-        parameters: ["url": "Web page URL to read", "maxChars": "Max characters to return (default 4000)"], verified: true, category: "browser")
+        summary: "Read a web page and return its full text. Use for: read an article/doc after searching, quote exact content. Don't use for: search (use web.search). 三级回退：服务商 reader（Tavily/Jina/秘塔/Firecrawl/Exa，需 Key）→ 公共 Jina Reader → 本地直连抓取。本地抓取无法处理需要 JavaScript 渲染或有反爬限制的页面。",
+        parameters: ["url": "Page URL",
+                     "maxChars": "Max characters to return (default 12000)",
+                     "provider": "Optional: force a provider's reader (tavily/jina/metaso/firecrawl/exa)"],
+        returns: ["url": "Final URL", "title": "Page title", "text": "Full text",
+                  "via": "Which channel produced it: provider / jina / local"],
+        verified: true, category: "browser",
+        uiSummary: "读网页全文（三级回退，JS 页面走 reader）")
+
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
-        guard let urlString = params["url"] as? String, let url = URL(string: urlString) else {
+        guard let urlString = params["url"] as? String, !urlString.isEmpty else {
             throw MCPError.invalidParams("url required")
         }
-        let maxChars = params["maxChars"] as? Int ?? 4000
-        var html: String?
-        let sem = DispatchSemaphore(value: 0)
-        DispatchQueue.global().async {
-            var req = URLRequest(url: url, timeoutInterval: 20)
-            req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15", forHTTPHeaderField: "User-Agent")
-            let task = URLSession.shared.dataTask(with: req) { data, _, err in
-                defer { sem.signal() }
-                guard err == nil, let data = data else { return }
-                html = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1)?.description
-            }
-            task.resume()
-        }
-        sem.wait()
-        
-        // v3.1.21: web.fetch failed自动 fallback 到内置浏览器
-        // AI 根本不需要知道这个逻辑，直接调用 web.fetch 就能得到结果
-        if html == nil {
-            AuditLog.shared.log("web.fetch", detail: "直接 fetch failed，fallback 到 Hax 浏览器: \(urlString)")
-            do {
-                // 1. 用 Hax 浏览器打开网页（v7.0.0：旧 browser.navigate 已删除）
-                if let navTool = ToolRegistry.shared.tool(named: "haxbrowser") {
-                    _ = try navTool.invoke(["command": "open", "url": urlString])
-                }
-                // 2. 等 2 秒加载
-                Thread.sleep(forTimeInterval: 2.0)
-                // 3. 读取网页内容
-                if let textTool = ToolRegistry.shared.tool(named: "haxbrowser") {
-                    let result = try textTool.invoke(["command": "text", "chars": maxChars])
-                    if let text = result["text"] as? String, !text.isEmpty {
-                        AuditLog.shared.log("web.fetch", detail: "fallback OK: \(urlString) → \(text.count) chars")
-                        return [
-                            "url": urlString,
-                            "title": result["title"] as? String ?? "",
-                            "text": String(text.prefix(maxChars)),
-                            "fallback_used": true,
-                            "note": "Direct fetch failed, used Hax browser as fallback"
-                        ]
-                    }
-                }
-            } catch {
-                AuditLog.shared.log("web.fetch", detail: "fallback 也failed: \(error.localizedDescription)")
-            }
-        }
-        
-        guard let raw = html else {
-            throw MCPError.failed("fetch failed: \(urlString) (direct fetch and Hax browser fallback both failed)")
-        }
-        // 提取标题 + 正文纯文本（v4.3.65：article/main 优先抽取、去噪块，不再整页倾倒）
-        let title = raw.firstCapture(pattern: "<title[^>]*>(.*?)</title>")?.stripHTMLTags() ?? ""
-        var text = extractMainText(raw, maxChars: maxChars)
-        if !text.isEmpty {
-            text = String(text.prefix(maxChars))
-        }
-        AuditLog.shared.log("web.fetch", detail: "\(urlString) → \(text.count) chars")
-        return ["url": urlString, "title": title, "text": text]
-    }
+        let maxChars = min(max(params["maxChars"] as? Int ?? 12000, 500), WebFetchService.maxChars)
+        let forced = (params["provider"] as? String).flatMap { SearchProvider(rawValue: $0.lowercased()) }
 
-    /// v4.3.65：正文抽取——先去噪块（nav/header/footer/aside/iframe/form/svg），
-    /// 优先 <article> 区块，其次 <main>，最后回退全文；避免把导航/页脚灌给 AI
-    private func extractMainText(_ html: String, maxChars: Int) -> String {
-        var s = html
-        for tag in ["nav", "header", "footer", "aside", "iframe", "form", "noscript", "svg", "script", "style"] {
-            s = s.replacingOccurrences(of: "<\(tag)[\\s\\S]*?</\(tag)>", with: " ", options: .regularExpression)
-        }
-        if let article = s.firstCapture(pattern: "<article[^>]*>([\\s\\S]*?)</article>") {
-            let t = stripHTML(article)
-            if t.count > 200 { return String(t.prefix(maxChars)) }
-        }
-        if let main = s.firstCapture(pattern: "<main[^>]*>([\\s\\S]*?)</main>") {
-            let t = stripHTML(main)
-            if t.count > 200 { return String(t.prefix(maxChars)) }
-        }
-        return String(stripHTML(s).prefix(maxChars))
-    }
+        let page = WebFetchService.fetch(url: urlString, preferProvider: forced)
+        AuditLog.shared.log("web.fetch", detail: "\(page.via) \(urlString.prefix(70)) len=\(page.content.count)")
 
-    /// HTML → 纯文本 (去注释/script/style/标签，压缩空白）
-    private func stripHTML(_ html: String) -> String {
-        var s = html
-        s = s.replacingOccurrences(of: "<![\\s\\S]*?>", with: " ", options: .regularExpression)   // 注释/DOCTYPE
-        s = s.replacingOccurrences(of: "<script[\\s\\S]*?</script>", with: " ", options: .regularExpression)
-        s = s.replacingOccurrences(of: "<style[\\s\\S]*?</style>", with: " ", options: .regularExpression)
-        s = s.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
-        s = s.replacingOccurrences(of: "&nbsp;", with: " ")
-        s = s.replacingOccurrences(of: "&amp;", with: "&")
-        s = s.replacingOccurrences(of: "&lt;", with: "<")
-        s = s.replacingOccurrences(of: "&gt;", with: ">")
-        s = s.replacingOccurrences(of: "&quot;", with: "\"")
-        s = s.replacingOccurrences(of: "&#39;", with: "'")
-        s = s.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-        return s.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-}
-
-extension String {
-    /// 返回所有捕获组 (不含整串）
-    fileprivate func firstMatch(pattern: String) -> [String]? {
-        guard let re = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]),
-              let m = re.firstMatch(in: self, range: NSRange(location: 0, length: (self as NSString).length)) else { return nil }
-        var groups: [String] = []
-        for i in 1..<m.numberOfRanges {
-            groups.append((self as NSString).substring(with: m.range(at: i)))
+        var out: [String: Any] = [
+            "url": page.url,
+            "title": page.title,
+            "via": page.via,
+            "length": page.content.count,
+            "text": String(page.content.prefix(maxChars))
+        ]
+        if page.truncated { out["truncated"] = true }
+        if page.via == "local", page.content.contains("无法处理需要 JavaScript 渲染") {
+            out["limitation"] = "本地抓取无法处理需要 JavaScript 渲染或有反爬限制的页面"
         }
-        return groups
-    }
-
-    /// 返回第一个捕获组
-    fileprivate func firstCapture(pattern: String) -> String? {
-        firstMatch(pattern: pattern)?.first
-    }
-
-    /// v2.9.79：去除 HTML 标签与常见实体，用于搜索标题/摘要清洗
-    fileprivate func stripHTMLTags() -> String {
-        var s = self
-        s = s.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
-        s = s.replacingOccurrences(of: "&nbsp;", with: " ")
-        s = s.replacingOccurrences(of: "&amp;", with: "&")
-        s = s.replacingOccurrences(of: "&quot;", with: "\"")
-        s = s.replacingOccurrences(of: "&#39;", with: "'")
-        s = s.replacingOccurrences(of: "&lt;", with: "<")
-        s = s.replacingOccurrences(of: "&gt;", with: ">")
-        s = s.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+        return out
     }
 }
 

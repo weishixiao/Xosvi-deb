@@ -15,8 +15,6 @@ final class AppUIState: ObservableObject {
     @Published var quickToolsPresented = false
     @Published var quickSkillsPresented = false
     @Published var quickFilesPresented = false
-    /// v7.0.0：Hax 浏览器（全屏弹出；旧 FloatingBrowser 已删除）
-    @Published var quickHaxBrowserPresented = false
 }
 
 struct RootView: View {
@@ -64,17 +62,7 @@ struct RootView: View {
                 }
             }
         }
-        // v7.0.0：旧悬浮浏览器（FloatingBrowserOverlay）已删除，改为 Hax 浏览器全屏页
-        .fullScreenCover(isPresented: Binding(
-            get: { ui.quickHaxBrowserPresented },
-            set: { ui.quickHaxBrowserPresented = $0 }
-        )) {
-            CompatNav {
-                HaxBrowserView(embedded: false, onClose: { ui.quickHaxBrowserPresented = false })
-                    .navigationTitle("Hax 浏览器")
-                    .navigationBarTitleDisplayMode(.inline)
-            }
-        }
+        // v7.5.0：内置浏览器已整体删除（用户要求）
         // v2.9.76：设置改全屏（去掉 sheet 半屏 + 顶部 grabber），子页面头部对齐
         .fullScreenCover(isPresented: Binding(
             get: { ui.settingsPresented },

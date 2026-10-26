@@ -98,9 +98,9 @@ struct ChatView: View {
                         leftIcon: selectionMode ? nil : "line.3.horizontal",
                         trailing: selectionMode ? nil : AnyView(
                             Menu {
-                                // v7.3.0：终端 / Hax 电脑已移除，这里只剩浏览器
-                                Button { uiState.quickHaxBrowserPresented = true } label: {
-                                    Label("浏览器", systemImage: "globe")
+                                // v7.5.0：内置浏览器已删除，这里改为打开联网搜索设置
+                                Button { uiState.settingsPresented = true } label: {
+                                    Label("联网搜索", systemImage: "magnifyingglass")
                                 }
                             } label: {
                                 FloatingCircleButton(icon: "plus")
@@ -183,11 +183,11 @@ struct ChatView: View {
                     } else {
                         // v6.6.11：模型切换已移到任务名下方；右上角改为 + 号（终端 / Hax 电脑入口）
                         Menu {
-                            // v7.3.0：终端 / Hax 电脑已移除，这里只剩浏览器
+                            // v7.5.0：内置浏览器已删除，这里改为打开联网搜索设置
                             Button {
-                                uiState.quickHaxBrowserPresented = true
+                                uiState.settingsPresented = true
                             } label: {
-                                Label("浏览器", systemImage: "globe")
+                                Label("联网搜索", systemImage: "magnifyingglass")
                             }
                         } label: {
                             Image(systemName: "plus.circle")
@@ -283,9 +283,8 @@ struct ChatView: View {
                         // v3.1.67：文件入口不再用 .fileImporter（真机有 bug），改记 pendingFilePick，
                         // 由 sheet onDismiss 在面板完全关闭后触发 UIKit 文档选择器
                         if pick == .browser {
-                            // v7.0.0：旧悬浮浏览器已删除——网页入口直接开 Hax 电脑里的 Hax 浏览器
+                            // v7.5.0：内置浏览器已删除，网页由 web.search / web.fetch 处理
                             self.attachmentSheet = nil
-                            AppUIState.shared.quickHaxBrowserPresented = true
                         } else if pick == .documentPicker {
                             self.pendingFilePick = true
                             self.attachmentSheet = nil
@@ -297,9 +296,8 @@ struct ChatView: View {
                 } else {
                     AttachmentPanelView(onPick: { pick in
                         if pick == .browser {
-                            // v7.0.0：旧悬浮浏览器已删除——网页入口直接开 Hax 电脑里的 Hax 浏览器
+                            // v7.5.0：内置浏览器已删除，网页由 web.search / web.fetch 处理
                             self.attachmentSheet = nil
-                            AppUIState.shared.quickHaxBrowserPresented = true
                         } else if pick == .documentPicker {
                             self.pendingFilePick = true
                             self.attachmentSheet = nil
@@ -752,8 +750,7 @@ struct ChatView: View {
             attachQuickButton("globe", "浏览器") {
                 withAnimation { attachExpanded = false }
                 attachmentSheet = nil
-                // v7.0.0：改用 Hax 电脑里的 Hax 浏览器
-                AppUIState.shared.quickHaxBrowserPresented = true
+                // v7.5.0：内置浏览器已删除——网页内容由 web.search / web.fetch 直接读取
             }
             .frame(maxWidth: .infinity)
         }

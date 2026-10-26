@@ -31,7 +31,7 @@ final class SubagentTool: MCPTool {
         parameters: [
             "task": "完整任务书（自包含：目标 + 已知路径/URL + 约束 + 期望返回格式）",
             "context": "可选：要原样交给子代理的素材（文件片段、报错输出、候选链接）",
-            "tools": "可选：只给子代理这几个工具，逗号分隔（如 rg 或 shell.exec,haxbrowser）；不填=用当前已启用的全部工具",
+            "tools": "可选：只给子代理这几个工具，逗号分隔（如 shell.exec,workspace,web.search）；不填=用当前已启用的全部工具",
             "exclude": "可选：禁用某些工具，逗号分隔（默认自动排除 subagent 自己，防止套娃）",
             "max_rounds": "最多工具轮次（默认 12，最大 40）",
             "model": "可选：指定模型名（默认用当前会话的模型配置）",

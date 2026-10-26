@@ -6,7 +6,7 @@ import Foundation
 final class SSHTool: MCPTool {
     let definition = ToolDefinition(
         name: "ssh.exec",
-        summary: "Run a shell command on a remote server via SSH. Use for: execute commands on your Linux server. Don't use for: run commands on iPhone shell (use shell.exec), browse web (use haxbrowser). Prerequisite: configure SSH in settings first. Example: user says 'run this command on the server' → ssh exec.",
+        summary: "Run a shell command on a remote server via SSH. Use for: execute commands on your Linux server. Don't use for: run commands on iPhone shell (use shell.exec), browse web (use web.fetch). Prerequisite: configure SSH in settings first. Example: user says 'run this command on the server' → ssh exec.",
         parameters: [
             "command": "Shell command to run (required)",
             "timeout": "Timeout in seconds (default: 30)"

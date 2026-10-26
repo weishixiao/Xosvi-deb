@@ -1003,7 +1003,7 @@ final class ConversationStore: ObservableObject {
         // v3.1.66：全量加载所有工具 (tool_search 已删除，不再渐进式披露）
         var baseTools = config.apiProtocol == "Anthropic Messages" ? nil : ToolRegistry.shared.enabledOpenAIToolSchema()
         // v7.1.0：搜索不再由用户开关控制——联网工具默认全开，AI 判断需要时自行调用
-        // （web.search / haxbrowser / web.fetch 都在工具集里）。smartSearch 参数保留只为兼容旧调用。
+        // （web.search / web.fetch 始终在工具集里）。smartSearch 参数保留只为兼容旧调用。
         _ = smartSearch
         // v3.1.66：全量加载，disclosed 机制已不再新增工具 (tool_search 已删），
         // 保留仅为兼容会话内已授权工具 schema 的持久注入。
@@ -1704,7 +1704,7 @@ final class ConversationStore: ObservableObject {
         switch result {
         case .success(let r):
             let rawContent = Self.jsonString(r)
-            // v2.9.49：工具结果截断 (>8000字符），防止单条工具结果 (如 haxbrowser snapshot / injection.list）
+            // v2.9.49：工具结果截断 (>8000字符），防止单条工具结果 (如 web.fetch / injection.list）
             // 撑爆上下文导致后续请求巨慢。截断后加提示，模型可调用带分页/过滤参数的工具获取完整数据。
             let content: String
             if rawContent.count > 8000 {

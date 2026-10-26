@@ -130,7 +130,8 @@ struct CodeBlockView: View {
 func toolSymbol(_ name: String) -> String {
     let n = name.lowercased()
     if n.hasPrefix("shell") { return "terminal" }
-    if n.hasPrefix("haxbrowser") || n.hasPrefix("web") { return "globe" }
+    if n.hasPrefix("web") { return "globe" }
+    if n.hasPrefix("workspace") { return "folder" }
     if n.hasPrefix("subagent") { return "person.2" }
     if n.hasPrefix("file") || n.hasPrefix("artifact") { return "doc" }
     if n.hasPrefix("db") { return "cylinder.split.1x2" }

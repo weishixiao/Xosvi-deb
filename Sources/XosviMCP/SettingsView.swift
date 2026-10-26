@@ -204,12 +204,16 @@ struct SettingsView: View {
                              subtitle: "SSH 连接远程服务器 · 远程终端被控制",
                              icon: "terminal.fill", color: .teal,
                              destination: AnyView(RemoteAccessView())),
-                // v7.3.0：Hax 电脑整页已删除（引擎/终端/文件浏览都没了），
-                // 只保留浏览器作为独立设置项
-                SettingsItem(title: "浏览器",
-                             subtitle: "默认百度 · AI 可控制 · 真实渲染",
-                             icon: "globe", color: .gray,
-                             destination: AnyView(HaxBrowserSettingsView())),
+                // v7.5.0：内置浏览器已删除；改为「联网搜索」（多服务商 + 全文读取）
+                SettingsItem(title: "联网搜索",
+                             subtitle: "服务商 / API Key / 自动读全文",
+                             icon: "magnifyingglass", color: .gray,
+                             destination: AnyView(WebSearchSettingsView())),
+                // v7.5.0：工作区（移植 Kelivo workspace）
+                SettingsItem(title: "工作区",
+                             subtitle: "绑定目录 · 命令执行 · 文件读写",
+                             icon: "folder", color: .gray,
+                             destination: AnyView(WorkspaceSettingsView())),
                 SettingsItem(title: L10n.t("row_agents"),
                              subtitle: "隔离指令 · 工作流",
                              icon: "person.3.fill", color: .indigo,
