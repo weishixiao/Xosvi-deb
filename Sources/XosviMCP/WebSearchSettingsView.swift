@@ -118,7 +118,7 @@ struct WebSearchSettingsView: View {
                     testResult = "✗ \(r.provider)：\(err)"
                 } else {
                     testResult = "✓ \(r.provider)：\(r.hits.count) 条" +
-                        (r.answer.map { "，带答案摘要" } ?? "") + "\n" +
+                        (r.answer.map { _ in "，带答案摘要" } ?? "") + "\n" +
                         r.hits.prefix(3).map { "· \($0.title)" }.joined(separator: "\n")
                 }
             }
