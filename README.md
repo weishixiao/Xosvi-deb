@@ -1,4 +1,4 @@
-> ⚠️ **本项目已迁移至 [weishixiao/Xosvi](https://github.com/weishixiao/Xosvi)**
+
 >
 > 本仓库（xosvi-ios）**已停用**，不再接收提交、不再构建。最新代码、Release 与 CI 均在
 > **[Xosvi](https://github.com/weishixiao/Xosvi)** 仓库。
