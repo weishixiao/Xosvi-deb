@@ -95,10 +95,8 @@ final class ShellExecTool: MCPTool {
             }
         }
         
-        // 重置工作目录
-        if params["reset_cwd"] as? Bool == true {
-            ISHEngine.resetCwd()
-        }
+        // v7.3.0：iSH 引擎已移除，不再有 guest 工作目录可重置
+        _ = params["reset_cwd"]
         
         // v4.3.13: 默认超时 30→20s（收紧）。iSH(x86 模拟器) CPU 开销极高，后台长命令/死循环
         // 约 13s CPU 即触发系统 watchdog(Elapsed CPU time 超限)→ panic/重启/闪退。收紧默认超时 + ISH kill 兜底。
@@ -139,7 +137,7 @@ final class ShellExecTool: MCPTool {
                     "执行环境: iOS 原生 (FileManager 直连)",
                     "HOME: \(home)",
                     "Documents: \(docs)",
-                    "cwd: \(ISHEngine.cwd)",
+                    "cwd: \(FileManager.default.currentDirectoryPath)",
                     "iOS 系统路径可见(/var/containers): \(iosContainers)",
                     "Alpine 后端: iSH 引擎 (/workspace 映射 iOS Documents/Workspace)",
                     "提示: 含 | ; && > 的复合命令走 iOS 原生管道执行器；非 iOS 命令段走 Alpine"
@@ -201,55 +199,13 @@ final class ShellExecTool: MCPTool {
                 r["_busybox_fallback"] = nil
                 return r
             }
-            if !forceAlpine, !UserDefaults.standard.bool(forKey: "alpineEngineEnabled") {
-                return ["command": trimmed, "exit_code": 1, "ios_native": false,
-                        "runtime_actual": "ish_disabled",
-                        "stdout": "Alpine/iSH 引擎当前已关闭（防闪退模式）。原因：崩溃日志符号化显示 iSH(x86 模拟器)在此设备(arm64)执行时反复段错误（cpu_run_to_interrupt / poll_wakeup / err_map），是闪退主因。\n请改用 iOS 原生命令（直跑、不闪退）：\n• 列/读文件：ls / cat / stat\n• 查找：find <目录> [-name 模式] [-maxdepth N]\n• 大小：du -sh <目录> / du -sk <目录>\n• 文本：grep / head / tail / sed / wc\n• plist：plutil -extract <Key> raw -o - <文件>\n• 数据库：sqlite3 <db> \"SQL\"\n• 二进制：strings / nm / hexdump / objdump\n• Python：python3 -c \"...\"（App 内置原生 ARM64）\n确需 Alpine（apk add / git clone / 完整 tar 解包）时：设置 → 安全 → 开启「Alpine/iSH 引擎」后重试。",
-                        "hint": "iSH 已关闭（防闪退）。设置→安全 可临时开启。"]
-            }
-            // v3.7.7: 自动 bind——Alpine 命令引用 iOS 路径时自动挂载顶层 + 改写路径，
-            // 让 Alpine 直接读写 iOS 文件（消灭环境漂移，替代单向字节桥接）。
-            // bind 后 iOS 路径不可见的旧约束不再成立。
-            let boundCmd = ISHEngine.autoBind(trimmed)
-            // v3.6.19l: Alpine 执行前保护护栏——凡命令要进 Alpine 却引用了"桥接不了"的 iOS 文件
-            // (>2MB 超限 / 不存在)，Alpine 必然读不到 → 执行前直接拦截并给出明确下一步，
-            // 而不是放进去跑出空结果让 AI 反复瞎试（根治 jinx 会话 40 次工具调用绕圈的根因）。
-            if let guardMsg = ShellExecTool.alpineIOSPathGuard(boundCmd) {
-                return ["command": trimmed, "exit_code": 1, "ios_native": false,
-                        "stdout": guardMsg,
-                        "hint": "该命令会被路由到 Alpine，但 Alpine 读不到该 iOS 路径（非 Workspace/Containers 绑定目录，或文件>2MB）。三种解法：①先 cp 到 Workspace：`cp <file> /var/mobile/Documents/Workspace/`，再走 Alpine /ios_workspace 直读分析；②用原生 shell 工具（strings/nm/hexdump 直读大文件、du 统计目录大小、plutil 读 plist——均 iOS 原生直跑，勿用 for 循环绕 Alpine，arm64 上会崩）；③对二进制用 binary.symbols / file analyze。"]
-            }
-            // v6.3.1：iSH 崩溃防护（符号化凭证）——6.3.0 崩溃日志 base= 还原后确认：
-            //   帧 = cpu_run_to_interrupt +1204 / task_run_current +224 / sys_sched_yield
-            //   即 iSH(x86 模拟器) 在 arm64 真机执行 shell 脚本时段错误 → 整个 App 被杀。
-            // for/while/case/$( ) 这类脚本结构最容易触发，且这类需求本可用原生命令完成
-            // （find -maxdepth / du -sh / plutil / ls / grep）。除非显式 runtime=alpine，否则拦截。
-            if !forceAlpine, ShellExecTool.looksLikeCrashProneShellScript(boundCmd) {
-                return ["command": trimmed, "exit_code": 1, "ios_native": false,
-                        "runtime_actual": "blocked",
-                        "stdout": "已拦截：该命令含 shell 脚本结构（for/while/case/$(...)/sh -c），在 iSH(arm64 模拟器) 上执行会段错误闪退（实测崩溃栈 cpu_run_to_interrupt + task_run_current + sys_sched_yield）。\n改用 iOS 原生方式（均原生直跑，不闪退）：\n• 遍历目录：`find <目录> -maxdepth 2 -type d`（勿用 for 循环）\n• 统计大小：`du -sh <目录>` 或 `du -sk <目录>`\n• 读写 plist：`plutil -extract <Key> raw -o - <文件>`\n• 列文件/搜索：`ls` / `cat` / `grep`\n确实需要在 Alpine 执行时，请显式传 runtime=alpine（自行承担闪退风险）。",
-                        "hint": "iSH 段错误防护：脚本结构已拦截，请改用原生命令（find/du/plutil/ls/grep）"]
-            }
-            let (output, exitCode, timedOut) = ISHEngine.exec(boundCmd, timeout: timeout)            // P3 按需补给：Alpine 输出显示缺工具(command not found)且命中白名单 → 自动 apk add 并重跑一次，
-            // 免 agent 反复探测缺什么、也避免"先探测→再装→再跑"的多轮试探。
-            let (finalOut, finalExit, finalTimed, provisionNote) = ShellExecTool.provisionAndRerun(boundCmd, output: output, exitCode: exitCode, timedOut: timedOut, timeout: timeout)
-            var stdout = ShellExecTool.filterNoise(finalOut)
-            if outLimit > 0 && stdout.count > outLimit {
-                let spillPath = ToolRegistry.spillLarge("alpine", stdout)
-                stdout = String(stdout.prefix(outLimit / 2)) + "\n…[输出太长total \(stdout.count) 字符，已截断；完整输出: \(spillPath)]…\n" + String(stdout.suffix(outLimit / 2))
-            }
-            var result: [String: Any] = [
-                "command": trimmed,
-                "exit_code": finalExit,
-                "stdout": stdout,
-                "cwd": ISHEngine.cwd,
-                "ios_native": false,
-                "runtime_actual": "alpine",   // v6.0.28: 标明实际运行环境
-                "hint": (provisionNote.isEmpty ? "" : provisionNote) + "Alpine Linux environment (auto-routed: needs full toolchain). 缺工具时系统已自动 apk add 安装并重试一次。"
-            ]
-            if finalTimed { result["timed_out"] = true }
-            AuditLog.shared.log("shell.exec (alpine auto)", detail: String(trimmed.prefix(100)))
-            return result
+            // v7.3.0：iSH/Alpine 运行时已整体移除（在 arm64 上反复段错误）。
+            // 走到这里的命令都是"必须有完整 Linux 工具链"的（apk add / git clone / 复杂脚本），
+            // 统一给出说明 + 原生替代方案，不再尝试启动引擎。
+            return ["command": trimmed, "exit_code": 127, "ios_native": false,
+                    "runtime_actual": "alpine_removed",
+                    "stdout": "Alpine/iSH 运行时已从本版本移除（它在 arm64 真机上会段错误闪退）。\n可用的原生替代：\n• 列/读文件：ls / cat / stat\n• 查找：find <目录> [-name 模式] [-maxdepth N]\n• 大小：du -sh <目录>\n• 文本：grep / head / tail / sed / wc\n• plist：plutil\n• 数据库：sqlite3\n• 二进制：strings / nm / hexdump / objdump\n• Python：python3（App 内置原生 ARM64）\n• 压缩包：bsdtar（内置原生，tar/zip/gzip 都走它）\napk add / git clone 这类依赖包管理器或 fork() 的操作已无可用路径。",
+                    "hint": "Alpine 已移除：请改用原生命令（ls/find/du/plutil/sqlite3/python3/bsdtar）"]
         }
         
         // v3.1.33: shell 语法识别——含管道/分号/重定向/逻辑符的命令不再裸前缀匹配 (iOS 原生朴素分词会把 | ; 当参数），
@@ -576,7 +532,7 @@ final class ShellExecTool: MCPTool {
         }
         
         // fix3cj: 内置原生工具链(lua/node/r2/cstool)单段命令也走原生——之前无管道时
-        // 36 个快捷路径不匹配 → 落到 Alpine 兜底 ISHEngine.exec → "node: not found"。
+        // 36 个快捷路径不匹配 → 以前会兜底到 Alpine（现引擎已移除）。
         // 只有含 | ; > 的命令走 runIOSPipeline(938 行)才会命中 case node/r2/lua/cstool。
         // 这里在 Alpine 兜底前补上同样的原生分发，让 `node -e "..."`、`r2 -v`、`lua -v`、`cstool -d` 单段直跑。
         if iosCmd == "lua" || iosCmd.hasPrefix("lua ") ||
@@ -609,15 +565,11 @@ final class ShellExecTool: MCPTool {
             }
         }
         
-        // v3.0.41：iSH 为唯一引擎 (ios_system 已删除）。初始化failed直接报错，不再回退。
-        let (output, exitCode, timedOut) = ISHEngine.exec(command, timeout: timeout)
-
-        // v4.3.76：单命令 Alpine 兜底同样享受"缺工具自动装"——objdump/jq/xxd/readelf/rabin2 等
-        // 不在 autoRouteNeedsAlpine 标记里的命令，not found 时白名单自动装并重跑一次，与主 Alpine 路由一致。
-        // 参考 iOS 原生命令算法：36 个白名单命令都有自动实现；Alpine 工具也应"装了就能直接调"。
-        var provNote = ""
-        var rOut = output, rExit = exitCode, rTimed = timedOut
-        (rOut, rExit, rTimed, provNote) = ShellExecTool.provisionAndRerun(command, output: output, exitCode: exitCode, timedOut: timedOut, timeout: timeout)
+        // v7.3.0：iSH 引擎已移除，这里不再有任何"兜底到 Alpine"的路径
+        return ["command": trimmed, "exit_code": 127, "ios_native": false,
+                "runtime_actual": "ainot_available",
+                "stdout": "该命令没有可用的执行环境（Alpine/iSH 运行时已移除，且不是内置原生命令）。\n可用：ls/cat/stat/find/du/grep/sed/wc/plutil/sqlite3/strings/nm/hexdump/objdump/python3/bsdtar 及 App 内置工具。",
+                "hint": "改用原生命令或 App 内置工具"]
 
         // 过滤杂散调试噪音
         var stdout = ShellExecTool.filterNoise(rOut)
@@ -625,9 +577,6 @@ final class ShellExecTool: MCPTool {
             let spillPath = ToolRegistry.spillLarge("shell", stdout)
             stdout = String(stdout.prefix(outLimit / 2)) + "\n…[输出太长total \(stdout.count) 字符，已截断；完整输出: \(spillPath)]…\n" + String(stdout.suffix(outLimit / 2))
         }
-
-        // 会话目录：iSH guest 路径
-        var newPwd = ISHEngine.cwd
 
         AuditLog.shared.log("shell.exec", detail: String(command.prefix(100)))
 
@@ -654,32 +603,9 @@ final class ShellExecTool: MCPTool {
     /// v4.3.76：统一"缺工具自动装包"逻辑（135 主 Alpine 路由 与 单命令 Alpine 兜底共用）。
     /// not found 且白名单命中 → 自动 apk add（进度条 + 结构化诊断）并重跑一次；
     /// 非白名单 → 跳过安装并返回明确提示（jtool2 这类非 Alpine 工具名）。
-    static func provisionAndRerun(_ body: String, output: String, exitCode: Int32, timedOut: Bool, timeout: TimeInterval) -> (output: String, exitCode: Int32, timedOut: Bool, note: String) {
-        var note = ""
-        let prov = ISHEngine.autoProvision(output)
-        guard let pkg = prov.pkg else { return (output, exitCode, timedOut, note) }
-        if !prov.known {
-            note = "工具 \(pkg) 不在自动装包白名单（可能不是 Alpine 包），已跳过自动安装；请确认工具名，或用 tool.install 指定 name/source。"
-            return (output, exitCode, timedOut, note)
-        }
-        ShellDiag.log("provision auto: apk add \(pkg) (missing in Alpine)")
-        let provisionTimeout = min(max(timeout, 60), 240)
-        let provisionStart = Date()
-        InstallationRegistry.shared.start(key: pkg)
-        let apkResult = ISHEngine.apkAdd([pkg], timeout: provisionTimeout) { line in
-            InstallationRegistry.shared.appendLine(line)
-        }
-        let elapsed = Int(Date().timeIntervalSince(provisionStart))
-        if apkResult.exitCode == 0 {
-            InstallationRegistry.shared.finish(ok: true, summary: "已装 \(pkg)（\(elapsed)s）")
-            note = "首次运行已自动安装缺失工具 \(pkg)（耗时 \(elapsed)s）。"
-        } else {
-            let diag = ISHEngine.installDiagnose(apkResult.output, timedOut: apkResult.timedOut, exitCode: apkResult.exitCode)
-            InstallationRegistry.shared.finish(ok: false, summary: diag)
-            note = "自动安装 \(pkg) 失败：\(diag)"
-        }
-        let (rout, rexit, rtimed) = ISHEngine.exec(body, timeout: timeout)
-        return (rout, rexit, rtimed, note)
+    /// v7.3.0：Alpine 已移除——"缺工具自动 apk add 并重跑"整段失效，保留空实现让调用点不用改。
+    static func provisionAndRerun(_ cmd: String, output: String, exitCode: Int32, timedOut: Bool, timeout: Double) -> (String, Int32, Bool, String) {
+        (output, exitCode, timedOut, "")
     }
 
     static func containsShellSyntax(_ command: String) -> Bool {
@@ -1041,7 +967,7 @@ final class ShellExecTool: MCPTool {
         guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
         let ns = command as NSString
         let maxBytes = 2 * 1024 * 1024
-        // v6.0.28: autoBind 实际绑定的范围（与 ISHEngine.autoBind 保持一致）
+        // v6.0.28: 原生侧路径映射范围（Alpine autoBind 已随引擎移除）
         let bindableRoots = [
             "/var/mobile/Documents/Workspace",
             "/var/containers",
@@ -1211,7 +1137,7 @@ final class ShellExecTool: MCPTool {
     ]
     
     /// v4.3.9: 反向路径翻译——iOS 原生命令收到 Alpine 挂载路径时翻译回 iOS 真实路径。
-    /// 正向(iOS→Alpine)已由 ISHEngine.autoBind 完成; 原生侧缺反向, 导致 grep/cat/ls
+    /// 原生侧路径映射（原来正向 iOS→Alpine 由引擎的 autoBind 完成，已移除）; 曾缺反向, 导致 grep/cat/ls
     /// 收到 /ios_workspace 等挂载路径时找不到文件(AI 被迫手动换"真实 iOS 路径")。
     /// 这里统一反向: /ios_workspace→/var/mobile/Documents/Workspace, /ios_containers→/var/containers,
     /// /ios_system→/System。原生命令处理前调用, 让 AI 任意写挂载路径都能被原生读到。
@@ -1392,21 +1318,12 @@ final class ShellExecTool: MCPTool {
                             result["ios_native"] = true
                         }
                     } else {
-                        var (output, outputExit, timedOut) = ISHEngine.exec(body, timeout: timeout)
-                        // P3 按需补给（v4.3.76 统一走公共函数）：白名单已知包自动装+重跑，非白名单给明确提示
-                        var provNote = ""
-                        (output, outputExit, timedOut, provNote) = ShellExecTool.provisionAndRerun(body, output: output, exitCode: outputExit, timedOut: timedOut, timeout: timeout)
-                        var out = ShellExecTool.filterNoise(output)
-                        if limit > 0 && out.count > limit {
-                            let spillPath = ToolRegistry.spillLarge("alpine", out)
-                            out = String(out.prefix(limit / 2)) + "\n…[输出太长total \(out.count) 字符，已截断；完整输出: \(spillPath)]…\n" + String(out.suffix(limit / 2))
-                        }
+                        // v7.3.0：Alpine 已移除——复合命令里的非 iOS 段不再有执行环境
                         result = [
-                            "command": body, "exit_code": Int(outputExit), "stdout": out,
-                            "cwd": ISHEngine.cwd,
-                            "hint": provNote + "Alpine Linux environment (non-iOS segment of compound command): full command support; 缺工具已自动 apk add"
+                            "command": body, "exit_code": 127,
+                            "stdout": "该段命令需要 Alpine 运行时（已移除）。请改用原生段（ls/cat/grep/find/du/python3/bsdtar 等）。",
+                            "hint": "Alpine 已移除：改用原生段"
                         ]
-                        if timedOut { result["timed_out"] = true }
                     }
                     text = result["stdout"] as? String ?? ""
                     exit = result["exit_code"] as? Int ?? 0
@@ -4099,7 +4016,7 @@ final class ShellExecTool: MCPTool {
     
     /// v6.2.5: iOS 原生 du 命令——目录/文件大小统计（含 glob 展开）。
     /// v6.2.5 动机：AI 统计 App 缓存/目录大小时写 `du -sk <dir>`，之前 du 无原生实现 →
-    /// runIOSPipeline 把它当 Alpine 段 → ISHEngine.exec → iSH(arm64 模拟器) 执行复杂脚本
+    /// runIOSPipeline 把它当非原生段（原先交 iSH 模拟器执行，引擎已移除）
     /// 段错误 → 整个 App 崩溃 ("工具执行已中断"). 原生实现后整条链不进 iSH.
     /// 支持: du -s -k -h -sh <path...>，路径支持 glob (*/?)；无 -s 时列出各子项大小。
     private static func runIOSDu(_ command: String) -> [String: Any] {

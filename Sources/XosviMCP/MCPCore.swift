@@ -1246,9 +1246,9 @@ public final class ToolRegistry: ObservableObject {
         // v3.1.40: device 大工具 + 子命令 (合并 4 个 device.* 工具）
         register(DeviceExecTool())
         // v6.6.11：Hax 电脑——AI 可调用的 Alpine 工作站（exec/code/search/fetch/read/write/install）
-        register(HaxComputerTool())
+        // v7.3.0：Hax 电脑（hax 工具）随引擎一起移除
         // v6.6.12：引擎控制——AI 可自主开关 Alpine/iSH（依赖 Alpine 的工具不再被门控卡死）
-        register(EngineTool())
+        // v7.3.0：engine 工具随引擎一起移除
         // v6.6.16：存档修改——不依赖 spawn/Alpine/注入的 SQLite+plist 直读直写
         register(SaveDataTool())
         // v3.1.40: 删旧的 4 个 device.* 工具 (已合并到 device 大工具）

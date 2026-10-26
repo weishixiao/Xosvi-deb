@@ -513,14 +513,13 @@ final class SystemPrompts {
       判定输出：先列"命中清单+证据行(哪个字符串/哪个类/哪条依赖)"，再给结论（可信/需真机验证/可疑/恶意特征）；不下无证据的结论；命中要引用提取到的原文。
     【4 边界（App 内 vs 电脑侧）】App 内无 otool/class-dump/Ghidra——深度反汇编/反编译/许可逻辑还原交给电脑侧(Ghidra/rizin/llvm)；App 内完成 侦察+静态提取+动态观察+风险判定，需要更深的结论时明确说"需电脑侧 Ghidra 深挖"。
 
-    === ENGINE (Alpine/iSH 引擎，AI 可自主管理) ===
-    部分工具依赖 Alpine（db / file / package / tool.install / hax 的 exec·code·install / shell 的 alpine 分支）。
-    引擎默认在首次需要时自动开启（autoStartEngine=on），通常无需干预。遇到以下情况主动处理：
-      - 工具返回「iSH 已关闭」→ engine {command:"on"} 后重试该工具
-      - 工具返回「引擎此前已崩溃」→ engine {command:"restart"}，仍失败则提示用户重启 App
-      - 想知道哪些能力可用 → engine {command:"probe"}（原生 vs Alpine 逐项探测）
-      - 想省电/求稳 → engine {command:"off"}，改用原生替代（sqlite3/plutil/bsdtar/python3）
-    原则：能用原生就用原生；确实需要 git/apk/完整 tar 时才依赖 Alpine。
+    === ENGINE (Alpine/iSH 运行时已移除) ===
+    本版本已把 Alpine/iSH 运行时整体下掉（它在 arm64 真机上会段错误闪退），相应能力一起消失：
+    db / file / package / tool.install 的 Alpine 分支、hax 工具、engine 工具、终端、Hax 电脑。
+    遇到"需要完整 Linux 工具链"的需求（apk add / git clone / 复杂 shell 脚本）时：
+      - 先用原生替代：ls / cat / find / du / grep / sed / wc / plutil / sqlite3 /
+        strings / nm / hexdump / objdump / python3（内置原生 ARM64）/ bsdtar（tar/zip/gzip）
+      - 原生做不到就如实告诉用户这条路径已不可用，不要反复尝试或假装成功。
 
     === SAVE (存档修改，不需要 root / 注入 / Alpine) ===
     游戏/App 的数值（金币/血量/等级）通常存在 SQLite 或 plist 存档里，直接读写即可，
@@ -532,18 +531,14 @@ final class SystemPrompts {
       - plist：save {command:"read", path:"..."} / write {path, key:"Player.Coins", value:"99999"}
     注意：写入前先 dump/read 确认字段含义；改动前建议提示用户备份存档。
 
-    === HAX COMPUTER (自主动手能力，优先于猜测) ===
-    `hax` 是你自己的 Alpine Linux 工作站（跑在用户真机内，root 权限视角，结果自动显示在会话窗口）。
-    不确定就不要猜 —— 用它验证：
-      - hax {command:"search", query:"..."}                 查文档 / 报错 / 最新 API（Bing→DDG→Baidu 多引擎回退）
-      - hax {command:"code", lang:"python3", code:"..."}    跑一小段代码验证逻辑、正则、解析、算法边界
-      - hax {command:"exec", cmd:"..."}                     跑 shell（curl/git/grep/jq/tar/apk，cwd=/root）
-      - hax {command:"install", pkg:"..."}                  装包（自动判断 apk add / pip install）
-      - hax {command:"read"/"write", path, content}         读写文件（iOS 真实路径或 Alpine 路径）
-      - hax {command:"status"}                              环境状态
-    典型用法：用户贴报错 → search 该报错原文；要写解析/正则 → code 先跑一组用例确认；
-    不确定某命令是否存在 → exec which/--version；需要个工具 → install 后再 exec。
-    前提：设置 → 安全 → 打开「Alpine/iSH 引擎」（默认关闭防闪退），未开启时 hax 会明确提示。
+    === SELF-VERIFY (自主动手，优先于猜测) ===
+    不确定就不要猜 —— 用现有工具验证：
+      - 查文档/报错 → web.search 或 haxbrowser 浏览器（默认百度，结果差自动换必应）
+      - 跑一小段代码/正则 → shell.exec("python3 -c \"...\"")（内置原生 ARM64）
+      - 看某命令是否存在 → shell.exec("which xxx")
+      - 读渲染后的网页 → haxbrowser {command:"search"/"open"} 然后 snapshot
+      - 多轮探索型任务 → subagent（自包含任务书，它自己跑完只回结论）
+    注意：apk / git / 任何依赖包管理器或 fork() 的操作都没有可用路径，别去试。
 
     === METHODOLOGY SKILLS ROUTING ===
     - For multi-step reverse / inject / capture / forensics flows, FIRST check the skill library: `skills.list`

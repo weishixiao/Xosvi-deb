@@ -24,18 +24,56 @@ final class BindAppTool: MCPTool {
         guard let bundleId = params["bundle_id"] as? String, !bundleId.isEmpty else {
             throw MCPError.invalidParams("bundle_id required")
         }
-        let r = ISHEngine.bindAppContainer(bundleId: bundleId, readOnly: true)
-        guard r.ok, let m = r.mountPath, let h = r.hostPath else {
-            throw MCPError.failed("bind_app: \(r.error ?? "unknown error")")
+        // v7.3.0：Alpine 已移除，"把容器挂载进 Linux"没有意义了。
+        // 直接给出 iOS 真实路径，AI 用原生工具（ReadTool / sqlite3 / python3）照样能读。
+        guard let container = Self.containerPath(for: bundleId) else {
+            throw MCPError.failed("bind_app: 找不到 \(bundleId) 的数据容器（App 未安装或不可见）")
         }
         return [
             "ok": true,
             "bundle_id": bundleId,
-            "mode": "read_only",
-            "mount_path": m,
-            "host_path": h,
-            "hint": "只读挂载。在 Alpine shell.exec / python3 里用 \(m) 读该 App 数据(如 \(m)/Documents、\(m)/Library/Preferences)。只读，写不进去。",
+            "mode": "native_read_only",
+            "host_path": container,
+            "hint": "Alpine 已移除，不再有挂载点。这是该 App 数据容器的 iOS 真实路径，用原生工具直接读即可（如 \(container)/Documents、\(container)/Library/Preferences）。",
         ]
+    }
+}
+
+extension BindAppTool {
+    /// v7.3.0：查 App 数据容器路径（原由 Alpine 挂载层提供，现在直接问容器元数据）
+    static func containerPath(for bundleId: String) -> String? {
+        let fm = FileManager.default
+        let roots = [
+            "/var/mobile/Containers/Data/Application",
+            "/private/var/mobile/Containers/Data/Application"
+        ]
+        for root in roots {
+            guard let dirs = try? fm.contentsOfDirectory(atPath: root) else { continue }
+            for d in dirs {
+                let meta = root + "/" + d + "/.com.apple.mobile_container_manager.metadata.plist"
+                guard let data = fm.contents(atPath: meta),
+                      let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+                      let bid = plist["MCMMetadataIdentifier"] as? String, bid == bundleId else { continue }
+                return root + "/" + d
+            }
+        }
+        return nil
+    }
+
+    /// v7.3.0：把容器里的 Documents + Library 备份到工作区 backups/，返回备份目录
+    static func backupContainer(_ container: String, app: String) -> String? {
+        let fm = FileManager.default
+        let ws = Workspace.root.path + "/backups/\(app)-\(Int(Date().timeIntervalSince1970))"
+        try? fm.createDirectory(atPath: ws, withIntermediateDirectories: true)
+        var copied = false
+        for sub in ["Documents", "Library/Preferences"] {
+            let src = container + "/" + sub
+            guard fm.fileExists(atPath: src) else { continue }
+            let dst = ws + "/" + sub
+            try? fm.createDirectory(atPath: (dst as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+            if (try? fm.copyItem(atPath: src, toPath: dst)) != nil { copied = true }
+        }
+        return copied ? ws : nil
     }
 }
 
@@ -52,18 +90,19 @@ final class BindAppWriteTool: MCPTool {
         guard let bundleId = params["bundle_id"] as? String, !bundleId.isEmpty else {
             throw MCPError.invalidParams("bundle_id required")
         }
-        let r = ISHEngine.bindAppContainer(bundleId: bundleId, readOnly: false)
-        guard r.ok, let m = r.mountPath, let h = r.hostPath else {
-            throw MCPError.failed("bind_app_write: \(r.error ?? "unknown error")")
+        // v7.3.0：Alpine 已移除；可写模式改为"先备份再直接写 iOS 路径"
+        guard let container = Self.containerPath(for: bundleId) else {
+            throw MCPError.failed("bind_app_write: 找不到 \(bundleId) 的数据容器")
         }
+        // 先备份（原来由引擎的 bindAppContainer 负责，现在在原生侧做）
+        let backup = Self.backupContainer(container, app: bundleId)
         return [
             "ok": true,
             "bundle_id": bundleId,
-            "mode": "read_write",
-            "mount_path": m,
-            "host_path": h,
-            "backup_path": r.backupPath ?? "",
-            "warning": "可写：改坏该 App 数据容器→该 App 可能无法启动(不影响AI环境)。改动前务必确认已备份(见 backup_path)，改坏了从备份还原。",
+            "mode": "native_read_write",
+            "host_path": container,
+            "backup_path": backup ?? "",
+            "warning": "可写：改坏该 App 数据容器 → 该 App 可能无法启动(不影响 AI 环境)。改动前务必确认已备份(见 backup_path)，改坏了从备份还原。",
         ]
     }
 }

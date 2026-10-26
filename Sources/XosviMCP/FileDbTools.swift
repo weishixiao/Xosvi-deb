@@ -1,12 +1,12 @@
 import Foundation
 
-// MARK: - v3.6.12 P5 高层跨环境工具 (v3.7.7: 复用 ISHEngine 自动 bind——Alpine 直接读写 iOS 文件)
+// MARK: - v3.6.12 P5 高层工具（v7.3.0：Alpine 已移除，全部改原生实现）
 
-/// 高层文件检查/分析工具。inspect 走原生读元信息；analyze 走 Alpine (自动 bind 直读 iOS 文件) 跑 file+strings。
+/// 高层文件检查/分析工具。inspect 读元信息；analyze 用内置原生提取 type + strings。
 final class FileExecTool: MCPTool {
     let definition = ToolDefinition(
         name: "file",
-        summary: "High-level file inspection (auto-bind: Alpine reads iOS files directly). Subcommands: inspect / analyze. inspect=native metadata: size, magic type (sqlite/zip/macho/elf/text); Mach-O 额外给 fat/thin、arch(arm64/x86_64)、filetype(executable/dylib). analyze=Alpine `file`+`strings`(前80行). REQUIRED: path(iOS绝对路径). Use for: 识别文件类型/从砸壳二进制或db提取字符串; 编辑文件走shell.",
+        summary: "High-level file inspection (auto-bind: Alpine reads iOS files directly). Subcommands: inspect / analyze. inspect=native metadata: size, magic type (sqlite/zip/macho/elf/text); Mach-O 额外给 fat/thin、arch(arm64/x86_64)、filetype(executable/dylib). analyze=原生 file 类型 + strings(前80条). REQUIRED: path(iOS绝对路径). Use for: 识别文件类型/从砸壳二进制或db提取字符串; 编辑文件走shell.",
         parameters: [
             "command": "Subcommand (required): inspect / analyze",
             "path": "iOS absolute file path (required)"
@@ -41,15 +41,35 @@ final class FileExecTool: MCPTool {
             return result
         case "analyze":
             guard fm.fileExists(atPath: norm) else { throw MCPError.failed("file: no such file \(norm)") }
-            // v3.7.7: 先 autoBind 改写为 Alpine 可见路径(/ios_*)，再 base64 传路径。
-            // （直接用明文 iOS 路径会被 autoBind 改写；base64 保护仍防 shell 元字符注入，但改写须先发生）
-            let boundPath = ISHEngine.autoBind(norm)
-            let pb = Data(boundPath.utf8).base64EncodedString()
-            let out = ISHEngine.exec("P=$(echo '\(pb)' | base64 -d); file \"$P\"; echo '--- strings (first 80) ---'; strings -a \"$P\" 2>/dev/null | head -80", timeout: 60)
-            return ["env": "alpine", "exit_code": Int(out.exitCode), "output": out.output]
+            // v7.3.0：Alpine 已移除——改用纯原生读取（不依赖引擎，也不会段错误）
+            let data = (try? Data(contentsOf: URL(fileURLWithPath: norm), options: .mappedIfSafe)) ?? Data()
+            let type = Self.detectType(Array(data.prefix(64)))
+            let strs = Self.extractStrings(data, minLength: 6, limit: 80)
+            var out = "file type: \(type)\nsize: \(data.count) bytes\n--- strings (first \(strs.count)) ---\n"
+            out += strs.joined(separator: "\n")
+            return ["env": "native", "exit_code": 0, "output": out]
         default:
             throw MCPError.invalidParams("Unknown command: \(command). Available: inspect / analyze")
         }
+    }
+
+    /// v7.3.0：原生 ASCII 字符串提取（替代 Alpine 的 strings，不依赖引擎）
+    static func extractStrings(_ data: Data, minLength: Int = 4, limit: Int = 200) -> [String] {
+        var out: [String] = []
+        var cur = [UInt8]()
+        for b in data {
+            if b >= 0x20 && b < 0x7F {
+                cur.append(b)
+            } else {
+                if cur.count >= minLength, let s = String(bytes: cur, encoding: .ascii) { out.append(s) }
+                cur.removeAll(keepingCapacity: true)
+                if out.count >= limit { break }
+            }
+        }
+        if out.count < limit, cur.count >= minLength, let s = String(bytes: cur, encoding: .ascii) {
+            out.append(s)
+        }
+        return out
     }
 
     /// 依据文件头魔数推断类型
@@ -156,12 +176,10 @@ final class DbExecTool: MCPTool {
         case "list":
             // v6.6.22：原生优先——iSH 坏掉时 db 依然可用（跨 App 读库是常用取证步骤）
             if let r = nativeQuery(norm, "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name") { return r }
-            let out = ISHEngine.exec("sqlite3 '\(norm)' \".tables\"", timeout: 60)
-            return ["env": "alpine", "exit_code": Int(out.exitCode), "output": out.output]
+            throw MCPError.failed("db: 无法读取该数据库（原生 SQLite 打不开，可能是加密库或权限不足）：\(norm)")
         case "schema":
             if let r = nativeQuery(norm, "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type, name") { return r }
-            let out = ISHEngine.exec("sqlite3 '\(norm)' \".schema\"", timeout: 60)
-            return ["env": "alpine", "exit_code": Int(out.exitCode), "output": out.output]
+            throw MCPError.failed("db: 无法读取该数据库结构（原生 SQLite 打不开）：\(norm)")
         case "query":
             guard let sql = params["sql"] as? String, !sql.isEmpty else {
                 throw MCPError.invalidParams("sql required for query")
@@ -170,9 +188,7 @@ final class DbExecTool: MCPTool {
             // 在双引号上下文反破引号平衡，含 ;/$/` 等元字符的 SQL 可执行任意命令。改为 base64 编码 SQL
             // (仅 [A-Za-z0-9+/=] 安全字符)，Alpine 侧解码写临时文件，sqlite3 从 stdin 读，彻底绕开 shell 解析。
             if let r = nativeQuery(norm, sql) { return r }
-            let b64 = Data(sql.utf8).base64EncodedString()
-            let out = ISHEngine.exec("echo '\(b64)' | base64 -d > /tmp/_db_q.sql; sqlite3 -header -column '\(norm)' < /tmp/_db_q.sql", timeout: 90)
-            return ["env": "alpine", "exit_code": Int(out.exitCode), "output": out.output]
+            throw MCPError.failed("db: 查询失败（原生 SQLite 打不开或 SQL 有误）：\(norm)")
         default:
             throw MCPError.invalidParams("Unknown command: \(command). Available: list / schema / query")
         }

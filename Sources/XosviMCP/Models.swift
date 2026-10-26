@@ -874,8 +874,7 @@ final class ConversationStore: ObservableObject {
     /// v2.9.13：取消当前进行中的请求 (ChatView 停止按钮）
     func cancelCurrent() {
         stopRequested = true          // v3.5.16：设停止标志，runLoop 递归到下一轮即停
-        // v4.3.77：立即中断正在跑的 Alpine 命令/安装（否则 apkAdd 会闷头跑到 240s 且占着串行锁）
-        ISHEngine.interruptCurrent()
+        // v7.3.0：Alpine 已移除，不再有需要中断的引擎进程
         cancelNetworkRetry()
         currentClient?.cancel()
         currentClient = nil

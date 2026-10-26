@@ -61,8 +61,6 @@ struct ChatView: View {
     @State private var pendingFilePick = false
     @State private var showModelPicker = false  // v2.9.36：聊天框切换上游模型
     // v6.6.11：右上角 + 号菜单入口
-    @State private var showTerminal = false
-    @State private var showHaxComputer = false
     // v3.3.4：输入框 + 号展开"应用/相册/文件/浏览器"快捷行（点 + 变 x 收起）
     @State private var attachExpanded = false
 
@@ -88,7 +86,7 @@ struct ChatView: View {
         CompatNav {
             VStack(spacing: 0) {
                 // v6.9.16（DeepSeek 风格）：会话页顶部栏自绘——任务名居中 + 下方一行快速切换模型；
-                // 两侧是悬浮圆形功能键（左「≡」抽屉、右「＋」终端 / Hax 电脑）。
+                // 两侧是悬浮圆形功能键（左「≡」抽屉、右「＋」浏览器）。
                 if #available(iOS 16.0, *) {
                     DeepSeekTopBar(
                         centerTitle: selectionMode ? "已选 \(selectedIds.count) 条" : store.currentTitle,
@@ -100,11 +98,9 @@ struct ChatView: View {
                         leftIcon: selectionMode ? nil : "line.3.horizontal",
                         trailing: selectionMode ? nil : AnyView(
                             Menu {
-                                Button { showTerminal = true } label: {
-                                    Label("终端（自动进入 /root）", systemImage: "apple.terminal")
-                                }
-                                Button { showHaxComputer = true } label: {
-                                    Label("Hax 电脑", systemImage: "desktopcomputer")
+                                // v7.3.0：终端 / Hax 电脑已移除，这里只剩浏览器
+                                Button { uiState.quickHaxBrowserPresented = true } label: {
+                                    Label("浏览器", systemImage: "globe")
                                 }
                             } label: {
                                 FloatingCircleButton(icon: "plus")
@@ -187,15 +183,11 @@ struct ChatView: View {
                     } else {
                         // v6.6.11：模型切换已移到任务名下方；右上角改为 + 号（终端 / Hax 电脑入口）
                         Menu {
+                            // v7.3.0：终端 / Hax 电脑已移除，这里只剩浏览器
                             Button {
-                                showTerminal = true
+                                uiState.quickHaxBrowserPresented = true
                             } label: {
-                                Label("终端（自动进入 /root）", systemImage: "apple.terminal")
-                            }
-                            Button {
-                                showHaxComputer = true
-                            } label: {
-                                Label("Hax 电脑", systemImage: "desktopcomputer")
+                                Label("浏览器", systemImage: "globe")
                             }
                         } label: {
                             Image(systemName: "plus.circle")
@@ -266,13 +258,6 @@ struct ChatView: View {
             }
         }
         .navigationViewStyle(.stack)
-        // v6.6.11：右上角 + 号 → 终端 / Hax 电脑
-        .sheet(isPresented: $showTerminal) {
-            CompatNav { ISHTerminalView(showCloseButton: true, autoCdRoot: true) }
-        }
-        .sheet(isPresented: $showHaxComputer) {
-            CompatNav { HaxComputerView() }
-        }
         // v2.9.31：授权弹窗已整体移除（工具搜索即自动授权，无弹窗）。
         .sheet(item: $attachmentSheet, onDismiss: {
             // v3.1.67：面板完全关闭后再触发文件选择（UIKit 从顶层 VC present，真机稳定）
@@ -403,18 +388,7 @@ struct ChatView: View {
         // NavigationView，却用了 .navigationTitle；更关键的是 RemoteAccessView 里
         // 通过 NavigationLink 进入它，在没有导航容器时 NavigationLink 触发崩溃。
         // 统一在 present 处包一层 NavigationView（stack 样式，iOS 15 可用）。
-        .sheet(isPresented: Binding(get: { AppUIState.shared.quickTerminalPresented }, set: { AppUIState.shared.quickTerminalPresented = $0 })) {
-            NavigationView {
-                RemoteTerminalView()
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .navigationBarLeading) {
-                            Button("完成") { AppUIState.shared.quickTerminalPresented = false }
-                        }
-                    }
-            }
-            .navigationViewStyle(.stack)
-        }
+        // v7.3.0：本地终端已移除（引擎不可用），此入口整段删除
         .sheet(isPresented: Binding(get: { AppUIState.shared.quickToolsPresented }, set: { AppUIState.shared.quickToolsPresented = $0 })) {
             ToolsView()
         }
@@ -640,7 +614,7 @@ struct ChatView: View {
         //   ① 删除底部那一排功能胶囊（推理·高 / 思考·开 / 搜索·开 / 技能）；"推理"与"思考"合并成「思考」；
         //   ② 输入框变成大圆角方框：首行多行输入，次行左「+ 附件 / 思考 / 搜索」，右「发送」；
         //   ③ v6.9.15：思考 / 搜索两个开关放进输入框的工具行（替换原来的「技能」），下方不再单独一行；
-        //   ④ 删除输入框左边的远程终端入口（终端 / Hax 电脑仍可从右上角 + 号菜单进入）。
+        //   ④ 删除输入框左边的远程终端入口（v7.3.0：终端本身也已移除）。
         VStack(spacing: 0) {
             // v2.9.10：待发送附件预览（图片缩略图 / 应用图标 / 文件）
             AttachmentPreviewStrip(attachments: pendingAttachments) { att in

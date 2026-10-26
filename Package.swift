@@ -20,28 +20,7 @@ let package = Package(
         .package(url: "https://github.com/p-x9/MachOKit.git", from: "0.55.0")
     ],
     targets: [
-        // v3.0.37：iSH-ARM64 C 包装层。头文件由 CI 的 build_ish.sh 生成到 ish-stage/include，
-        // 静态库在 ish-stage/libs（CI 产物；本地构建需先跑 scripts/ish-build/*.sh 生成）
-        .target(
-            name: "CISH",
-            path: "CISH",
-            cSettings: [
-                // 头文件由 CI 复制到 CISH/include/（build_ish.sh 产物 ish-stage/include/ish）
-                // 双根：wrapper.c 用 "ish/..."，iSH 源码内部用 "fs/.../kernel/.../misc.h" 等
-                .headerSearchPath("include"),
-                .headerSearchPath("include/ish"),
-                .define("GUEST_ARM64", to: "1"),
-                .define("ISH_INTERNAL", to: "1")
-            ],
-            linkerSettings: [
-                .unsafeFlags(["-L", "ish-stage/libs"]),
-                .linkedLibrary("ish"),
-                .linkedLibrary("ish_emu"),
-                .linkedLibrary("fakefs"),
-                .linkedLibrary("sqlite3"),
-                .linkedLibrary("z")
-            ]
-        ),
+        // v7.3.0：CISH（iSH 引擎 C 包装层）已移除——引擎在 arm64 上反复段错误，整套下掉。
         // v3.3.0：MITM 内核 C 桥接层（OpenSSL）。依赖 scripts/build-openssl.sh 产出的 openssl-stage/
         .target(
             name: "CMitm",
@@ -155,7 +134,6 @@ let package = Package(
                 .product(name: "ZIPFoundation", package: "ZIPFoundation"),
                 // v6.8.0：Mach-O 静态解析（macho 工具的后端）
                 .product(name: "MachOKit", package: "MachOKit"),
-                "CISH",
                 "MitmCore",
                 "CMitm",
                 "CLaunch",

@@ -8,19 +8,13 @@ import SwiftUI
 struct XosviApp {
     static func main() {
         let args = CommandLine.arguments
-        if args.contains("-trollish") {
-            // v6.3.9：iSH 引擎隔离子模式——主 App 用 posix_spawn 把自己以本模式拉起，
-            // 命令在子进程内跑引擎；引擎段错误只死子进程，主 App 存活（不闪退）。
-            // 复用主可执行 → 无需新构建目标/额外签名。
-            TrollishRunner.runChildMode(args: args)   // 内部不返回
-        } else {
-            UIApplicationMain(
-                CommandLine.argc,
-                CommandLine.unsafeArgv,
-                nil,
-                NSStringFromClass(AppDelegate.self)
-            )
-        }
+        // v7.3.0：iSH 引擎与它的 -trollish 子进程模式已整体移除，只剩正常启动。
+        UIApplicationMain(
+            CommandLine.argc,
+            CommandLine.unsafeArgv,
+            nil,
+            NSStringFromClass(AppDelegate.self)
+        )
     }
 }
 

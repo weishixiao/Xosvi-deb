@@ -204,13 +204,12 @@ struct SettingsView: View {
                              subtitle: "SSH 连接远程服务器 · 远程终端被控制",
                              icon: "terminal.fill", color: .teal,
                              destination: AnyView(RemoteAccessView())),
-                // v7.0.0：本地终端入口从设置里移走——已并入「Hax 电脑」（Hax 电脑 → 打开终端）
-                // v6.6.9：Minis 电脑（rootfs 管理 + Alpine 文件浏览）
-                SettingsItem(title: "Hax 电脑",
-                             subtitle: "终端 · Hax 浏览器 · 环境与文件",
-                             icon: "desktopcomputer", color: .indigo,
-                             destination: AnyView(HaxComputerView())),
-                // v7.0.0：旧「内置浏览器」设置项已删除——浏览器并入 Hax 电脑页
+                // v7.3.0：Hax 电脑整页已删除（引擎/终端/文件浏览都没了），
+                // 只保留浏览器作为独立设置项
+                SettingsItem(title: "浏览器",
+                             subtitle: "默认百度 · AI 可控制 · 真实渲染",
+                             icon: "globe", color: .gray,
+                             destination: AnyView(HaxBrowserSettingsView())),
                 SettingsItem(title: L10n.t("row_agents"),
                              subtitle: "隔离指令 · 工作流",
                              icon: "person.3.fill", color: .indigo,
@@ -228,13 +227,7 @@ struct SettingsView: View {
                          subtitle: "工具调用 · 成功/失败 · 导出给 AI 查看",
                          icon: "list.bullet.rectangle", color: .tmIndigo,
                          destination: AnyView(AuditLogView())),
-            // v6.3.3：Alpine/iSH 引擎开关（默认关闭）——11 条崩溃日志符号化后全部是
-            // iSH(x86 模拟器) 在 arm64 真机段错误（cpu_run_to_interrupt / poll_wakeup / err_map）。
-            SettingsItem(title: "Alpine/iSH 引擎",
-                         subtitle: "开启后可用 apk/git/完整 tar 等 Linux 工具链（exec 已走子进程隔离）",
-                         icon: "cpu", color: .gray,
-                         isOn: { UserDefaults.standard.bool(forKey: "alpineEngineEnabled") },
-                         onToggle: { UserDefaults.standard.set($0, forKey: "alpineEngineEnabled") }),
+            // v7.3.0：Alpine/iSH 引擎整体移除，「引擎开关」这一项也一并删除
             // v7.3.0：本项已从设置里删除——该行为恒为开启（见 SearchAlwaysOn 同款的做法），
             // 由 AI 自行判断何时需要引擎，用户无需干预。
             SettingsItem(title: "重置所有数据",

@@ -469,10 +469,11 @@ final class AppInjectPackageTool: MCPTool {
         if srcSize != dstSize {
             let (c2, o2) = im.runAsRoot("cp", args: ["-p", dylibPath, destDylib])
             if c2 != 0 {
-                // spawnRoot 失败兜底: 用 ISHEngine(Alpine cp, 工作区内路径) 
-                let altR = ISHEngine.exec("cp -f '\(dylibPath)' '\(destDylib)'", timeout: 90)
+                // v7.3.0：Alpine 已移除，兜底改用原生 FileManager 拷贝（同沙盒内通常可行）
+                try? FileManager.default.removeItem(atPath: destDylib)
+                try? FileManager.default.copyItem(atPath: dylibPath, toPath: destDylib)
                 if !FileManager.default.fileExists(atPath: destDylib) {
-                    return ["ok": false, "error": "copy dylib failed(\(c2)): \(o2)", "alt": String(altR.output.prefix(200))]
+                    return ["ok": false, "error": "copy dylib failed(\(c2)): \(o2)", "alt": "原生拷贝也失败（目标目录可能不可写）"]
                 }
             }
         }
