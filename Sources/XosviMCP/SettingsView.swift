@@ -155,26 +155,7 @@ struct SettingsView: View {
                          destination: AnyView(EnvVarsView()))
         ]))
 
-        // 控制（远程控制/控制中心/操作宏 + 开发者模式开关）
-        var controlItems: [SettingsItem] = [
-            SettingsItem(title: L10n.t("row_remote"),
-                         subtitle: L10n.t("row_remote_sub"),
-                         icon: "cursorarrow.click.2", color: .blue,
-                         destination: AnyView(RemoteControlView())),
-            // v2.9.144：AI 控制中心 + 操作宏（从聊天框移入设置，退出设置页后全屏弹出）
-            SettingsItem(title: L10n.t("ui_172"),
-                         subtitle: "计划 · 分色日志 · 现场截图 · 操作宏",
-                         icon: "target", color: .indigo,
-                         action: {
-                             presentationMode.wrappedValue.dismiss()
-                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                                 AppUIState.shared.controlPresented = true
-                             }
-                         })
-        ]
-        // v6.9.14：可爱助手（桌宠 / HUD）已按用户要求整块移除
-        groups.append(SettingsGroup(header: L10n.t("sec_control"), items: controlItems))
-
+        // v7.10.0：远程控制 + AI 控制中心已按用户要求整块删除（含源码）
         // 开发者（v6.0.28：默认开启，去掉开关）
         var devItems: [SettingsItem] = [
                 // v4.3.53：图标主题功能彻底移除（含 Resources 残留图标文件）。
@@ -195,11 +176,26 @@ struct SettingsView: View {
                              subtitle: "SSH 连接远程服务器 · 远程终端被控制",
                              icon: "terminal.fill", color: .teal,
                              destination: AnyView(RemoteAccessView())),
+                // v7.14.0：jb-p1lot——越狱设备直控桥（宿主二进制 / 配对 / 发现）
+                SettingsItem(title: "jb-p1lot",
+                             subtitle: "越狱设备直控 · 配对 · tweak 闭环",
+                             icon: "point.3.connected.trianglepath.dotted", color: .gray,
+                             destination: AnyView(JBPlotSettingsView())),
                 // v7.5.0：内置浏览器已删除；改为「联网搜索」（多服务商 + 全文读取）
                 SettingsItem(title: "联网搜索",
                              subtitle: "服务商 / API Key / 自动读全文",
                              icon: "magnifyingglass", color: .gray,
                              destination: AnyView(WebSearchSettingsView())),
+                // v7.11.0：控制台——把 control 的 10 个子命令做成可点操作
+                SettingsItem(title: "控制台",
+                             subtitle: "注入 · UI 树 · 截图 · 点按 · 滑动 · 输入 · 按键",
+                             icon: "slider.horizontal.3", color: .gray,
+                             destination: AnyView(ControlConsoleView())),
+                // v7.10.0：技能回放（移植 ghost-in-the-droid 的 skills 思路）
+                SettingsItem(title: "技能回放",
+                             subtitle: "已知流程零 token 重放 · 界面扫描",
+                             icon: "play.circle", color: .gray,
+                             destination: AnyView(GhostSkillsView())),
                 // v7.8.0：深度思考（方言 / 采样策略 / 回传 / token 预算）
                 SettingsItem(title: "深度思考",
                              subtitle: "参数方言 · 采样策略 · token 预算",

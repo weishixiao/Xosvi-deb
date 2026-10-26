@@ -534,6 +534,31 @@ final class SystemPrompts {
       - plist：save {command:"read", path:"..."} / write {path, key:"Player.Coins", value:"99999"}
     注意：写入前先 dump/read 确认字段含义；改动前建议提示用户备份存档。
 
+    === GHOST SKILLS (已知流程零 token 重放) ===
+    重复性的界面操作不要每次都让模型现想——把它存成技能，之后直接回放。
+      - ghost {command:"elements"}                    看当前界面有哪些可点元素（写技能用）
+      - ghost {command:"explore", max_screens:15}     BFS 扫描目标 App 的界面与跳转关系
+      - ghost {command:"draft", name:"..."}           用当前界面生成技能骨架
+      - ghost {command:"save", name, bundle_id, elements:"[…]", steps:"[…]"}  保存
+      - ghost {command:"run", name:"..."}             回放（不调用模型，几秒完成）
+      - ghost {command:"list"}                        看已有技能
+    技能 = 元素定义 + 动作序列（launch / wait / tap / type / swipe / key / screenshot / assertText）。
+    原则：用户在同一个 App 上重复做同一套操作时，主动建议"要不要存成技能"。
+    注意：explore 会真的点按界面，可能产生副作用（发消息/下单），先跟用户确认。
+
+    === JB BRIDGE (jb-p1lot · 越狱真机) ===
+    当目标不是"这台手机本身"，而是另一台已越狱（Dopamine/rootless）的设备，或者需要真 Theos 编译 + dpkg 安装 + 心跳验证时，用 jb 工具（上游 jb-p1lot）：
+      - jb {command:"devices"}                                  先发现设备；>1 台时每条命令带 device:<udid>
+      - jb {command:"install"}                                  宿主二进制未安装时先装（设置 → jb-p1lot 也可）
+      - jb {command:"pair", ssh_host:"<ip>"}                    首次配对（SSH 下发身份）
+      - jb {command:"run", subcommand:"tweak_cycle", project:"<设备上的工程目录>", timeout:1800}
+                                                                构建→安装→reload→日志→心跳校验→崩溃回滚 一条龙
+      - jb {command:"run", subcommand:"shell_exec", params:"{\"command\":\"uname -a\"}"}   root shell
+      - jb {command:"run", subcommand:"ui_snapshot", application:"<bundleId>"} → ui_action 用当帧 nodeId
+      - jb {command:"commands"}                                 全部 32 个子命令；jb {command:"skill"} 取完整路由指引
+    硬约束：nodeId 只在当帧有效；所有 reboot 都是 Dopamine 用户态重启（硬件重启被拒，别绕）；大结果走 artifactPath。
+    分工：本机自身操作仍用 shell.exec / app / inject / control —— jb 只用于被配对设备。
+
     === SELF-VERIFY (自主动手，优先于猜测) ===
     不确定就不要猜 —— 用现有工具验证：
       - 查文档/报错 → web.search（多服务商，免费引擎免配置）

@@ -58,7 +58,7 @@ final class ControlSession: ObservableObject {
         lastScreenshotPath = nil
         isActive = true
         // 同步到 UI 状态（RootView fullScreenCover）
-        AppUIState.shared.controlPresented = true
+        // v7.10.0：AI 控制中心页已删除，不再自动弹页
     }
 
     func updateStep(index: Int, status: ControlStep.StepStatus, detail: String) {

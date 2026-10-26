@@ -461,7 +461,7 @@ public final class ToolRegistry: ObservableObject {
         // v3.1.66：全量注册工具默认启用
         "artifact", "device", "memory", "assistant_memory", "verify", "container",
         "ssh", "diagnose", "knowledge", "location", "macro", "app", "control",
-        "inject", "automation", "network.capture", "server", "project", "workspace", "subagent",
+        "inject", "automation", "network.capture", "server", "project", "workspace", "subagent", "ghost",
         "shell.exec", "reminder", "rescue",
         // v4.3.65：统一工具安装闭环
         "tool.install", "env.setup_re",
@@ -476,6 +476,8 @@ public final class ToolRegistry: ObservableObject {
         // app_write_file 原生直写先备份）——否则"小白一句话分析/改 App 数据"时 AI 看不到这些工具
         "bind_app", "bind_app_write", "app_write_file",
         // v7.6.5：github 工具已移除
+        // v7.14.0：jb-p1lot 真机桥接（未安装二进制时工具会明确提示先 install，不会空转）
+        "jb"
     ]
 
     /// v2.9.31：常驻核心工具名集合 (UI 用只读访问）
@@ -1372,6 +1374,8 @@ public final class ToolRegistry: ObservableObject {
         // v7.5.0：内置浏览器已删除（用户要求）。联网能力改为「多服务商搜索 + 全文读取」，
         // 工作区能力（Kelivo workspace）新增。
         register(WorkspaceExecTool())
+        // v7.10.0：技能回放 / 界面自动探索（移植 ghost-in-the-droid 的 skills 思路）
+        register(GhostTool())
         // v7.1.0：通用子代理——多轮探索任务甩给它，只回结论
         register(SubagentTool())
         // v3.1.47: 删旧的 13 个 browser.* 工具 (已合并到 browser 大工具）
@@ -1456,6 +1460,8 @@ public final class ToolRegistry: ObservableObject {
         register(WebFetchTool())
         // v4.3.66：注册 github 大工具（CI 触发/查进度/下载产物）——tool.install 触发 CI 后，
         // AI 需按提示调 github.fetch_runs / github.download_artifact 取产物；此前该工具漏注册导致后续断链
+        // v7.14.0：jb-p1lot——rootless 越狱设备直控（root shell / tweak_cycle / UI / LLDB / Frida）
+        register(JBPlotTool())
         // v3.7.7c: 移除 ish.bind 注册——bind mount 已由 autoBind 全自动（命令引用 iOS 路径自动挂载+改写），
         // 手动 bind 工具对 AI 是误导（会以为要手动挂载）。类定义保留供开发者调试/真机验证。
         // v6.9.10：模式自动路由——AI 按需拉取某个模式的完整细则（懒加载，避免 2.1 万字符全量进 context）

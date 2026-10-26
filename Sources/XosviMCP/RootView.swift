@@ -8,7 +8,6 @@ final class AppUIState: ObservableObject {
     @Published var settingsJumpToModels = false
     // v4.4.16：底部"指令"胶囊 → 打开设置并跳到系统指令(SystemPromptsView)页
     @Published var settingsJumpToSystemPrompts = false
-    @Published var controlPresented = false
     @Published var macroPresented = false
     // v3.0.76：输入框上方快捷标签
     @Published var quickTerminalPresented = false
@@ -85,13 +84,6 @@ struct RootView: View {
                 markOnboardingDone()
                 showOnboarding = false
             }
-        }
-        // v2.9.139：AI 控制中心（控制任意 App 时的计划/进度/日志/结果页）
-        .fullScreenCover(isPresented: Binding(
-            get: { ui.controlPresented },
-            set: { ui.controlPresented = $0 }
-        )) {
-            ControlCenterView()
         }
         // v2.9.142：宏管理页（聊天输入框「🎬 宏」入口）
         .fullScreenCover(isPresented: Binding(
