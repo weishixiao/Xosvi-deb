@@ -4,8 +4,578 @@ import Combine
 import UIKit
 #endif
 
-// MARK: - （v7.6.3：模型配置 / ModelStore / ModelAPIClient 已迁到
-//  LiteLLMStore.swift + LegacyModelShim.swift，本文件只保留聊天与会话层）
+// MARK: - 模型配置
+
+struct ModelConfig: Codable, Identifiable, Hashable {
+    var id: UUID = UUID()
+    var name: String
+    var provider: String          // openai / deepseek / anthropic / custom
+    var apiProtocol: String       // OpenAI Chat Completions / OpenAI Responses / Anthropic / Custom
+    var baseURL: String           // https://api.openai.com/v1
+    var apiKey: String
+    var model: String             // gpt-4o-mini
+    var authMethod: String        // Bearer / API Key / Body api_key / Body token / Query token / None
+    var isDefault: Bool = false
+    var temperature: Double = 0.7
+    var maxTokens: Int = 2048
+    /// v2.9.11：输入上下文预算 (token 估算）。发送前按预算自动裁剪最旧消息，
+    /// 避免长会话请求体无限增长导致"一直请求中"。
+    var contextTokens: Int = 16000
+    /// v2.8.4：中转站兼容级别 (由 OpenAIClient 自适应降级时写入并持久化）
+    /// 0=完整载荷 1=互换token参数名 2=去掉tool_choice 3=去掉tools纯对话 4=最小载荷
+    var compatLevel: Int = 0
+    /// v2.9.107：分组名 (供应商分组管理，对齐 cc-switch provider groups）
+    var group: String = "默认"
+    /// v3.5.13：可配置的参数名别名映射（标准键 → 该供应商认的键），如
+    /// {"max_tokens":"max_completion_tokens", "reasoning_effort":"reasoning"}。
+    /// 覆盖"不同中转对同一参数名接受度不同"的场景，不只内置 max_tokens 互换。
+    var paramAliases: [String: String] = [:]
+    /// v3.1.1：是否支持视觉 (VLM），自动根据模型名判断
+    var supportsVision: Bool {
+        let m = model.lowercased()
+        // 明确支持视觉的模型
+        if m.contains("gpt-4o") || m.contains("gpt-4-vision") || m.contains("gpt-4v") { return true }
+        if m.contains("claude-3") || m.contains("claude 3") { return true }
+        if m.contains("gemini") { return true }
+        if m.contains("qwen-vl") || m.contains("qwen2-vl") { return true }
+        if m.contains("glm-4v") || m.contains("glm4v") { return true }
+        if m.contains("vision") || m.contains("vl-") { return true }
+        // 明确不支持的
+        if m.contains("deepseek") { return false }
+        if m.contains("gpt-3.5") || m.contains("gpt-35") { return false }
+        // 默认：不支持 (保守策略，避免 API 报错）
+        return false
+    }
+
+    init(id: UUID = UUID(), name: String, provider: String, apiProtocol: String = "OpenAI Chat Completions",
+         baseURL: String, apiKey: String, model: String, authMethod: String = "Bearer",
+         isDefault: Bool = false, temperature: Double = 0.7, maxTokens: Int = 2048, compatLevel: Int = 0,
+         contextTokens: Int = 16000, group: String = "默认", paramAliases: [String: String] = [:]) {
+        self.id = id
+        self.name = name
+        self.provider = provider
+        self.apiProtocol = apiProtocol
+        self.baseURL = baseURL
+        self.apiKey = apiKey
+        self.model = model
+        self.authMethod = authMethod
+        self.isDefault = isDefault
+        self.temperature = temperature
+        self.maxTokens = maxTokens
+        self.compatLevel = compatLevel
+        self.contextTokens = contextTokens
+        self.group = group
+        self.paramAliases = paramAliases
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(UUID.self, forKey: .id)) ?? UUID()
+        name = try c.decode(String.self, forKey: .name)
+        provider = try c.decode(String.self, forKey: .provider)
+        let decodedProtocol = (try? c.decode(String.self, forKey: .apiProtocol)) ?? "OpenAI Chat Completions"
+        // v2.9.2：OpenAI Completions (旧版文本补全）已移除，旧配置迁移到 Chat Completions
+        apiProtocol = decodedProtocol == "OpenAI Completions" ? "OpenAI Chat Completions" : decodedProtocol
+        baseURL = try c.decode(String.self, forKey: .baseURL)
+        apiKey = try c.decode(String.self, forKey: .apiKey)
+        model = try c.decode(String.self, forKey: .model)
+        let decodedAuthMethod = (try? c.decode(String.self, forKey: .authMethod)) ?? "Bearer"
+        authMethod = decodedAuthMethod.trimmingCharacters(in: .whitespaces).isEmpty ? "Bearer" : decodedAuthMethod
+        isDefault = (try? c.decode(Bool.self, forKey: .isDefault)) ?? false
+        temperature = (try? c.decode(Double.self, forKey: .temperature)) ?? 0.7
+        maxTokens = (try? c.decode(Int.self, forKey: .maxTokens)) ?? 2048
+        contextTokens = (try? c.decode(Int.self, forKey: .contextTokens)) ?? 16000
+        compatLevel = (try? c.decode(Int.self, forKey: .compatLevel)) ?? 0
+        group = (try? c.decode(String.self, forKey: .group)) ?? "默认"
+        paramAliases = (try? c.decode([String: String].self, forKey: .paramAliases)) ?? [:]
+    }
+}
+
+// MARK: - 模型协议与鉴权方式
+
+extension ModelConfig {
+    static let apiProtocols = [
+        "OpenAI Chat Completions",
+        "OpenAI Responses",
+        "Anthropic Messages",
+        "Custom Endpoint"
+    ]
+
+    static let authMethods = ["Bearer", "API Key", "Body api_key", "Body token", "Query token", "None"]
+
+    static let providerPresets: [(name: String, provider: String, protocol: String, baseURL: String, model: String, auth: String)] = [
+        ("OpenAI", "openai", "OpenAI Chat Completions", "https://api.openai.com/v1", "gpt-4o-mini", "Bearer"),
+        ("DeepSeek", "deepseek", "OpenAI Chat Completions", "https://api.deepseek.com", "deepseek-chat", "Bearer"),
+        ("Anthropic", "anthropic", "Anthropic Messages", "https://api.anthropic.com/v1", "claude-3-5-sonnet-20240620", "API Key"),
+        ("Botcf", "custom", "OpenAI Responses", "https://botcf.com/v1", "gpt-5.6-terra", "Bearer"),
+        // v4.4.17：扩充主流 OpenAI 兼容预设 (GLM/Kimi/Qwen/MiniMax/阶跃/豆包)。模型名可在模型管理页改。
+        ("智谱GLM", "zhipu", "OpenAI Chat Completions", "https://open.bigmodel.cn/api/paas/v4", "glm-4.5", "Bearer"),
+        ("Kimi(Moonshot)", "moonshot", "OpenAI Chat Completions", "https://api.moonshot.cn/v1", "kimi-k3", "Bearer"),
+        ("通义千问(Qwen)", "qwen", "OpenAI Chat Completions", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3.8-max", "Bearer"),
+        ("MiniMax", "minimax", "OpenAI Chat Completions", "https://api.minimax.chat/v1", "MiniMax-Text-01", "Bearer"),
+        ("阶跃星辰(Step)", "step", "OpenAI Chat Completions", "https://api.stepfun.com/v1", "step-2-mini", "Bearer"),
+        ("豆包(火山)", "doubao", "OpenAI Chat Completions", "https://ark.cn-beijing.volces.com/api/v3", "doubao-pro-32k", "Bearer")
+    ]
+
+    /// v4.4.17：Base URL 规范化——OpenAI 格式端点 (Chat/Responses) 自动补 /v1，
+    /// 用户已填 v1/含版本路径(如 /api/paas/v4、/compatible-mode/v1) 则不重复补。
+    /// Anthropic(/anthropic) 与自定义端点不自动补。
+    static func normalizeBaseURL(_ base: String) -> String {
+        let trimmed = base.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: trimmed) else { return base }
+        let path = url.path
+        // 纯主机级 (path 空 或 "/") → 补 /v1；已含路径段则尊重用户
+        if path.isEmpty || path == "/" {
+            return trimmed + "/v1"
+        }
+        return base
+    }
+
+    /// 推理系列模型 (GPT-5.x / o1 / o3 / o4）不接受 temperature 参数，
+    /// 中转站会返回 "Invalid request parameter"。
+    var sendsTemperature: Bool { !isReasoningModel && !model.lowercased().contains("reasoning") }
+
+    /// v2.8.5：是否推理系列模型 (GPT-5.x / o1 / o3 / o4）。
+    /// 这类模型默认 reasoning_effort=medium，回复前会长时间思考 (聊天转圈半天的主因），
+    /// 请求时显式携带 reasoning_effort=none 提速。
+    var isReasoningModel: Bool {
+        let m = model.lowercased()
+        let prefixes = ["gpt-5.", "o1", "o3", "o4", "o1-", "o3-", "o4-"]
+        return prefixes.contains(where: { m.hasPrefix($0) }) || m.contains("reasoning")
+    }
+
+    /// 推理系列模型使用 max_completion_tokens 而非 max_tokens
+    var maxTokensKey: String {
+        let m = model.lowercased()
+        let reasoningPrefixes = ["gpt-5.", "o1", "o3", "o4", "o1-", "o3-", "o4-"]
+        if reasoningPrefixes.contains(where: { m.hasPrefix($0) }) { return "max_completion_tokens" }
+        return "max_tokens"
+    }
+
+    /// v4.4.16：API 协议自动纠偏——用户配错协议(如把 deepseek 配成 OpenAI Responses)时，
+    /// 请求前自动纠正到正确协议，无需用户手动调整(大部分用户不会去改配置)。
+    /// 规则参考 Codex 端点分配：
+    ///  - claude/anthropic → Anthropic Messages
+    ///  - gpt-5.x / o1/o3/o4 (推理系列, Codex 走 responses) → OpenAI Responses
+    ///  - deepseek → OpenAI Chat Completions (deepseek 在 chat/completions 就能用 tools, 走 responses 反而慢)
+    ///  - Custom Endpoint 一律尊重用户, 不自动改
+    static func autoCorrectProtocol(model: String, provider: String, current: String) -> String {
+        let m = model.lowercased()
+        let p = provider.lowercased()
+        // 显式选的自定义端点尊重用户, 不自动纠正
+        if current == "Custom Endpoint" { return current }
+        // Anthropic 模型
+        if p.contains("anthropic") || m.hasPrefix("claude") { return "Anthropic Messages" }
+        // 推理系列 (Codex 同款 responses 端点)
+        let reasoningPrefixes = ["gpt-5.", "o1", "o3", "o4", "o1-", "o3-", "o4-"]
+        if reasoningPrefixes.contains(where: { m.hasPrefix($0) }) || m.contains("reasoning") { return "OpenAI Responses" }
+        // deepseek 对话模型 → Chat Completions
+        if p.contains("deepseek") || m.contains("deepseek") { return "OpenAI Chat Completions" }
+        // 其余尊重当前
+        return current
+    }
+}
+
+final class ModelStore: ObservableObject {
+    static let shared = ModelStore()
+
+    @Published var configs: [ModelConfig] = []
+    private let key = "xosvi.model_configs"    // v2.9.97：记住最近一次使用的模型，顶栏立即显示用户上次用的配置，不再回退到第一个 (旧 gpt4o）
+    private let lastUsedKey = "xosvi.last_used_config_id"
+
+    init() { load() }
+
+    var lastUsedConfigId: String? {
+        get { UserDefaults.standard.string(forKey: lastUsedKey) }
+        set { UserDefaults.standard.set(newValue, forKey: lastUsedKey) }
+    }
+
+    func markUsed(_ id: String) {
+        lastUsedConfigId = id
+    }
+
+    func load() {
+        let ud = UserDefaults.standard
+        guard let data = ud.data(forKey: key),
+              let decoded = try? JSONDecoder().decode([ModelConfig].self, from: data) else {
+            // v2.9.107：主数据损坏时从备份restored (最多试 4 份）
+            for i in 0...3 {
+                if let bak = ud.data(forKey: "\(key).bak.\(i)"),
+                   let decoded = try? JSONDecoder().decode([ModelConfig].self, from: bak) {
+                    configs = decoded
+                    break
+                }
+            }
+            _restoreApiKeysFromKeychain()
+            return
+        }
+        configs = decoded
+        _restoreApiKeysFromKeychain()
+    }
+
+    /// v6.1.5：apiKey Keychain 化——从 Keychain 恢复各 config 的 apiKey；
+    /// 旧版明文（UserDefaults JSON）一次性迁移进 Keychain。
+    private func _restoreApiKeysFromKeychain() {
+        for i in configs.indices {
+            let kc = kcKey(for: configs[i])
+            if let k = KeychainStore.shared.string(forKey: kc) {
+                configs[i].apiKey = k
+            } else if !configs[i].apiKey.isEmpty {
+                // 老版本明文 apiKey 还留在 UserDefaults → 迁到 Keychain（下次 save 会写脱敏副本）
+                KeychainStore.shared.set(configs[i].apiKey, forKey: kc)
+            }
+        }
+    }
+
+    private func kcKey(for config: ModelConfig) -> String {
+        "modelconfig.apikey.\(config.id.uuidString)"
+    }
+
+    /// v2.9.107：原子写前备份轮换 (保留最近 4 份）
+    private func rotateBackup() {
+        let ud = UserDefaults.standard
+        guard let current = ud.data(forKey: key) else { return }
+        for i in stride(from: 2, through: 0, by: -1) {
+            if let old = ud.data(forKey: "\(key).bak.\(i)") {
+                ud.set(old, forKey: "\(key).bak.\(i + 1)")
+            }
+        }
+        ud.set(current, forKey: "\(key).bak.0")
+    }
+
+    func save() {
+        // v6.1.5：apiKey 不再明文写 UserDefaults——逐条入 Keychain，UserDefaults 存脱敏副本
+        // v6.2.0：Keychain 写入失败时回退明文存储，保证用户 key 不丢（TrollStore 环境
+        // entitlement 受限时 SecItemAdd 可能失败，宁可降级也不丢配置）
+        var sanitized = configs
+        var allSaved = true
+        for i in sanitized.indices {
+            let ok = KeychainStore.shared.set(sanitized[i].apiKey, forKey: kcKey(for: sanitized[i]))
+            if ok {
+                sanitized[i].apiKey = ""
+            } else {
+                allSaved = false
+            }
+        }
+        let payload = allSaved ? sanitized : configs
+        if let data = try? JSONEncoder().encode(payload) {
+            rotateBackup()
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    // MARK: v2.9.107 —— 熔断器注册表 (运行时，不持久化；对齐 cc-switch circuit_breaker）
+
+    private(set) var breakers: [UUID: CircuitBreaker] = [:]
+    // v2.9.150：熔断器字典锁——ModelRow 渲染(主线程)与 AI 请求回调(后台线程)
+    // 并发调 breaker(for:) 写同一字典 → 字典并发修改 SIGSEGV ("模型 API 页闪退"根因）
+    private let breakerLock = NSLock()
+
+    func breaker(for id: UUID) -> CircuitBreaker {
+        breakerLock.lock()
+        defer { breakerLock.unlock() }
+        if let b = breakers[id] { return b }
+        let b = CircuitBreaker(name: configs.first { $0.id == id }?.name ?? "model")
+        breakers[id] = b
+        return b
+    }
+
+    // MARK: v2.9.107 —— 配置导入 / 导出 (对齐 cc-switch import/export）
+
+    func exportJSON() -> String {
+        var items: [Any] = []
+        for c in configs {
+            if let d = try? JSONEncoder().encode(c),
+               let obj = try? JSONSerialization.jsonObject(with: d) {
+                items.append(obj)
+            }
+        }
+        let payload: [String: Any] = [
+            "app": "Xosvi", "type": "model_configs", "version": 1,
+            "exportedAt": Int(Date().timeIntervalSince1970),
+            "configs": items
+        ]
+        if let d = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]),
+           let s = String(data: d, encoding: .utf8) {
+            return s
+        }
+        return ""
+    }
+
+    @discardableResult
+    func importJSON(_ text: String) -> (ok: Int, failed: Int) {
+        guard let data = text.data(using: .utf8) else { return (0, 0) }
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let arr = obj["configs"] as? [[String: Any]] {
+            var ok = 0, failed = 0
+            for item in arr {
+                if let d = try? JSONSerialization.data(withJSONObject: item),
+                   let c = try? JSONDecoder().decode(ModelConfig.self, from: d) {
+                    add(c); ok += 1
+                } else { failed += 1 }
+            }
+            return (ok, failed)
+        }
+        // 兼容纯数组
+        if let arr = try? JSONDecoder().decode([ModelConfig].self, from: data) {
+            for c in arr { add(c) }
+            return (arr.count, 0)
+        }
+        return (0, 0)
+    }
+
+    var defaultConfig: ModelConfig? {
+        if let d = configs.first(where: { $0.isDefault }) { return d }
+        // v2.9.97：其次取最近使用，最后回退第一个
+        if let last = lastUsedConfigId, let m = configs.first(where: { $0.id.uuidString == last }) {
+            return m
+        }
+        return configs.first
+    }
+
+    func add(_ config: ModelConfig) {
+        var c = config
+        if c.isDefault {
+            for i in configs.indices { configs[i].isDefault = false }
+        }
+        if configs.isEmpty { c.isDefault = true }
+        configs.append(c)
+        save()
+    }
+
+    /// v2.9.126：深链导入专用——同 baseURL+model 去重 (重复导入不再堆积配置）
+    func importFromDeepLink(_ config: ModelConfig) -> Bool {
+        let dup = configs.contains { $0.baseURL == config.baseURL && $0.model == config.model }
+        guard !dup else { return false }
+        add(config)
+        markUsed(config.id.uuidString)
+        return true
+    }
+
+    func update(_ config: ModelConfig) {
+        if config.isDefault {
+            for i in configs.indices { configs[i].isDefault = (configs[i].id == config.id) }
+        }
+        if let idx = configs.firstIndex(where: { $0.id == config.id }) {
+            configs[idx] = config
+            save()
+        }
+    }
+
+    func delete(at offsets: IndexSet) {
+        configs.remove(atOffsets: offsets)
+        if !configs.contains(where: { $0.isDefault }) && !configs.isEmpty {
+            configs[0].isDefault = true
+        }
+        save()
+    }
+}
+
+// MARK: - 模型列表获取与连接测试
+
+enum ModelListResult {
+    case success([String])
+    case failure(String)
+}
+
+final class ModelAPIClient {
+    static let shared = ModelAPIClient()
+
+    func fetchModelList(config: ModelConfig, completion: @escaping (ModelListResult) -> Void) {
+        let base = config.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: base + "/models") else {
+            completion(.failure("无效的 Base URL"))
+            return
+        }
+        var request = URLRequest(url: url, timeoutInterval: 30)
+        applyAuth(config: config, to: &request)
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    completion(.failure(error.localizedDescription))
+                    return
+                }
+                guard let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let models = json["data"] as? [[String: Any]] else {
+                    let raw = String(data: data ?? Data(), encoding: .utf8) ?? "(no data)"
+                    completion(.failure("parse failed: \(raw.prefix(200))"))
+                    return
+                }
+                let ids = models.compactMap { $0["id"] as? String }.sorted()
+                completion(.success(ids))
+            }
+        }.resume()
+    }
+
+    func testConnection(config: ModelConfig, completion: @escaping (Result<String, Error>) -> Void) {
+        let base = config.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        // v2.9.0：支持 Responses API 协议
+        let endpoint: String
+        if config.apiProtocol == "Anthropic Messages" {
+            endpoint = "/messages"
+        } else if config.apiProtocol == "OpenAI Responses" {
+            endpoint = "/responses"
+        } else {
+            endpoint = "/chat/completions"
+        }
+        guard let url = URL(string: base + endpoint) else {
+            completion(.failure(NSError(domain: "ModelAPIClient", code: 0, userInfo: [NSLocalizedDescriptionKey: "无效的 Base URL"])))
+            return
+        }
+        var request = URLRequest(url: url, timeoutInterval: 30)
+        setHTTPMethod("POST", on: &request)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        applyAuth(config: config, to: &request)
+
+        // v2.8.4：测试连接使用最小载荷 (仅 model + messages）。
+        // 旧版发送 max_completion_tokens=8，推理模型 (gpt-5.x 默认 medium 推理）
+        // 的推理 token 预算远超 8，会直接报参数错误，导致误判为连接failed。
+        let body: [String: Any]
+        if config.apiProtocol == "Anthropic Messages" {
+            // Anthropic 协议要求必须传 max_tokens
+            body = [
+                "model": config.model,
+                "max_tokens": 64,
+                "messages": [["role": "user", "content": "hi"]]
+            ]
+        } else if config.apiProtocol == "OpenAI Responses" {
+            body = [
+                "model": config.model,
+                "input": [["role": "user", "content": "hi"]]
+            ]
+        } else {
+            body = [
+                "model": config.model,
+                "messages": [["role": "user", "content": "hi"]]
+            ]
+        }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    completion(.failure(error))
+                    return
+                }
+                if let http = response as? HTTPURLResponse {
+                    if (200...299).contains(http.statusCode) {
+                        completion(.success("连接OK (HTTP \(http.statusCode))"))
+                    } else {
+                        let raw = String(data: data ?? Data(), encoding: .utf8) ?? ""
+                        completion(.failure(NSError(domain: "ModelAPIClient", code: http.statusCode,
+                            userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode): \(raw.prefix(200))"])))
+                    }
+                } else {
+                    completion(.success("已收到响应"))
+                }
+            }
+        }.resume()
+    }
+
+
+    // v2.9.100：通用轻量 chat 调用 (AI 分析引擎等内部工具用）。
+    // 按 apiProtocol 自动选端点 (chat/completions / responses / messages），不触发工具循环。
+    func sendChat(config: ModelConfig, messages: [[String: Any]],
+                  timeout: TimeInterval = 90,
+                  completion: @escaping (Result<String, Error>) -> Void) {
+        let base = config.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let endpoint: String
+        if config.apiProtocol == "Anthropic Messages" {
+            endpoint = "/messages"
+        } else if config.apiProtocol == "OpenAI Responses" {
+            endpoint = "/responses"
+        } else {
+            endpoint = "/chat/completions"
+        }
+        guard let url = URL(string: base + endpoint) else {
+            completion(.failure(NSError(domain: "ModelAPIClient", code: 0,
+                                        userInfo: [NSLocalizedDescriptionKey: "无效的 Base URL"])))
+            return
+        }
+        var request = URLRequest(url: url, timeoutInterval: timeout)
+        setHTTPMethod("POST", on: &request)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        applyAuth(config: config, to: &request)
+
+        let body: [String: Any]
+        if config.apiProtocol == "Anthropic Messages" {
+            body = ["model": config.model, "max_tokens": 4096, "messages": messages]
+        } else if config.apiProtocol == "OpenAI Responses" {
+            var msgs: [[String: Any]] = []
+            for m in messages {
+                msgs.append([
+                    "role": (m["role"] as? String) ?? "user",
+                    "content": [[ "type": "input_text", "text": (m["content"] as? String) ?? "" ]]
+                ])
+            }
+            body = ["model": config.model, "input": msgs]
+        } else {
+            body = ["model": config.model, "messages": messages, "temperature": 0.3]
+        }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    completion(.failure(error))
+                    return
+                }
+                guard let data = data else {
+                    completion(.failure(NSError(domain: "ModelAPIClient", code: 0,
+                                                userInfo: [NSLocalizedDescriptionKey: "no response数据"])))
+                    return
+                }
+                var text = ""
+                if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    if let choices = json["choices"] as? [[String: Any]],
+                       let first = choices.first,
+                       let msg = first["message"] as? [String: Any],
+                       let content = msg["content"] as? String {
+                        text = content
+                    } else if let output = json["output"] as? [[String: Any]] {
+                        for item in output {
+                            if let content = item["content"] as? [[String: Any]] {
+                                for cc in content {
+                                    if let t = cc["text"] as? String { text += t }
+                                }
+                            }
+                        }
+                    } else if let content = json["content"] as? [[String: Any]] {
+                        for cc in content {
+                            if let t = cc["text"] as? String { text += t }
+                        }
+                    }
+                }
+                if !text.isEmpty {
+                    completion(.success(text))
+                } else {
+                    let raw = String(data: data, encoding: .utf8) ?? "(no data)"
+                    completion(.failure(NSError(domain: "ModelAPIClient", code: 0,
+                                                userInfo: [NSLocalizedDescriptionKey: "parse failed: \(raw.prefix(200))"])))
+                }
+            }
+        }.resume()
+    }
+
+    private func applyAuth(config: ModelConfig, to request: inout URLRequest) {
+        let key = config.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let method = config.authMethod.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch method {
+        case "Bearer":
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        case "API Key":
+            request.setValue(key, forHTTPHeaderField: "x-api-key")
+        case "None":
+            break
+        default:
+            // 空/未知鉴权方式但填了 key 时，默认按 Bearer 发送 (兼容旧配置或 UI 异常）
+            if !key.isEmpty {
+                request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            }
+        }
+    }
+}
 
 // MARK: - 聊天消息
 
@@ -433,7 +1003,7 @@ final class ConversationStore: ObservableObject {
         // v3.1.66：全量加载所有工具 (tool_search 已删除，不再渐进式披露）
         var baseTools = config.apiProtocol == "Anthropic Messages" ? nil : ToolRegistry.shared.enabledOpenAIToolSchema()
         // v7.1.0：搜索不再由用户开关控制——联网工具默认全开，AI 判断需要时自行调用
-        // （web.search / web.fetch 始终在工具集里）。smartSearch 参数保留只为兼容旧调用。
+        // （web.search / haxbrowser / web.fetch 都在工具集里）。smartSearch 参数保留只为兼容旧调用。
         _ = smartSearch
         // v3.1.66：全量加载，disclosed 机制已不再新增工具 (tool_search 已删），
         // 保留仅为兼容会话内已授权工具 schema 的持久注入。
@@ -1134,7 +1704,7 @@ final class ConversationStore: ObservableObject {
         switch result {
         case .success(let r):
             let rawContent = Self.jsonString(r)
-            // v2.9.49：工具结果截断 (>8000字符），防止单条工具结果 (如 web.fetch / injection.list）
+            // v2.9.49：工具结果截断 (>8000字符），防止单条工具结果 (如 haxbrowser snapshot / injection.list）
             // 撑爆上下文导致后续请求巨慢。截断后加提示，模型可调用带分页/过滤参数的工具获取完整数据。
             let content: String
             if rawContent.count > 8000 {
