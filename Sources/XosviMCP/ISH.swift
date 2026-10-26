@@ -38,9 +38,7 @@ enum ISH {
     // MARK: 状态
 
     static var isBooted: Bool { KelivoISHKernel.shared().isBooted }
-    static var rootfsInstalled: Bool {
-        FileManager.default.fileExists(atPath: dataPath)
-    }
+    static var rootfsInstalled: Bool { isRootfsValid() }
     /// rootfs 占了多少空间
     static var rootfsSize: Int64 {
         guard rootfsInstalled else { return 0 }
@@ -56,8 +54,17 @@ enum ISH {
         return total
     }
     static var runtimeVersion: String {
-        (try? String(contentsOfFile: dataPath + "/etc/alpine-release", encoding: .utf8))?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? "未知"
+        let p = dataPath + "/etc/alpine-release"
+        if let s = try? String(contentsOfFile: p, encoding: .utf8) {
+            let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { return t }
+        }
+        // 兜底：读安装时写的 VERSION 资源
+        if let v = try? String(contentsOf: installRoot.appendingPathComponent(".version"), encoding: .utf8) {
+            let t = v.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { return t }
+        }
+        return "未知"
     }
 
     // MARK: 安装 rootfs
@@ -73,50 +80,112 @@ enum ISH {
         }
     }
 
-    /// 首次启动或版本变化时解压内置 rootfs（ZIPFoundation，流式 + 路径越界防护）
+    /// 首次启动或版本变化时解压内置 rootfs。
+    ///
+    /// v7.12.0（对齐 Kelivo RootfsInstaller，修 boot rc=-22）：
+    ///   · zip 里的路径带 `alpine-rootfs/` 前缀，必须 strip 掉——否则 meta.db 和 data/
+    ///     会被多套一层目录，内核 mount_root 找不到 meta.db → EINVAL(-22)
+    ///   · 先解压到 staging，**校验 meta.db + data/bin/sh 都是常规文件**才提交，
+    ///     避免半成品目录留在正式位置（下次启动会误判"已安装"）
     @discardableResult
     static func installRootfsIfNeeded(force: Bool = false) throws -> Bool {
         let saved = UserDefaults.standard.string(forKey: rootfsVersionKey)
-        if !force, saved == bundledVersion, rootfsInstalled { return false }
+        if !force, saved == bundledVersion, isRootfsValid() { return false }
         guard let zip = bundledZip else { throw InstallError.noBundle }
 
         let fm = FileManager.default
-        // 已经在 boot 的进程无法换 rootfs（内核不卸载）
-        if isBooted && force {
+        if isBooted {
+            // 内核已启动无法换 rootfs（fakefs 不卸载）
             throw InstallError.failed("内核已启动，无法更换 rootfs。请完全退出 App 后重开再试。")
         }
-        try? fm.removeItem(at: installRoot)
-        try fm.createDirectory(at: installRoot, withIntermediateDirectories: true)
+
+        let parent = installRoot.deletingLastPathComponent()
+        try? fm.createDirectory(at: parent, withIntermediateDirectories: true)
+        let staging = parent.appendingPathComponent("ish-rootfs.staging-\(UUID().uuidString)")
+        try? fm.removeItem(at: staging)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
 
         guard let archive = Archive(url: zip, accessMode: .read) else {
             throw InstallError.failed("打不开 alpine-rootfs.zip")
         }
-        let root = installRoot.path
-        for entry in archive {
-            let rel = entry.path
-            // 路径越界防护（zip slip）
-            if rel.hasPrefix("/") || rel.contains("..") {
-                throw InstallError.failed("压缩包路径异常：\(rel)")
+
+        let destBase = staging.standardizedFileURL.path
+        var written = 0
+        var failed = 0
+        // Kelivo 的 WorkspaceZipArchive 是先把条目读进内存再解压；
+        // ZIPFoundation 的迭代器共享底层句柄，必须在循环外先快照，不能边迭代边 extract。
+        let entries = Array(archive)
+        for entry in entries {
+            var rel = entry.path
+            // 关键：剥掉打包前缀
+            for prefix in ["alpine-rootfs/", "ish-rootfs/"] where rel.hasPrefix(prefix) {
+                rel = String(rel.dropFirst(prefix.count))
             }
-            let dest = root + "/" + rel
+            if rel.hasPrefix("/") { rel = String(rel.dropFirst()) }
+            if rel.isEmpty { continue }
+            if rel.contains("..") { continue }          // 越界条目直接跳过
+
+            let destURL = staging.appendingPathComponent(rel).standardizedFileURL
+            guard destURL.path == destBase || destURL.path.hasPrefix(destBase + "/") else { continue }
+
             if entry.type == .directory {
-                try? fm.createDirectory(atPath: dest, withIntermediateDirectories: true)
+                try? fm.createDirectory(at: destURL, withIntermediateDirectories: true)
                 continue
             }
-            try? fm.createDirectory(atPath: (dest as NSString).deletingLastPathComponent,
-                                    withIntermediateDirectories: true)
+            let parentDir = destURL.deletingLastPathComponent()
+            if !fm.fileExists(atPath: parentDir.path) {
+                try? fm.createDirectory(at: parentDir, withIntermediateDirectories: true)
+            }
             var data = Data()
-            _ = try archive.extract(entry) { chunk in data.append(chunk) }
-            try data.write(to: URL(fileURLWithPath: dest))
-            // 保留可执行位
-            if entry.type == .file, rel.hasPrefix("bin/") || rel.hasPrefix("sbin/")
-                || rel.hasPrefix("usr/bin/") || rel.hasPrefix("usr/sbin/") || rel.hasPrefix("usr/local/bin/") {
-                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dest)
+            do {
+                _ = try archive.extract(entry) { data.append($0) }
+            } catch {
+                failed += 1
+                continue
+            }
+            if (try? data.write(to: destURL)) != nil { written += 1 } else { failed += 1 }
+            // 可执行位（fakefs 主要靠 meta.db，但补上更稳）
+            if rel.hasPrefix("bin/") || rel.hasPrefix("sbin/") || rel.hasPrefix("usr/bin/")
+                || rel.hasPrefix("usr/sbin/") || rel.hasPrefix("usr/local/bin/") {
+                try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: destURL.path)
             }
         }
+
+        // 校验：meta.db 与 data/bin/sh 必须是常规文件
+        func isRegular(_ path: String) -> Bool {
+            (try? URL(fileURLWithPath: path).resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
+        }
+        let metaOK = isRegular(staging.appendingPathComponent("meta.db").path)
+        let shOK = isRegular(staging.appendingPathComponent("data/bin/sh").path)
+        guard metaOK, shOK else {
+            let listing = (try? fm.contentsOfDirectory(atPath: staging.path).prefix(8).joined(separator: ", ")) ?? "?"
+            try? fm.removeItem(at: staging)
+            throw InstallError.failed("rootfs 解压不完整：条目 \(entries.count)，写入 \(written)，失败 \(failed)；meta.db=\(metaOK)·data/bin/sh=\(shOK)；顶层：\(listing)")
+        }
+
+        // 提交：换掉旧目录
+        try? fm.removeItem(at: installRoot)
+        do {
+            try fm.moveItem(at: staging, to: installRoot)
+        } catch {
+            try? fm.removeItem(at: staging)
+            throw InstallError.failed("无法写入 rootfs 目录：\(error.localizedDescription)")
+        }
+
         UserDefaults.standard.set(bundledVersion, forKey: rootfsVersionKey)
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: "ishInstalledAt")
         return true
+    }
+
+    /// rootfs 是否完整可用（不只看目录存在）
+    static func isRootfsValid() -> Bool {
+        let fm = FileManager.default
+        for probe in ["meta.db", "data/bin/sh"] {
+            let path = installRoot.appendingPathComponent(probe).path
+            let regular = (try? URL(fileURLWithPath: path).resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile ?? false
+            if !regular { return false }
+        }
+        return fm.fileExists(atPath: installRoot.path)
     }
 
     /// 「修复」= 强制重装 rootfs
@@ -127,21 +196,28 @@ enum ISH {
     // MARK: 启动
 
     private static var bootLock = NSLock()
+    /// 最近一次 boot/安装的错误（UI 直接显示，不再只给一个 rc 数字）
+    nonisolated(unsafe) static var lastError: String?
 
     /// 幂等 boot；返回 0 = 成功
     @discardableResult
     static func boot() -> Int32 {
         bootLock.lock()
         defer { bootLock.unlock() }
+        lastError = nil
         if isBooted { return 0 }
         do {
             try installRootfsIfNeeded()
         } catch {
-            Log.browser("rootfs 安装失败：\(error.localizedDescription)")
+            lastError = "rootfs 安装失败：\(error.localizedDescription)"
+            Log.browser(lastError ?? "")
             return -2
         }
         try? FileManager.default.createDirectory(atPath: dataPath, withIntermediateDirectories: true)
         let rc = KelivoISHKernel.shared().boot(withRootPath: installRoot.path)
+        if rc != 0 {
+            lastError = "内核启动返回 rc=\(rc)（rootfs: meta.db=\(FileManager.default.fileExists(atPath: installRoot.appendingPathComponent("meta.db").path)), data=\(FileManager.default.fileExists(atPath: dataPath))）"
+        }
         Log.browser("ISH boot rc=\(rc)")
         return rc
     }

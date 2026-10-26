@@ -19,6 +19,7 @@ struct EnvironmentView: View {
     @State private var mountPicker = false
     @State private var mounts: [(name: String, path: String)] = []
     @State private var speedRows: [(AlpineMirror, Double)] = []
+    @State private var bootError: String = ""
     @State private var speedBusy = false
     @State private var toast: String?
 
@@ -55,6 +56,16 @@ struct EnvironmentView: View {
                     } label: {
                         Label("启动沙盒", systemImage: "play")
                     }
+                    Button {
+                        reinstall()
+                    } label: {
+                        Label("重装 rootfs", systemImage: "arrow.clockwise")
+                    }
+                }
+                if !bootError.isEmpty {
+                    Text(bootError)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.secondary)
                 }
             }
 
@@ -240,7 +251,33 @@ struct EnvironmentView: View {
             let rc = ISH.boot()
             DispatchQueue.main.async {
                 refresh()
-                toast = rc == 0 ? "沙盒已就绪" : "启动失败 rc=\(rc)"
+                if rc == 0 {
+                    toast = "沙盒已就绪"
+                } else {
+                    // v7.12.0：把具体原因显示出来（是 zip 缺失、解压不完整、还是内核错误）
+                    bootError = ISH.lastError ?? "启动失败 rc=\(rc)"
+                    toast = bootError
+                }
+            }
+        }
+    }
+
+    /// 强制重装 rootfs（解压失败时用；内核已 boot 则需重开 App）
+    private func reinstall() {
+        toast = "正在重装 rootfs…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                _ = try ISH.installRootfsIfNeeded(force: true)
+                DispatchQueue.main.async {
+                    refresh()
+                    bootError = ""
+                    toast = "rootfs 已重装，点「启动沙盒」"
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    bootError = error.localizedDescription
+                    toast = "重装失败"
+                }
             }
         }
     }
