@@ -303,7 +303,7 @@ final class HaxBrowser: NSObject, ObservableObject {
     /// 主线程上 `DispatchQueue.main.sync` 会死锁（不能等自己）。
     /// 本方法的调用方都是 MCP 工具（后台线程），所以正常情况走 sync；
     /// 极端情况（有人从主线程调）退化成异步执行并返回 nil 兜底值，绝不卡死 UI。
-    private static func onMainSync<T>(_ work: @escaping @MainActor () -> T) -> T? {
+    nonisolated private static func onMainSync<T>(_ work: @escaping @MainActor () -> T) -> T? {
         if Thread.isMainThread {
             // 不在主线程上等待自身：异步执行，返回 nil 表示"本次没取到"
             DispatchQueue.main.async { _ = work() }
@@ -592,7 +592,7 @@ final class Box<T> {
 // MARK: - 轻量日志
 
 enum Log {
-    static func browser(_ msg: String) {
+    nonisolated static func browser(_ msg: String) {
         #if DEBUG
         print("[HaxBrowser] \(msg)")
         #endif
