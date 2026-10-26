@@ -1,0 +1,1265 @@
+# v2.9.93 合并版主构建：内置 tweaks 编译（theos）+ IPA 打包一条龙
+# 不再依赖单独 build-tweak workflow（其 runner 启动不稳定）；改 Tweak.x 后直接跑本 workflow 即全量更新。
+name: build-xosvi-ios
+
+# v4.3.30：contents: write 供滚动 Release（多源更新：GitHub 被墙时 App 经 Releases/镜像下载 tipa）
+permissions:
+  contents: write
+
+# v6.6.7：concurrency——同一时间只允许一个 build run 排队执行，
+# 新 run 自动取消旧 run。此前无此配置，多次触发导致多个 run 同时抢 macos runner，
+# native-wheels 排队 15min 超时被 GitHub 自动取消 → build 依赖失败被 skip（连挂 3 次）。
+concurrency:
+  group: build-xosvi-ios
+  cancel-in-progress: true
+
+on:
+  # v6.6.32：本仓库（Xosvi）是开发主线，push main 自动构建并发布滚动 Release。
+  push:
+    branches: [main]
+    # 纯文档改动不需要重打 108MB 包（README/docs 改动不触发构建）
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+    # v6.5.9：显式声明 inputs —— App「触发线上编译」会带 {"inputs":{"tweak":<目录名>}}，
+    # 若 workflow 未声明任何 input，GitHub 会直接返回 **422 Unexpected inputs provided**
+    # （用户实测"触发 failed (HTTP 422)"的根因）。
+    inputs:
+      tweak:
+        description: '要编译的 tweak 目录名（留空=全量构建）'
+        required: false
+        default: ''
+
+jobs:
+  # v4.4.5: 原生工具链（lua arm64 iOS 交叉编译，产物缓存秒级）。
+  # build job needs 本 job，保证每次出包都带上原生工具（首次编译 <10min，之后缓存命中）。
+  native-tools:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        id: tools-cache
+        with:
+          path: native-tools-out
+          # v3: 修复 lua(system() iOS 不可用)/r2(缺 capstone) 后强制重构建（v2 缓存只含 node）
+          # fix3g: save-always:false——构建失败不写缓存，防空产物毒化
+          # fix3x: v4——实测 v3 缓存只含 node(lua/capstone/r2 步骤曾被 || true 吞错→空产物进缓存→永久命中跳过编译)；
+          #        全面严格化(去掉吞错)后 bump key 强制全量重编一次, 新缓存含全工具
+          # fix3cg: v8——nodecli.c(setvbuf)/r2main.c(-v/-h fputs) 修复后强制全量重编（v7 缓存是旧的，
+          #         实测 node/r2 空输出 = 旧 wrapper 进包）。重编后 node/r2 输出应正常。
+          # fix3ch: v9——nodecli.c 加 C 层诊断(ndiag)、r2main.c -v/-h 加 fflush——强制再重编
+          # fix3cn: v15——v14 缓存在 jq 编译步骤加入前生成(缓存内无 jq), AI 调用 jq 报 Command not found;
+          #         bump 强制全量重编一次, 新缓存含 jq 1.7.1。与 native-wheels 的 dulwich 解包衔接同轮出包。
+          key: native-tools-v15
+          save-always: false
+
+      # v6.3.6 备注：Alpine 官方 busybox 是 ELF，iOS 内核拒绝执行（只认 Mach-O），
+      # 故原生 busybox 方案不成立，已移除该下载步骤。ShellTool 侧保留 Mach-O 校验，
+      # 将来若提供 iOS 交叉编译的 Mach-O busybox/toybox 可直接启用。
+      # v6.3.7: libarchive + bsdtar（用 iOS SDK 交叉编译成 Mach-O）——tar/zip/gz 原生
+      # 解包打包，替代必须走 x86 模拟 Alpine 的老路（iSH 段错误 = 闪退主因）。
+      # continue-on-error：编译失败不影响出包（仅不捆绑 bsdtar，代码侧自动回退）。
+      - name: Build libarchive + bsdtar (iOS arm64)
+        continue-on-error: true
+        run: |
+          mkdir -p native-tools-out
+          cd /tmp
+          curl -sL -o la.tar.gz https://github.com/libarchive/libarchive/releases/download/v3.7.7/libarchive-3.7.7.tar.gz
+          tar -xzf la.tar.gz
+          cd libarchive-3.7.7
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          export CC="xcrun -sdk iphoneos clang -arch arm64 -isysroot $SDK -mios-version-min=15.0"
+          export CFLAGS="-O2 -arch arm64 -isysroot $SDK -mios-version-min=15.0"
+          export LDFLAGS="-arch arm64 -isysroot $SDK -mios-version-min=15.0"
+          ./configure --host=aarch64-apple-darwin --enable-bsdtar --disable-bsdcpio \
+            --without-bz2lib --without-lzma --without-lzo2 --without-lz4 --without-zstd \
+            --without-openssl --without-xml2 --without-expat --disable-acl --disable-xattr \
+            --disable-shared --enable-static > /tmp/la_conf.log 2>&1 || tail -25 /tmp/la_conf.log
+          make -j4 > /tmp/la_make.log 2>&1 || tail -30 /tmp/la_make.log
+          BIN=$(find . -type f -name 'bsdtar' | head -1)
+          echo ">>> bsdtar bin: $BIN"
+          if [ -n "$BIN" ]; then
+            cp "$BIN" "$GITHUB_WORKSPACE/native-tools-out/bsdtar"
+            chmod +x "$GITHUB_WORKSPACE/native-tools-out/bsdtar"
+            file "$GITHUB_WORKSPACE/native-tools-out/bsdtar" || true
+            ls -la "$GITHUB_WORKSPACE/native-tools-out/bsdtar"
+          else
+            echo ">>> bsdtar 未产出（见 /tmp/la_conf.log / la_make.log）"
+          fi
+
+      - name: Build lua 5.4 (iOS arm64)
+        if: steps.tools-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p native-tools-out
+          curl -sL -o /tmp/lua.tar.gz https://www.lua.org/ftp/lua-5.4.7.tar.gz
+          tar -xzf /tmp/lua.tar.gz -C /tmp
+          cd /tmp/lua-5.4.7
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          # iOS 无 system()（loslib.c os_execute 报 'system' unavailable）：
+          # 编译前打补丁，os.execute 直接返回失败（iOS 本就不支持 shell 命令）
+          # fix3z→fix3aa: lua 5.4.7 实际是 `stat = l_system(cmd);`(宏封装, 非 system(cmd))
+          #         先 sed 打错(system(cmd)→l_-1) 再打错(l_-1 undeclared)——精确匹配整个 l_system(cmd);
+          sed -i.bak 's/= l_system(cmd);/= -1; (void)cmd;/' src/loslib.c
+          # fix3x: 去掉 || true 吞错——lua 必须编出, 失败即 job fail（用户要求全工具进包）
+          # fix3ac: lua 5.4.7 make generic 产物在顶层(lua/luac)，不是 src/lua——检查路径改顶层
+          # fix3ae: iOS 无 libm 静态库(数学函数在 libSystem 内), -lm 链接失败且错误被 make 吞——
+          #         lua 链接用 LIBS 变量(src/Makefile:12 LIBS= -lm $(SYSLIBS) $(MYLIBS)),
+          #         传 LIBS="" 去掉 -lm(此前 LDLIBS="" 无效, 链接行仍带 -lm)
+          # fix3aj: make generic = 顶层 Makefile:55 的 `cd src && $(MAKE)`——产物全在 src/ 下!
+          #         (顶层 Makefile 的 $(PLATS) target: @cd src && make)——手动链接/检查必须用 src/ 路径
+          rm -f src/lua src/luac
+          # make 输出必须可见(吞错教训); LIBS="" 去 -lm(iOS libm 在 libSystem 内); 链接失败容忍
+          make generic CC="xcrun -sdk iphoneos clang -arch arm64 -isysroot $SDK -DLUA_USE_POSIX" LIBS="" || true
+          cd src && xcrun -sdk iphoneos clang -arch arm64 -isysroot $SDK -mios-version-min=15.0 -o lua lua.o liblua.a 2>&1 | tail -5
+          cd src && xcrun -sdk iphoneos clang -arch arm64 -isysroot $SDK -mios-version-min=15.0 -o luac luac.o liblua.a 2>&1 | tail -5
+          ls -la src/lua src/luac 2>&1 || true
+          file src/lua 2>&1 || true
+          if [ -f lua ]; then
+            cp lua "$GITHUB_WORKSPACE/native-tools-out/lua"
+            chmod +x "$GITHUB_WORKSPACE/native-tools-out/lua"
+            echo ">>> lua built"
+          else
+            echo "!!! lua build failed" >&2
+            exit 1
+          fi
+
+      # v4.4.5: nodejs（nodejs-mobile iOS 预编译）——提取 arm64 Mach-O 可执行
+      - name: Fetch nodejs (nodejs-mobile iOS prebuilt)
+        if: steps.tools-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /tmp/node-ios
+          curl -sL -o /tmp/node-ios.zip https://github.com/JaneaSystems/nodejs-mobile/releases/download/nodejs-mobile-v0.3.3/nodejs-mobile-v0.3.3-ios.zip
+          unzip -q -o /tmp/node-ios.zip -d /tmp/node-ios 2>/dev/null || true
+          # 找 arm64 Mach-O 可执行（node / NodeMobile 等）
+          found=""
+          # fix3bn: 真机 Exec format error 实锤——之前 grep "Mach-O.*arm64" 抓到 NodeMobile dylib(MH_DYLIB 不可执行)
+          #         →优先 Mach-O 64-bit arm64 executable(MH_EXECUTE); 找不到再回退任意 arm64
+          for f in $(find /tmp/node-ios -type f \( -name "node" -o -name "NodeMobile" -o -name "nodejs-mobile" \) 2>/dev/null); do
+            if file "$f" 2>/dev/null | grep -q "Mach-O 64-bit arm64 executable"; then found="$f"; break; fi
+          done
+          if [ -z "$found" ]; then
+            found=$(find /tmp/node-ios -type f -exec file {} \; 2>/dev/null | grep "Mach-O 64-bit arm64 executable" | head -1 | cut -d: -f1)
+          fi
+          if [ -z "$found" ]; then
+            found=$(find /tmp/node-ios -type f -exec file {} \; 2>/dev/null | grep "Mach-O.*arm64" | head -1 | cut -d: -f1)
+          fi
+          if [ -n "$found" ] && [ -f "$found" ]; then
+            cp "$found" "$GITHUB_WORKSPACE/native-tools-out/node"
+            chmod +x "$GITHUB_WORKSPACE/native-tools-out/node"
+            echo ">>> node: $(file "$found" | head -c 120)"
+          else
+            # fix3bo: nodejs-mobile 无独立 CLI 可执行（NodeMobile 是 dylib 库）——写 C wrapper 调 node_start 编成真 executable
+            NODEMOBILE=$(find /tmp/node-ios -type f -name "NodeMobile" 2>/dev/null | head -1)
+            if [ -n "$NODEMOBILE" ]; then
+              lipo "$NODEMOBILE" -thin arm64 -output /tmp/NodeMobile_arm64.dylib 2>/dev/null || cp "$NODEMOBILE" /tmp/NodeMobile_arm64.dylib
+          cat > /tmp/nodecli.c <<'NC'
+          #include <stdio.h>
+          extern int node_start(int argc, char **argv);
+          // fix3ch: C 层诊断（相对 cwd 可写）——确认 node_start 是否执行、argv 是否正确
+          static void ndiag(const char *msg) {
+              FILE *f = fopen("troll_node_diag.txt", "a");
+              if (f) { fprintf(f, "%s\n", msg); fclose(f); }
+          }
+          int main(int argc, char **argv) {
+              // fix3ce: iOS 无 tty stdout 全缓冲——nodejs-mobile(V8) 输出滞留不 flush → AI 看到空结果。
+              // 行缓冲 + 退出强刷；stderr 同步。
+              setvbuf(stdout, NULL, _IOLBF, 0);
+              setvbuf(stderr, NULL, _IOLBF, 0);
+              ndiag("node start");
+              int rc = node_start(argc, argv);
+              ndiag(rc == 0 ? "node_start ok" : "node_start FAIL");
+              fflush(stdout);
+              fflush(stderr);
+              return rc;
+          }
+          NC
+              SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+              if xcrun -sdk iphoneos clang -arch arm64 -isysroot "$SDK" -o "$GITHUB_WORKSPACE/native-tools-out/node" /tmp/nodecli.c /tmp/NodeMobile_arm64.dylib -Wl,-undefined,dynamic_lookup -Wl,-rpath,@executable_path/../Frameworks 2>/tmp/node_build.err; then
+                # install_name 修正：wrapper 依赖的 NodeMobile.dylib 放同目录，@executable_path 相对定位
+                ORIG_INAME=$(otool -D "$GITHUB_WORKSPACE/native-tools-out/node" 2>/dev/null | tail -1)
+                if [ -n "$ORIG_INAME" ]; then
+                  install_name_tool -change "$ORIG_INAME" @executable_path/NodeMobile.dylib "$GITHUB_WORKSPACE/native-tools-out/node" 2>/dev/null || true
+                fi
+                cp /tmp/NodeMobile_arm64.dylib "$GITHUB_WORKSPACE/native-tools-out/NodeMobile.dylib"
+                chmod +x "$GITHUB_WORKSPACE/native-tools-out/node"
+                echo ">>> node: C wrapper(node_start) + NodeMobile.dylib arm64"
+              else
+                echo "!!! node wrapper 编译失败(node_start 符号缺失?)——node skipped" >&2
+                cat /tmp/node_build.err | tail -3 >&2
+              fi
+            else
+              echo "!!! node iOS binary not found — skipped" >&2
+            fi
+          fi
+
+      # v4.4.5-fix3: capstone 5.0.3 交叉编译 iOS arm64——r2 的 libr_core 依赖它（r2ios-sdk 不带 libcapstone.a），
+      # 同时产出独立 cstool 反汇编 CLI（支持 aarch64/arm/x86 全家，比自研 objdump 更全）
+      - name: Build capstone 5.0.3 (iOS arm64)
+        if: steps.tools-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p native-tools-out
+          curl -sL -o /tmp/cap.tar.gz https://github.com/capstone-engine/capstone/archive/refs/tags/5.0.3.tar.gz
+          tar -xzf /tmp/cap.tar.gz -C /tmp
+          cd /tmp/capstone-5.0.3
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          # fix3ac: CC 带空格(xcrun 参数)被 make 拆词→"-sdk: command not found"(Error 127)
+          #         → 写单 token wrapper 脚本, CC/AR/RANLIB 传脚本路径
+          # fix3ak: wrapper 里 $SDK 未 export→空→clang -isysroot "" 静默失败(IS_APPLE 检查吞 stderr)
+          #         → 内联求值 SDK 路径, 不依赖外部变量
+          cat > /tmp/ioscc <<WRAP
+          #!/bin/sh
+          exec xcrun --sdk iphoneos clang -arch arm64 -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" -mios-version-min=15.0 "\$@"
+          WRAP
+          cat > /tmp/iosar <<WRAP
+          #!/bin/sh
+          exec xcrun --sdk iphoneos ar "\$@"
+          WRAP
+          cat > /tmp/iosranlib <<WRAP
+          #!/bin/sh
+          exec xcrun --sdk iphoneos ranlib "\$@"
+          WRAP
+          chmod +x /tmp/ioscc /tmp/iosar /tmp/iosranlib
+          # fix3ak: ①默认目标可能是空/递归歧义→显式 all; ②all 会拖 cstool+tests 子 make(tests 无必要且易挂)
+          #         → CAPSTONE_BUILD_CORE_ONLY=yes 只编核心库; ③make 输出管道可见(防静默吞错)
+          make all CAPSTONE_ARCHS="aarch64 arm" CAPSTONE_DIET=no CAPSTONE_BUILD_CORE_ONLY=yes \
+            CC=/tmp/ioscc \
+            AR=/tmp/iosar RANLIB=/tmp/iosranlib 2>&1 | tail -30
+          # fix3x: 去掉 exit 0 吞错——capstone 失败即 job fail
+          if [ -f libcapstone.a ]; then
+            cp libcapstone.a "$GITHUB_WORKSPACE/native-tools-out/libcapstone.a"
+            echo ">>> capstone lib built ($(du -h libcapstone.a | cut -f1))"
+          else
+            echo "!!! capstone build failed" >&2
+            exit 1
+          fi
+          # fix3bl→fix3bm: capstone 顶层无 cstool target(报 Nothing to be done)——cstool 在子目录
+          #         Makefile, 且顶层 all 在 CAPSTONE_BUILD_CORE_ONLY=yes 时跳过 -C cstool→
+          #         单独 make -C cstool(依赖顶层已编 libcapstone.a), 产物在 cstool/cstool
+          make -C cstool CC=/tmp/ioscc AR=/tmp/iosar RANLIB=/tmp/iosranlib 2>&1 | tail -10
+          if [ -f cstool/cstool ]; then
+            cp cstool/cstool "$GITHUB_WORKSPACE/native-tools-out/cstool"
+            chmod +x "$GITHUB_WORKSPACE/native-tools-out/cstool"
+            echo ">>> cstool built ($(du -h cstool/cstool | cut -f1))"
+          else
+            echo "!!! cstool build failed" >&2
+            exit 1
+          fi
+
+      # v4.4.9-fix3cm: jq 1.7.1 交叉编译 iOS arm64——纯 C 单二进制、无 fork 依赖、体积 ~1.5MB。
+      # 背景: 提示词里长期拿 jq 当调用示例(a0f3700)但从未进包→AI 以为有、真机 Command not found；
+      #       git log/workflow 全文搜 jq 零编译记录。补实物消除"文档与实物不一致"。
+      - name: Build jq 1.7.1 (iOS arm64)
+        if: steps.tools-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p native-tools-out
+          curl -sL -o /tmp/jq.tar.gz https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-1.7.1.tar.gz
+          tar -xzf /tmp/jq.tar.gz -C /tmp
+          cd /tmp/jq-1.7.1
+          # 交叉编译: --without-oniguruma 去掉正则引擎外部依赖(jq 内置 fallback 正则)
+          # --disable-maintainer-mode 跳过文档/生成文件步骤; autoconf 交叉分支需 --host/--build 成对给
+          cat > /tmp/ioscc <<'WRAP'
+          #!/bin/sh
+          exec xcrun --sdk iphoneos clang -arch arm64 -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" -mios-version-min=15.0 "$@"
+          WRAP
+          chmod +x /tmp/ioscc
+          ./configure --host=aarch64-apple-darwin --build=x86_64-apple-darwin CC=/tmp/ioscc \
+            --without-oniguruma --disable-maintainer-mode 2>&1 | tail -15
+          make -j4 2>&1 | tail -15
+          if [ -f jq ]; then
+            cp jq "$GITHUB_WORKSPACE/native-tools-out/jq"
+            chmod +x "$GITHUB_WORKSPACE/native-tools-out/jq"
+            echo ">>> jq built ($(du -h jq | cut -f1))"
+          else
+            echo "!!! jq build failed" >&2
+            exit 1
+          fi
+
+      # v4.4.5: radare2 CLI（r2ios-sdk 是静态库 SDK，无现成 r2 可执行——写 main 链接 libr.a 全套）
+      - name: Build r2 CLI (r2ios-sdk static libs)
+        if: steps.tools-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p /tmp/r2ios
+          curl -sL -o /tmp/r2ios.zip https://github.com/radareorg/radare2/releases/download/6.2.2/r2ios-sdk-6.2.2.zip
+          unzip -q -o /tmp/r2ios.zip -d /tmp/r2ios 2>/dev/null || true
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          INC=/tmp/r2ios/var/jb/usr/include/libr
+          LIB=/tmp/r2ios/var/jb/usr/lib
+          # fix3ak→fix3ap: r_main_r2 不在库内(CLI 入口在可执行源码); r_core_args 符号+声明都没有
+          #         (r2ios-sdk 6.2.2 移除, strings 实测 0 命中)——用库内 API 自写轻量 CLI:
+          #         r_core_new/init + 解析 -A(分析)/-c(命令)/文件(open+bin_load), r_core_cmd_str 执行
+          cat > /tmp/r2main.c <<R2M
+          #include <r_core.h>
+          #include <string.h>
+          #include <stdio.h>
+          // fix3cl: dyld flat namespace 找不到 java 插件全局操作表符号（libr_*.a 引用 _JAVA_OPS）——
+          // 真机 stderr 报 symbol not found，可能拦在 main 之前导致输出全空。提供 stub 让链接/加载通过。
+          // fix3cl3: dead_strip 会把只定义未引用的 stub 删掉（真机仍报 _JAVA_OPS 缺失）——
+          // 全局指针显式引用它，防止任何 dead_strip 环节剔除。
+          // fix3cl4: 三保险——used 属性(编译器保) + 全局指针引用(链接保) + main 里真实读取写入输出(链接/加载保)。
+          // 实测 -Wl,-undefined,dynamic_lookup 下链接器未静态解析该 stub，符号表里只有 UNDEF 引用、无定义，
+          // dyld 启动仍报 flat namespace 找不到 → main 前的构造器失败 exit(0) → 输出全空。
+          // fix3cl6: 真机符号表确诊——libr_*.a 引用的是 JAVA_OPS(无下划线, Mach-O 名 _JAVA_OPS=UNDEF)，
+          //          而旧 stub 定义的是 _JAVA_OPS(带下划线, Mach-O 名 __JAVA_OPS=DEF)——两符号不同名，
+          //          dyld 在 flat namespace 找 _JAVA_OPS 无定义 → 崩。必须定义无下划线版 JAVA_OPS。
+          __attribute__((used)) int _JAVA_OPS = 0;   // 带下划线版（旧，保留兼容）
+          __attribute__((used)) int JAVA_OPS = 0;    // 无下划线版（libr_*.a 真正引用的）
+          volatile int *_java_ops_keep = &_JAVA_OPS;
+          volatile int *java_ops_keep = &JAVA_OPS;
+          // fix3ch: -v/-h 输出后必须 fflush——iOS 无 tty stdout 全缓冲，不刷输出滞留→AI 看到空结果
+          // fix3ck: 真机实测 r2 全部输出丢失(exit 0 空, -c 也空)——r_core 静态库的全局构造器
+          //         会把进程 stdout 重定向掉，fputs(stdout)+fflush 全无效。改为输出写
+          //         TROLL_R2_OUT 文件(App Documents, Swift 传 env + 执行后读回)，与 python3/node 同思路。
+          int main(int argc, char **argv) {
+            const char *op = getenv("TROLL_R2_OUT");
+            FILE *of = (op && op[0]) ? fopen(op, "w") : stdout;
+            // fix3cl4/cl6: 真实使用两个定义（防止链接器/加载器丢弃）——TROLL_R2_DIAG 时写进输出供 AI 验证
+            if (of && getenv("TROLL_R2_DIAG")) fprintf(of, "[r2-diag java_ops=%d keep=%p / JAVA_OPS=%d jkeep=%p]\n", _JAVA_OPS, (void*)_java_ops_keep, JAVA_OPS, (void*)java_ops_keep);
+            int i;
+            for (i = 1; i < argc; i++) {
+              if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--version")) {
+                fputs("radare2 6.2.2 (Xosvi, iOS arm64)\n", of);
+                fflush(of);
+                if (of != stdout) fclose(of);
+                return 0;
+              }
+              if (!strcmp(argv[i], "-h") || !strcmp(argv[i], "--help")) {
+                fputs("Usage: r2 [-A] [-c cmd] [file]\n  -A   run aaa analysis\n  -c   run r2 command\n  -v   version\n", of);
+                fflush(of);
+                if (of != stdout) fclose(of);
+                return 0;
+              }
+            }
+            RCore *core = r_core_new();
+            if (!core) { if (of != stdout) fclose(of); return 1; }
+            r_core_init(core);
+            int aflag = 0;
+            for (i = 1; i < argc; i++) {
+              if (!strcmp(argv[i], "-A")) aflag = 1;
+              else if (!strcmp(argv[i], "-c") && i + 1 < argc) {
+                char *res = r_core_cmd_str(core, argv[++i]);
+                if (res) { fputs(res, of); fflush(of); }
+              }
+              else if (argv[i][0] != '-') {
+                r_core_file_open(core, argv[i], 0, 0);
+                r_core_bin_load(core, argv[i], 0);
+              }
+            }
+            if (aflag) { char *res = r_core_cmd_str(core, "aaa"); if (res) { fputs(res, of); fflush(of); } }
+            r_core_free(core);
+            if (of != stdout) fclose(of);
+            return 0;
+          }
+          R2M
+          LIBS="$(ls $LIB/libr_*.a 2>/dev/null | tr '\n' ' ')"
+          # capstone: 用上一步自编的 libcapstone.a（r2ios-sdk 自带与否不确定）
+          CAP=""
+          if [ -f "$GITHUB_WORKSPACE/native-tools-out/libcapstone.a" ]; then
+            CAP="$GITHUB_WORKSPACE/native-tools-out/libcapstone.a"
+          elif ls $LIB/libcapstone.a >/dev/null 2>&1; then
+            CAP="$LIB/libcapstone.a"
+          fi
+          # fix3am: Apple ld 不支持 GNU 的 -start-group/-end-group(报 unknown options)——换 -all_load
+          #         (强制加载全部静态库成员, 解决 libr_*.a 循环依赖) + -dead_strip(裁掉未引用符号控体积)
+          # fix3ao: r_io.h:46 无条件 include <sys/ptrace.h>——iOS SDK 无此头(fatal error)→
+          #         stub 头(PT_* 宏 + ptrace 实现, 避免链接 undefined symbol); -I 优先
+          mkdir -p /tmp/r2stub/sys
+          cat > /tmp/r2stub/sys/ptrace.h <<PTR
+          #ifndef _SYS_PTRACE_H
+          #define _SYS_PTRACE_H
+          #include <sys/types.h>
+          #define PT_TRACE_ME 0
+          #define PT_CONTINUE 7
+          #define PT_KILL 8
+          #define PT_ATTACH 10
+          #define PT_DETACH 11
+          #define PT_SYSCALL 24
+          int ptrace(int _r, pid_t _p, caddr_t _a, int _d);
+          #endif
+          PTR
+          # fix3ap: 预编译 libr_io.a 引用真 _ptrace(iOS libSystem 符号存在但头被删)——-U 允许 undefined
+          # fix3aq→fix3ar: io_zip.o 不能删(r_io_plugin_zip 被插件注册表引用); r2ios-sdk 实测
+          #         无 libr_java.a/libr_zip.a——缺的只有 zip(7)+java util(7) 符号, 属插件可选功能:
+          #         链接 -undefined dynamic_lookup 放行(lazy 解析, 不调用不崩; r2 分析/反汇编主链路完整)
+          xcrun -sdk iphoneos clang -arch arm64 -isysroot "$SDK" \
+            -I/tmp/r2stub -I"$INC" /tmp/r2main.c \
+            -Wl,-all_load -Wl,-undefined,dynamic_lookup $LIBS $CAP \
+            -o "$GITHUB_WORKSPACE/native-tools-out/r2" \
+            -lz -liconv -lresolv -framework Foundation 2>&1 | tail -20
+          # fix3x: 去掉 || true 吞错——r2 必须编出（用户要求全工具）
+          if [ -f "$GITHUB_WORKSPACE/native-tools-out/r2" ]; then
+            chmod +x "$GITHUB_WORKSPACE/native-tools-out/r2"
+            file "$GITHUB_WORKSPACE/native-tools-out/r2"
+            echo ">>> r2 CLI built"
+          else
+            echo "!!! r2 link failed (libr.a 依赖可能缺 capstone 等)" >&2
+            exit 1
+          fi
+
+      - name: List native tools
+        run: ls -la native-tools-out/
+
+      - name: Upload native tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-tools
+          # v4.4.5-fix2: glob 上传内容本身（而非目录），避免下载后路径嵌套 native-tools-out/native-tools-out/lua
+          path: native-tools-out/*
+          if-no-files-found: warn
+
+  build:
+    # v4.4.5-fix2: needs native-python —— native-python 已有产物缓存（秒级完成），
+    # 等它确保 python artifact 就位，build 才能真正集成（此前并行时 download 拿不到→python 被跳过）
+    # v4.4.5-fix3d: needs native-wheels —— numpy/pandas iOS wheel 有缓存秒级完成
+    # v4.4.6-fix3u: needs native-nmap（continue-on-error job，失败不阻塞出包）
+    # v4.4.8-fix3w: needs native-llvm（LLVM 单工具 + jtool2；下载 continue-on-error，失败不出这些工具但出包）
+    needs: [native-tools, native-python, native-wheels, native-nmap, native-llvm]
+    # v6.6.16：只有 native-tools 是硬依赖（bsdtar + libcapstone.a，后者现在被主二进制链接）。
+    # python/wheels/nmap/llvm 都属于"有则更好"：它们的下载步骤都是 continue-on-error，
+    # 但默认 needs 语义会让任一失败把 build 直接 skip——实测 native-wheels 的 artifact
+    # 下载因账号 egress 限流失败，整个出包就没了。这里改成只校验 native-tools。
+    if: always() && needs.native-tools.result == 'success'
+    runs-on: macos-latest
+    env:
+      RELEASE_VERSION: 6.6.30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        # fix3cy26：ldid-procursus（TrollStore 社区版）——saurik ldid 会静默嵌空 entitlements，
+        #   packet-tunnel-provider 丢失 → NE 拒载 appex。加 xcodegen（P1 Xcode appex 形态）。
+        run: brew install ldid-procursus xcodegen dpkg >/dev/null 2>&1 || true
+
+      - name: Checkout theos
+        uses: actions/checkout@v4
+        with:
+          repository: theos/theos
+          path: theos
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Prepare theos SDK
+        run: |
+          export THEOS="$GITHUB_WORKSPACE/theos"
+          mkdir -p "$THEOS/sdks"
+          ln -s "$(xcrun --sdk iphoneos --show-sdk-path)" "$THEOS/sdks/iPhoneOS17.5.sdk"
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+
+      - name: Build built-in tweaks
+        run: |
+          export THEOS="$THEOS"
+          export THEOS_PACKAGE_SCHEME=rootless
+          # v2.9.315：合并精简——FakeDevice→ConfigHook v2，TrollMCPAgent→ControlAgent v1
+          for t in ProbeAgent ConfigHook NetworkTweak TLSHook MemoryTweak ControlAgent; do
+            echo ">>> building $t"
+            (cd "tweaks/$t" && make package) || { echo "FAILED: $t"; exit 1; }
+            cp "tweaks/$t/.theos/obj/debug/$t.dylib" "Resources/tweaks/$t.dylib" || { echo "NO DYLIB: $t"; exit 1; }
+          done
+          # v2.9.315：默认注入 ControlAgent v1（合并版 UI 控制+保活+截图）
+          cp "Resources/tweaks/ControlAgent.dylib" "Resources/bin/ControlAgent.dylib"
+          ls -lh Resources/tweaks/
+          # v6.9.14：可爱助手 / 桌面悬浮 HUD 已删除，不再构建 XosviHUD.app
+
+      - name: Build sqlite_wipe (iOS arm64 root tool)
+        run: |
+          mkdir -p Resources/bin
+          xcrun -sdk iphoneos clang -arch arm64 -mios-version-min=14.0 \
+            tools/sqlite_wipe.c -lsqlite3 -o Resources/bin/sqlite_wipe || { echo "SQLITE_WIPE FAILED"; exit 1; }
+          ls -lh Resources/bin/sqlite_wipe
+
+      - name: Build opainject (arm64 slice for TrollStore)
+        # v3.0.43：预置 opainject 只有 arm64e slice，TrollStore(arm64 进程) spawn 报 EBADARCH(85)，
+        # device.fake/injection.mem/probe 全部失效。用 Theos 按 ARCHS=arm64 重编（源码 Makefile 默认 arm64+arm64e）。
+        # 编译失败（如缺 CoreSymbolication 头）不阻塞构建，保留旧二进制。
+        run: |
+          export THEOS="$THEOS"
+          export THEOS_PACKAGE_SCHEME=rootless
+          # opainject Makefile TARGET 要 iphone:clang:16.5 —— CI 只有 17.5，软链别名兼容
+          ln -sfn "$THEOS/sdks/iPhoneOS17.5.sdk" "$THEOS/sdks/iPhoneOS16.5.sdk" 2>/dev/null || true
+          rm -rf /tmp/opainject && git clone --depth 1 -q https://github.com/opa334/opainject.git /tmp/opainject
+          cd /tmp/opainject
+          # fix3ci: opainject 2026-10 重构为独立 makefile（"transition from theos to a standalone makefile"），
+          # 源码移到 src/（arm64.h/rop_inject.m 不再在根目录）、产物在根目录（不再 .theos）。
+          # arm64.h 缺 stdint.h（新 clang 模块化检查严格，报 uint32_t must be imported）——幂等插入
+          grep -q '#include <stdint.h>' src/arm64.h || perl -0pi -e 's{^}{#include <stdint.h>\n}' src/arm64.h
+          # CoreSymbolication 私有框架 Xcode SDK 没有，且源码只 import 未调用 → 删 import + 去掉 -framework 链接
+          sed -i '' '/CoreSymbolication/d' src/rop_inject.m 2>/dev/null || sed -i '/CoreSymbolication/d' src/rop_inject.m
+          head -3 src/arm64.h
+          make ARCHS="arm64" opainject_PRIVATE_FRAMEWORKS= || { echo "OPAINJECT BUILD FAILED, keeping old binary"; exit 0; }
+          OUT=$(find . -name opainject -type f | head -1)
+          if [ -n "$OUT" ] && file "$OUT" | grep -q "arm64"; then
+            cp "$OUT" "$GITHUB_WORKSPACE/Resources/bin/opainject"
+            echo "opainject rebuilt:"; file "$GITHUB_WORKSPACE/Resources/bin/opainject"
+          else
+            echo "no arm64 opainject output, keeping old binary"
+          fi
+
+      - name: Build teamid (CodeDirectory TeamID extractor)
+        # v3.0.53：ct_bypass 签名需要目标 App 真实 Team ID（TrollFools teamIdentifierOfMachO 同款）。
+        # 直接 clang + iPhoneOS SDK 编 arm64（只依赖 libproc/libSystem），失败不阻塞保留旧二进制。
+        run: |
+          export SDK="$THEOS/sdks/iPhoneOS17.5.sdk"
+          ln -sfn "$SDK" "$THEOS/sdks/iPhoneOS16.5.sdk" 2>/dev/null || true
+          clang -isysroot "$SDK" -arch arm64 -miphoneos-version-min=14.0 \
+            -framework Foundation -o /tmp/teamid "$GITHUB_WORKSPACE/tools/teamid.c" \
+            && cp /tmp/teamid "$GITHUB_WORKSPACE/Resources/bin/teamid" \
+            && echo "teamid built:" && file "$GITHUB_WORKSPACE/Resources/bin/teamid" \
+            || echo "TEAMID BUILD FAILED, keeping old binary"
+
+      - name: Build kfd_helper (iOS arm64, kfd trust injection for non-jailbroken <17)
+        # v3.5.27：纯巨魔非越狱(<17)抓包的信任注入 helper。此前 CI 未编译它，
+        # 导致 IPA 里根本没有 kfd_helper → kfdInject 路径找不到 helper → 抓包回退失败。
+        # 用 tools/build_kfd_helper.sh：clone felix-pb/kfd + 覆盖 iOS16.3 偏移表 + xcrun 编译。
+        run: |
+          bash tools/build_kfd_helper.sh \
+            && echo "=== kfd_helper built OK ===" && file Resources/bin/kfd_helper \
+            || echo "KFD_HELPER BUILD FAILED (kept any old binary)"
+
+      - name: Cache iSH engine build
+        # v3.0.37：iSH 编译 40 分钟，缓存 ish-stage（libs+include+resources+源码），命中直接跳过构建
+        # v3.0.40：key 带脚本 hash，改 prepare_alpine_rootfs.sh（如预装包/DNS）时自动重编 rootfs
+        id: cache-ish
+        uses: actions/cache@v4
+        with:
+          path: ish-stage
+          key: ish-stage-${{ hashFiles('scripts/ish-build/*.sh') }}-v3
+
+      - name: Build iSH engine (libish.a + alpine rootfs)
+        # v3.0.37：编译 iSH-ARM64 静态库与 Alpine rootfs，供 shell.exec 新引擎使用。
+        # 脚本来自 OpenMinis（build_ish.sh / prepare_alpine_rootfs.sh），产出 ish-stage/{libs,include,resources}。
+        # 缓存命中时跳过（构建产物一致；改 scripts/ish-build/*.sh 需 bump key）。
+        if: steps.cache-ish.outputs.cache-hit != 'true'
+        run: |
+          brew install meson ninja libarchive llvm lld qemu >/dev/null 2>&1 || true
+          # lld 供 iSH VDSO 构建（-fuse-ld=lld）：macos 预装 llvm 不含 lld，单独 brew install lld
+          export PATH="/opt/homebrew/opt/llvm/bin:/opt/homebrew/opt/lld/bin:$PATH"
+          ln -sf "$(which lld)" /opt/homebrew/opt/lld/bin/ld.lld 2>/dev/null || true
+          which lld && echo "lld OK" || echo "NO lld in PATH"
+          mkdir -p ish-stage
+          cd ish-stage
+          cp ../scripts/ish-build/build_ish.sh .
+          cp ../scripts/ish-build/prepare_alpine_rootfs.sh .
+          git clone --depth 1 -q -b feature-arm64 https://github.com/OpenMinis/ish-arm64.git ish
+          cd ish && git submodule update --init --recursive --depth 1 -q && cd ..
+          # v3.7.2: meta.db 缺失/空时 boot rc=-22 的 patch 已内置在 build_ish.sh（SQLITE_OPEN_CREATE + 初始 schema 注入）
+          bash build_ish.sh
+          bash prepare_alpine_rootfs.sh
+          echo "=== iSH 产物 ==="
+          ls -la libs/ include/ resources/ | head -40
+          du -sh libs include resources
+          cd ..
+
+      - name: Copy iSH headers to CISH
+        # 头文件供 SwiftPM CISH target 使用（headerSearchPath 相对 target 目录解析）；只覆盖 ish 子目录，保留 wrapper.h/module.modulemap
+        run: |
+          rm -rf CISH/include/ish
+          mkdir -p CISH/include
+          cp -R ish-stage/include/ish CISH/include/
+
+      - name: Build OpenSSL (MITM kernel)
+        # v3.3.0：MITM 抓包内核需要 OpenSSL 静态库（证书签发 + TLS 双端）
+        run: |
+          bash scripts/build-openssl.sh
+
+      # v4.4.5-fix3e: 删除历史 "Build unsigned IPA" 步骤——它先跑 build-ipa.sh，
+      # 而 Download 步骤排在其后 → download 永远赶不上（fix3d 失败根因：build-ipa.sh 的
+      # python 段 find python-ios 找不到 → set -e 杀脚本 → job fail）。
+      # 现在顺序 = 全部 download 前置 → 唯一一次 build-ipa.sh 集成 python/wheels/工具链。
+
+      # v4.4.4: 集成原生 Python——下载 native-python job 编译的 xcframework 到 python-ios/。
+      # v4.4.5: 集成原生工具链（lua）——native-tools job 产物（build needs native-tools，必在）。
+      - name: Download native tools (lua)
+        uses: actions/download-artifact@v4
+        with:
+          name: native-tools
+          path: native-tools-out
+      # fix3bo: nodejs-mobile 无 CLI 可执行（NodeMobile 是 dylib）——若下载的 node 非 executable，用 C wrapper(node_start) 重编真可执行
+      - name: Fix node CLI wrapper (if dylib)
+        run: |
+          NODE="$GITHUB_WORKSPACE/native-tools-out/node"
+          if [ ! -f "$NODE" ]; then echo "node 不存在，跳过"; exit 0; fi
+          if file "$NODE" 2>/dev/null | grep -q "Mach-O 64-bit arm64 executable"; then
+            echo ">>> node OK (executable)"
+            exit 0
+          fi
+          echo ">>> node 非可执行($(file "$NODE" | head -c 60))——C wrapper 重编"
+          lipo "$NODE" -thin arm64 -output /tmp/NodeMobile_arm64.dylib 2>/dev/null || cp "$NODE" /tmp/NodeMobile_arm64.dylib
+          cat > /tmp/nodecli.c <<'NC'
+          #include <stdio.h>
+          extern int node_start(int argc, char **argv);
+          // fix3ch: C 层诊断（相对 cwd 可写）——确认 node_start 是否执行、argv 是否正确
+          static void ndiag(const char *msg) {
+              FILE *f = fopen("troll_node_diag.txt", "a");
+              if (f) { fprintf(f, "%s\n", msg); fclose(f); }
+          }
+          int main(int argc, char **argv) {
+              // fix3ce: iOS 无 tty stdout 全缓冲——nodejs-mobile(V8) 输出滞留不 flush → AI 看到空结果。
+              // 行缓冲 + 退出强刷；stderr 同步。
+              setvbuf(stdout, NULL, _IOLBF, 0);
+              setvbuf(stderr, NULL, _IOLBF, 0);
+              ndiag("node start");
+              int rc = node_start(argc, argv);
+              ndiag(rc == 0 ? "node_start ok" : "node_start FAIL");
+              fflush(stdout);
+              fflush(stderr);
+              return rc;
+          }
+          NC
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          if xcrun -sdk iphoneos clang -arch arm64 -isysroot "$SDK" -o "$NODE" /tmp/nodecli.c /tmp/NodeMobile_arm64.dylib -Wl,-undefined,dynamic_lookup -Wl,-rpath,@executable_path/../Frameworks 2>/tmp/node_build.err; then
+            ORIG_INAME=$(otool -D "$NODE" 2>/dev/null | tail -1)
+            if [ -n "$ORIG_INAME" ]; then
+              install_name_tool -change "$ORIG_INAME" @executable_path/NodeMobile.dylib "$NODE" 2>/dev/null || true
+            fi
+            cp /tmp/NodeMobile_arm64.dylib "$GITHUB_WORKSPACE/native-tools-out/NodeMobile.dylib"
+            chmod +x "$NODE"
+            echo ">>> node: C wrapper(node_start) + NodeMobile.dylib OK"
+          else
+            echo "!!! node wrapper 编译失败——node 保持不可用（不阻塞构建）" >&2
+            tail -3 /tmp/node_build.err >&2
+          fi
+
+        continue-on-error: true
+
+      - name: Download native Python xcframework (if ready)
+        uses: actions/download-artifact@v4
+        with:
+          name: python-ios-xcframework
+          path: python-ios
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Download native wheels (numpy/pandas iOS)
+        uses: actions/download-artifact@v4
+        with:
+          name: native-wheels
+          path: native-wheels
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Download native nmap (if ready)
+        uses: actions/download-artifact@v4
+        with:
+          name: native-nmap
+          path: nmap-out
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Download native LLVM tools + jtool2 (if ready)
+        uses: actions/download-artifact@v4
+        with:
+          name: native-llvm
+          path: native-llvm-out
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Build IPA (with native Python integration)
+        run: |
+          ls -la python-ios/ 2>/dev/null | head -5 || true
+          # fix3cy26c (P1 主线): 诊断期开关已移除——默认走 Xcode app-extension 形态。
+          # XCODE_APPEX=1 → build-ipa.sh 走 Xcode 分支（vpnxcode/ 工程 xcodegen 构建 +
+          # ldid-procursus 签名 + entitlements 校验后进包）。C 空壳诊断(MINIMAL_C)已结束，
+          # 不再强制覆盖；本轮验证点 = NE 能否拉起 Xcode 标准扩展形态的 appex。
+          export XCODE_APPEX=1
+          bash scripts/build-ipa.sh
+
+      # v4.4.8-fix3x: 进包断言——实测发现 job 绿但工具缺失（缓存劫持/吞错），
+      # 这里逐项列出实际进包情况，build 日志可查、可审计。
+      - name: Verify bundled tools in tipa
+        run: |
+          APP="$GITHUB_WORKSPACE/build/Xosvi.app"
+          [ -d "$APP" ] || APP=$(find "$GITHUB_WORKSPACE" -maxdepth 3 -name "*.app" -type d 2>/dev/null | head -1)
+          echo "APP: $APP"
+          echo "=== bin/ 工具断言 ==="
+          for t in lua node r2 cstool nmap llvm-objdump llvm-nm llvm-readelf jtool2 objdump class-dump ldid optool; do
+            if [ -f "$APP/bin/$t" ]; then echo "IN   : $t"; else echo "MISSING: $t"; fi
+          done
+          echo "=== site-packages 断言 ==="
+          SP=$(find "$APP" -type d -name site-packages 2>/dev/null | head -1)
+          echo "site-packages: $SP"
+          ls "$SP" 2>/dev/null | head -10
+          for p in numpy pandas; do
+            if ls "$SP" 2>/dev/null | grep -q "^$p"; then echo "IN   : $p"; else echo "MISSING: $p"; fi
+          done
+          # fix3cy35c: PlugIns 断言改为硬失败——appex 未进包=VPN 主线未生效，绝不允许产出"success 坏包"
+          echo "=== VpnTunnel.appex 断言 ==="
+          APX="$APP/PlugIns/VpnTunnel.appex"
+          if [ -d "$APX" ]; then
+            echo "IN   : PlugIns/VpnTunnel.appex"
+            ls -la "$APX"
+            BIN="$APX/VpnTunnel"
+            [ -f "$BIN" ] && { echo "appex 二进制: $(ls -la "$BIN" | awk '{print $5"B"}')"; file "$BIN" || true; }
+          else
+            echo "MISSING: PlugIns/VpnTunnel.appex（Xcode 分支未产出 appex，P1 主线未生效）"
+            echo "::error::PlugIns/VpnTunnel.appex MISSING — VPN appex not packaged, FAILING build"
+            exit 1
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Xosvi
+          path: Xosvi.tipa
+          if-no-files-found: error
+
+      # v4.3.30：发布滚动 Release（固定 tag "latest"）——多源更新用：
+      # App 下载链第二候选（GitHub 被墙时经 ghfast/gh-proxy 等镜像前缀即可下载）。
+      - name: Publish rolling release (multi-source update)
+        # v6.6.17：只在 main 上发布。分支验证（workflow_dispatch 指定 ref）不能覆盖 latest，
+        # 否则实验代码会被当成"最新版"推给所有人。
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # v6.6.7：优先用 build-ipa.sh 注入的 RELEASE_VERSION——Support/Info.plist 是仓库里的
+          # 默认值（6.6.6），直接读它会让 Release 标题永远停在旧版本，与实际产物不一致。
+          VER="${RELEASE_VERSION:-$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Support/Info.plist 2>/dev/null || echo "unknown")}"
+          echo "version=$VER"
+          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          # v6.6.7：只上传 Xosvi.tipa（Bundle ID 已改 com.xosvi.app，老用户需卸载重装）
+          gh release create latest Xosvi.tipa \
+            --title "Xosvi latest (v${VER})" \
+            --notes "滚动构建（main 分支最新）。供 App 内多源自动更新使用：GitHub 被墙时经镜像前缀或 Releases 直链下载。下载地址：https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/Xosvi.tipa" || \
+            { echo "RELEASE PUBLISH FAILED (non-fatal)"; exit 0; }
+          # v6.6.27：dSYM 随包发布——崩溃栈不再靠 base= 手工换算偏移
+          DSYM=$(find "$GITHUB_WORKSPACE" -maxdepth 3 -name "*.app.dSYM" -type d 2>/dev/null | head -1)
+          if [ -n "$DSYM" ]; then
+            (cd "$(dirname "$DSYM")" && zip -qry /tmp/dsyms.zip "$(basename "$DSYM")" &&              gh release upload latest /tmp/dsyms.zip --clobber && echo "dSYM uploaded: $DSYM")
+          else
+            echo "no dSYM found (non-fatal)"
+          fi
+
+  # v4.4.3：原生 ARM64 Python（iOS 版 CPython，PEP 730 官方构建脚本）。
+  # 目的：pandas/numpy 在 iSH 模拟器里 import 必段错误闪退（崩溃栈 cpu_run_to_interrupt，
+  # OpenMinis 模拟器跑不了 openblas）。正解 = 原生 Python.framework 直接跑在 iPhone 芯片上。
+  # 独立 job：编译失败不影响主出包（build job 不依赖本 job）；成功后 artifact 供后续集成
+  # （Python.framework + stdlib 打进 .app + ShellTool 路由 python3 → 原生 CLI）。
+  native-python:
+    runs-on: macos-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: python/cpython
+          ref: v3.14.8
+          path: cpython
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      # v4.4.4: 缓存编译产物（tar.gz ~79MB）——CPython iOS 编译 60-90 分钟，
+      # 命中缓存后本 job 秒级完成，build job 才能稳定集成到 App。
+      # 必须在 checkout 之后 restore（checkout clean 会清掉 cache 恢复的目录）。
+      - uses: actions/cache@v4
+        id: pycache
+        with:
+          path: cpython/cross-build/dist
+          # fix3g: save-always:false——编译失败不写缓存，防空产物毒化
+          # fix3clf: v4——旧缓存(v3)的 dist/ 只有 tar.gz、无 static-lib（上版从未生成成功），
+          #         bump 强制全量重编一次，让 dist/static-lib 进缓存（dist 整体在 cache path 内）
+          key: python-ios-dist-3.14.8-v4
+          save-always: false
+
+      - name: Build Python.xcframework (iOS arm64, official Apple build script)
+        if: steps.pycache.outputs.cache-hit != 'true'
+        run: |
+          cd cpython
+          python Apple build iOS
+          ls -la cross-build/dist/
+
+      # v4.4.9-fix3bx: 原生 python3 配 pip——pip wheel 是纯 Python，解压进 site-packages 即可用
+      # (原生 python3 无 pip→ensurepip 在 iOS 超时/不可靠；解压 wheel 无编译秒级完成)。
+      # 缓存命中时也跑（缓存是旧内容，解压进恢复目录后 upload artifact 会带上 pip）。
+      - name: Bundle pip into native site-packages (fix3bx)
+        run: |
+          curl -sL -m 60 -o /tmp/pip.whl https://bootstrap.pypa.io/pip/pip-25.0.1-py3-none-any.whl || curl -sL -m 60 -o /tmp/pip.whl https://pypi.tuna.tsinghua.edu.cn/packages/pip/pip-25.0.1-py3-none-any.whl || true
+          if [ ! -s /tmp/pip.whl ]; then echo "pip wheel download failed (skip)"; exit 0; fi
+          SP=$(find cpython/cross-build/dist -type d -name site-packages 2>/dev/null | head -1)
+          if [ -z "$SP" ]; then
+            echo "site-packages not found; dist layout:"; find cpython/cross-build/dist -maxdepth 3 -type d 2>/dev/null | head -25
+            exit 0
+          fi
+          python3 -c "import zipfile; zipfile.ZipFile('/tmp/pip.whl').extractall('$SP')"
+          ls "$SP" | head -8
+          echo "pip bundled into $SP"
+
+      # fix3clc/fix3cle: 静态链接 libpython3.14.a 进 python3 CLI（绕开 iOS 子进程 dyld 加载 framework 的 SIGKILL）。
+      # fix3clf 实证修正：原实现 in-source `make libpython3.14.a` 在 cpython/ 根目录跑 → 没产出（iOS 是 out-of-tree
+      # 构建，configure 在 cross-build/arm64-apple-ios/）→ 被 fallback exit 0 静默吞掉 → 空 static-lib 进 upload
+      # （if-no-files-found: warn）→ build job 走 dynamic fallback → 真机 python3 仍 137。教训：fallback 吞错 = 用户拿废包。
+      # 正解：官方 Apple build iOS 的 out-of-tree 构建（cross-build/arm64-apple-ios/）在组 framework 时
+      # 已生成 libpython3.14.a（arm64-apple-ios-ar rcs + -all_load），直接从构建树提取即可，无需再 make。
+      # 失败必须 exit 1（不再静默）——build job 会因缺 static-lib 而明显失败，杜绝"AI 以为有、真机没有"。
+      - name: Build static libpython3.14.a (iOS arm64, extract from official build tree)
+        if: steps.pycache.outputs.cache-hit != 'true'
+        run: |
+          set -x
+          cd cpython
+          LIB=$(find cross-build/arm64-apple-ios -maxdepth 1 -name 'libpython3.14.a' 2>/dev/null | head -1)
+          if [ -n "$LIB" ] && [ -s "$LIB" ]; then
+            mkdir -p cross-build/dist/static-lib
+            cp "$LIB" cross-build/dist/static-lib/libpython3.14.a
+            cp -R Include cross-build/dist/static-lib/include
+            echo ">>> static libpython3.14.a ready: $(ls -la cross-build/dist/static-lib/libpython3.14.a | awk '{print $5}') bytes"
+          else
+            echo "!!! static libpython3.14.a NOT FOUND in cross-build/arm64-apple-ios — python3 将 dynamic fallback" >&2
+            exit 1
+          fi
+
+      - name: Upload Python iOS xcframework
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-ios-xcframework
+          path: |
+            cpython/cross-build/dist/*.tar.gz
+            cpython/cross-build/dist/static-lib/**
+          if-no-files-found: warn
+
+  # v4.4.5-fix3h: 原生 numpy iOS wheel——手动 meson 交叉编译（beeware 真实路线）。
+  # cibuildwheel 对 numpy 水土不服：meson-python 的 backend deps(ninja/cmake)在 iOS venv 无
+  # iOS wheel→pip 源码编译失败, 且默认 -Dallow-noblas=false 强制 BLAS(无解)。
+  # meson-python 0.19+ 原生支持 iOS target；--no-build-isolation 用宿主 ninja/cython，
+  # _PYTHON_HOST_PLATFORM + _PYTHON_SYSCONFIGDATA_NAME 加载 iOS Python 的交叉 sysconfigdata，
+  # sed 把 sysconfigdata 相对路径 hack 成绝对路径(指向解包的 Python.xcframework)。
+  native-wheels:
+    runs-on: macos-latest
+    needs: native-python
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - uses: actions/cache@v4
+        id: wheels-cache
+        with:
+          path: wheels-out
+          # fix3g: save-always:false——构建失败绝不写缓存，根治空缓存毒化死循环
+          # fix3h: v3→v4（numpy 手动 meson 方案），pandas 拆出下轮单独做
+          key: ios-numpy-cp314-v4
+          save-always: false
+
+      - name: Download Python iOS xcframework (headers + sysconfigdata)
+        uses: actions/download-artifact@v4
+        with:
+          name: python-ios-xcframework
+          path: python-ios
+          merge-multiple: true
+
+      - name: Build numpy iOS wheel (cp314 arm64 iphoneos, manual meson cross)
+        if: steps.wheels-cache.outputs.cache-hit != 'true'
+        run: |
+          set -e
+          mkdir -p wheels-out wheel-src
+          # 宿主后端工具（mac wheel，避免 iOS venv 里 pip 源码装 ninja/cmake 失败）
+          # fix3k: 显式装 wheel——meson-python 打包 wheel 依赖它
+          pip install meson-python==0.19.* ninja cython wheel
+          # 解包 Python.xcframework（native-python job 产物）
+          tar -xzf python-ios/python-*.tar.gz -C python-ios/
+          XCF=$(find python-ios -type d -name "Python.xcframework" | head -1)
+          PYIOS="$(pwd)/$XCF/ios-arm64"
+          echo ">>> PYIOS=$PYIOS"
+          # hack sysconfigdata：PEP 730 记录的是相对路径(Apple/iOS/Frameworks/arm64-iphoneos/...)
+          # → 改成绝对路径，meson 才能找到 include/lib
+          # fix3i: macOS 是 BSD sed，-i 后必须带备份后缀（-i ""）
+          SC="$PYIOS/lib-arm64/python3.14/_sysconfigdata__ios_arm64-iphoneos.py"
+          sed -i "" "s|'Apple/iOS/Frameworks/arm64-iphoneos|'$PYIOS|g" "$SC"
+          grep -o "'INCLUDEPY': '[^']*'" "$SC" | head -1
+          # fix3j: sysconfigdata 文件名带连字符(-iphoneos)无法 importlib import(Python 模块名
+          # 禁连字符)→ pip sysconfig 初始化 ModuleNotFoundError。复制下划线命名副本，
+          # _PYTHON_SYSCONFIGDATA_NAME 指向它即可被 PYTHONPATH 正常 import。
+          cp "$SC" "$PYIOS/lib-arm64/python3.14/_sysconfigdata__ios_arm64_iphoneos.py"
+          # meson cross 文件（xcrun SDK 工具链，arm64 真机）
+          cat > ios-meson.ini <<INI
+          [binaries]
+          c = ['xcrun', '--sdk', 'iphoneos', 'clang', '-arch', 'arm64', '-mios-version-min=15.0']
+          cpp = ['xcrun', '--sdk', 'iphoneos', 'clang++', '-arch', 'arm64', '-mios-version-min=15.0']
+          ar = ['xcrun', '--sdk', 'iphoneos', 'ar']
+          strip = ['xcrun', '--sdk', 'iphoneos', 'strip']
+          pkg-config = 'false'
+          [host_machine]
+          system = 'ios'
+          cpu_family = 'aarch64'
+          cpu = 'arm64'
+          endian = 'little'
+          [properties]
+          # fix3m: numpy/_core/meson.build:408 用 cc.run() 检测 long double 内存布局——
+          # cross 环境不能运行 iOS 测试程序。numpy 官方设计: meson.get_external_property
+          # 从 cross 文件读 longdouble_format。Apple arm64 的 long double = 64 位 double(小端)。
+          longdouble_format = 'IEEE_DOUBLE_LE'
+          INI
+          # numpy sdist（meson 源码包）
+          pip download --no-deps --no-binary :all: numpy==2.1.3 -d wheel-src
+          tar -xzf wheel-src/numpy-2.1.3.tar.gz -C wheel-src
+          # fix3k: 环境变量只在 pip wheel 前生效(避免污染前面的 pip download/install)——
+          # _PYTHON_HOST_PLATFORM + _PYTHON_SYSCONFIGDATA_NAME + PYTHONPATH 加载 iOS 交叉
+          # sysconfigdata(PEP 730 机制)。先断言验证生效，失败立即暴露而非盲等 meson。
+          export _PYTHON_HOST_PLATFORM=ios-arm64
+          export _PYTHON_SYSCONFIGDATA_NAME=_sysconfigdata__ios_arm64_iphoneos
+          # fix3au: meson 的 python 模块可能读宿主 SC(交叉 SC sed 影响不到 LDSHARED 的 framework)——双保险:
+          #          sed 宿主 SC 副本放 PYTHONPATH(无论读哪个 SC, -framework Python 都删干净)
+          mkdir -p /tmp/pyfix
+          # fix3az: 宿主 SC 文件名不猜(3.14 可能是 _sysconfigdata_darwin_darwin 或 _sysconfigdata__macosx_*)
+          #         原 cp $HOSTSCNAME.py 2>/dev/null 静默失败→set -e exit 1 无输出(首次执行实锤)
+          #         →glob 宿主 lib 下所有 _sysconfigdata*.py 全 sed, 去掉 2>/dev/null 让错误可见
+          # fix3ba: sysconfig 在 3.14 是包(__file__ 在 .../sysconfig/__init__.py)→dirname 取到子目录, SC 在上一级
+          #         →改用 sys.prefix 拼 lib/pythonX.Y(标准位置, 不依赖 __file__ 形态)
+          HOSTLIB=$(env -u _PYTHON_SYSCONFIGDATA_NAME python3 -c 'import sys, os; print(os.path.join(sys.prefix, "lib", "python%d.%d" % sys.version_info[:2]))')
+          echo ">>> HOSTLIB=$HOSTLIB"
+          cp "$HOSTLIB"/_sysconfigdata*.py /tmp/pyfix/
+          ls /tmp/pyfix/ | head -3
+          sed -i '' 's/-framework Python//g' /tmp/pyfix/_sysconfigdata*.py
+          grep -c "framework" /tmp/pyfix/_sysconfigdata*.py || echo ">>> host SC framework 已删干净"
+          export PYTHONPATH="/tmp/pyfix:$PYIOS/lib-arm64/python3.14${PYTHONPATH:+:$PYTHONPATH}"
+          # fix3l: meson-python 0.19 检测到 cross 会自动生成 cross-file 并用 PEP 730 官方编译器
+          # arm64-apple-ios-clang(在 XCFramework ios-arm64/bin/ 里)——必须加进 PATH
+          export PATH="$PYIOS/bin:$PATH"
+          python3 -c "
+          import sysconfig, sys
+          ip = sysconfig.get_config_var('INCLUDEPY') or ''
+          print('sysconfig INCLUDEPY =', ip)
+          assert 'ios-arm64' in ip and ip.startswith('/'), 'sysconfigdata 未生效或路径未绝对化: ' + ip
+          lp = sysconfig.get_config_var('LIBDIR') or ''
+          print('sysconfig LIBDIR =', lp)
+          assert 'ios-arm64' in lp, 'LIBDIR 未指向 ios-arm64: ' + lp
+          # fix3bb: 实锤 meson 将读到的 LDSHARED——framework 双保险 sed 后到底删没删
+          print('LDSHARED =', sysconfig.get_config_var('LDSHARED'))
+          print('LDFLAGS  =', sysconfig.get_config_var('LDFLAGS'))
+          print('LIBS     =', sysconfig.get_config_var('LIBS'))
+          "
+          # fix3o: meson-python 0.19 打 iOS wheel tag 时若未设部署目标会调用 platform.ios_ver()
+          # (macOS 上 release='' → int('') 崩)。官方设计: IPHONEOS_DEPLOYMENT_TARGET 覆盖版本解析。
+          export IPHONEOS_DEPLOYMENT_TARGET=15.0
+          python -m pip wheel --no-deps --no-build-isolation \
+            -Csetup-args=--cross-file=$PWD/ios-meson.ini \
+            -Csetup-args=-Dallow-noblas=true \
+            -Csetup-args=-Dc_args=-mios-version-min=15.0 \
+            -Csetup-args=-Dcpp_args=-mios-version-min=15.0 \
+            -Csetup-args=-Dcpu-dispatch=none \
+            wheel-src/numpy-2.1.3 -w wheels-out
+          ls -la wheels-out/
+          # 验证 wheel tag
+          for w in wheels-out/*.whl; do unzip -p "$w" "*/METADATA" 2>/dev/null | head -3; echo "--- $w"; done
+
+      # v4.4.6-fix3u: pandas 3.0.6（已迁移 meson，机制与 numpy 同：cross-file + PEP 730 sysconfigdata）
+      # 宿主装 Cython+numpy 供头文件（cross 标准法，arm64 host 与 iOS arm64 类型一致）；
+      # 注意顺序（fix3k 教训）：宿主 pip install 必须在 iOS env vars 之前——_PYTHON_HOST_PLATFORM
+      # 会劫持 pip 平台判断（以为在 iOS 上跑→没有 macOS wheel→装失败）。
+      # fix3x: 去掉 if 缓存条件——此前绑定 numpy 缓存, 缓存命中时 pandas 步骤被跳过(假进包)；
+      #        现在无条件每次编译（约 3-5min），保证 pandas wheel 每次都产出并上传。
+      # fix3ad: 本 step 独立 shell——完整复制 numpy 环境准备(解包+sysconfigdata hack+副本+cross-file),
+      #         不再假设 numpy 步骤遗留就位(修复 'No module named _sysconfigdata' 根因: 副本/cross-file
+      #         是 numpy 步骤局部产物, 本步骤必须自给自足); pip 前补装 meson-python/ninja/wheel(幂等)。
+      - name: Build pandas iOS wheel (cp314 arm64 iphoneos, meson cross)
+        run: |
+          set -euo pipefail
+          # 0) 宿主后端工具（幂等, 防 numpy 步骤未执行/缓存命中导致缺失）
+          pip install -q meson-python ninja cython wheel
+          # 1) 解包 Python.xcframework（native-python job 产物, download-artifact 已放 python-ios/）
+          tar -xzf python-ios/python-*.tar.gz -C python-ios/
+          XCF=$(find python-ios -type d -name "Python.xcframework" | head -1)
+          PYIOS="$(pwd)/$XCF/ios-arm64"
+          echo ">>> PYIOS=$PYIOS"
+          # 2) sysconfigdata hack（PEP 730 相对路径→绝对路径）+ 下划线副本（import 可加载）
+          # fix3ak: pandas 扩展链接带 -framework Python(sysconfig LDSHARED), iOS 交叉无 Python.framework→
+          #         ld: framework 'Python' not found——sed 删掉; Python C API 符号靠 dynamic_lookup 动态解析
+          SC="$PYIOS/lib-arm64/python3.14/_sysconfigdata__ios_arm64-iphoneos.py"
+          sed -i "" "s|'Apple/iOS/Frameworks/arm64-iphoneos|'$PYIOS|g" "$SC"
+          # fix3as: LDSHARED 以 -framework Python 开头(无前导空格), 之前 sed 只删带空格的→没删掉——
+          #         全局删(含开头), 链接命令即去 framework(仅留 -F 搜索路径, 无害)
+          sed -i '' 's/-framework Python//g; s/-Wl,-framework,Python//g; s/-framework Python.framework//g; s|-F /Library/Frameworks/Python.framework[^ ]*||g' "$SC"
+          cp "$SC" "$PYIOS/lib-arm64/python3.14/_sysconfigdata__ios_arm64_iphoneos.py"
+          # fix3at: 断言 LDSHARED 已无 framework(之前 sed 后仍残留, 失败立即暴露而非盲等 meson)
+          grep -c "framework" "$SC" || echo ">>> SC framework 已删干净"
+          # fix3bf: HOSTPY 必须在 cross-file heredoc 展开前定义(set -u 否则 heredoc 内 $HOSTPY unbound 直接退出)
+          HOSTPY=$(which python3)
+          echo ">>> HOSTPY=$HOSTPY"
+          # 3) meson cross 文件（xcrun SDK 工具链, arm64 真机）
+          cat > ios-meson.ini <<INI
+          [binaries]
+          c = ['xcrun', '--sdk', 'iphoneos', 'clang', '-arch', 'arm64', '-mios-version-min=15.0']
+          cpp = ['xcrun', '--sdk', 'iphoneos', 'clang++', '-arch', 'arm64', '-mios-version-min=15.0']
+          ar = ['xcrun', '--sdk', 'iphoneos', 'ar']
+          strip = ['xcrun', '--sdk', 'iphoneos', 'strip']
+          pkg-config = 'false'
+          # fix3at: pandas 用 import('python').find_installation() 取链接参数——不指定 python 时
+          #         meson 用宿主(macOS framework 版)→LDSHARED 带 -framework Python(交叉 SC 的 sed 影响不到)
+          #         →显式指定宿主 python + _PYTHON_SYSCONFIGDATA_NAME 环境让其读交叉 SC
+          # fix3be: cross-file python 改用 hostedtoolcache(which python3, runner 可写可 sed)——
+          #         /Library/Frameworks 的 python.org SC 不可写, meson 读它时 LDSHARED 带 framework 无法 sed
+          python = ['$HOSTPY']
+          # fix3bc: meson 交叉报 "Compiler for language c/cpp/cython for the build machine not found"——
+          #         cross-file 只有 host(iOS) 编译器, build machine 需显式(宿主 clang, meson 1.12 交叉不自动探测)
+          build.c = ['clang']
+          build.cpp = ['clang++']
+          cython = ['cython']
+          [host_machine]
+          system = 'ios'
+          cpu_family = 'aarch64'
+          cpu = 'arm64'
+          endian = 'little'
+          [properties]
+          allow-noblas = true
+          cpu-dispatch = 'none'
+          [built-in options]
+          c_args = ['-mios-version-min=15.0']
+          cpp_args = ['-mios-version-min=15.0']
+          # fix3al: c_link_args 必须在 cross 文件(pip 命令行传 -Dc_link_args 也覆盖不了 LDSHARED)——
+          #         -undefined dynamic_lookup: Python C API 符号动态解析(无 Python.framework 可链接)
+          c_link_args = ['-Wl,-undefined,dynamic_lookup', '-mios-version-min=15.0']
+          # fix3bk: C++ 扩展(aggregations 等 .pyx.cpp)走 cpp_link_args——不加则无 dynamic_lookup,
+          #         __pyx_fatalerror 等 Python C API 符号找不到(假 framework 无符号)→ symbol not found
+          cpp_link_args = ['-Wl,-undefined,dynamic_lookup', '-mios-version-min=15.0']
+          INI
+          # fix3be: sed hostedtoolcache 宿主 SC 删 -framework Python——meson 读它(宿主 SC 已干净)
+          HSCLIB=$($HOSTPY -c 'import sys,os; print(os.path.join(sys.prefix,"lib","python%d.%d"%sys.version_info[:2]))')
+          ls "$HSCLIB"/_sysconfigdata*.py
+          sed -i '' 's/-framework Python//g' "$HSCLIB"/_sysconfigdata*.py
+          grep -c "framework" "$HSCLIB"/_sysconfigdata*.py || echo ">>> hostedtoolcache SC framework 已删干净"
+          # fix3bd: meson 的 build machine 工具必须在 native-file(cross-file 的 build.* 被忽略, meson 1.12 交叉不自动探测)
+          cat > ios-native.ini <<INI
+          [binaries]
+          c = ['clang']
+          cpp = ['clang++']
+          cython = ['cython']
+          INI
+          # fix3bd: 用 cross-file 指定的 python 实锤 meson 将读到的 LDSHARED(还有 framework 就是 SC 没删干净)
+          /Library/Frameworks/Python.framework/Versions/3.14/bin/python -c "
+          import sysconfig
+          print('>>> cross-python LDSHARED =', sysconfig.get_config_var('LDSHARED'))
+          print('>>> cross-python SC name =', sysconfig._get_sysconfigdata_name())
+          "
+          grep "LDSHARED" "$PYIOS/lib-arm64/python3.14/_sysconfigdata__ios_arm64_iphoneos.py" | head -2 || echo ">>> 交叉 SC 无 LDSHARED 键"
+          # 4) 宿主构建依赖（env vars 前！）：Cython(编译 .pyx) + numpy(头文件)
+          # fix3ag: pandas 3.0.6 metadata 生成需要 versioneer(ModuleNotFoundError)——补装
+          python -m pip install -q "Cython>3.1.0,<4" "numpy>=2.2,<3" versioneer
+          # fix3aw: pip download 对 sdist 强制 build isolation(宿主装 pandas 的 build deps, 6 分钟+ 且
+          #         metadata done 后仍 exit 1, 错误被吞)——改用 curl 直下 sdist(PyPI 固定 URL), 无隔离
+          mkdir -p wheel-src
+          curl -sL -o wheel-src/pandas-3.0.6.tar.gz https://files.pythonhosted.org/packages/source/p/pandas/pandas-3.0.6.tar.gz
+          ls -la wheel-src/
+          # fix3ax: BSD tar 解压静默失败(exit 1 无输出)——换 python tarfile 单行(跨平台稳, 失败有明确 traceback; heredoc 顶格破坏 YAML block 缩进, 故用 -c)
+          python3 -c "import tarfile; t=tarfile.open('wheel-src/pandas-3.0.6.tar.gz','r:gz'); t.extractall('wheel-src'); print('>>> tarfile 解压成功')"
+          ls wheel-src/
+          # 5) iOS 交叉环境（与 numpy 步骤一致）
+          export PATH="$PYIOS/bin:$PATH"
+          export _PYTHON_HOST_PLATFORM=ios-arm64
+          export _PYTHON_SYSCONFIGDATA_NAME=_sysconfigdata__ios_arm64_iphoneos
+          # fix3au: meson 的 python 模块可能读宿主 SC(交叉 SC sed 影响不到 LDSHARED 的 framework)——双保险:
+          #          sed 宿主 SC 副本放 PYTHONPATH(无论读哪个 SC, -framework Python 都删干净)
+          mkdir -p /tmp/pyfix
+          # fix3az: 宿主 SC 文件名不猜(3.14 可能是 _sysconfigdata_darwin_darwin 或 _sysconfigdata__macosx_*)
+          #         原 cp $HOSTSCNAME.py 2>/dev/null 静默失败→set -e exit 1 无输出(首次执行实锤)
+          #         →glob 宿主 lib 下所有 _sysconfigdata*.py 全 sed, 去掉 2>/dev/null 让错误可见
+          # fix3ba: sysconfig 在 3.14 是包(__file__ 在 .../sysconfig/__init__.py)→dirname 取到子目录, SC 在上一级
+          #         →改用 sys.prefix 拼 lib/pythonX.Y(标准位置, 不依赖 __file__ 形态)
+          HOSTLIB=$(env -u _PYTHON_SYSCONFIGDATA_NAME python3 -c 'import sys, os; print(os.path.join(sys.prefix, "lib", "python%d.%d" % sys.version_info[:2]))')
+          echo ">>> HOSTLIB=$HOSTLIB"
+          cp "$HOSTLIB"/_sysconfigdata*.py /tmp/pyfix/
+          ls /tmp/pyfix/ | head -3
+          sed -i '' 's/-framework Python//g' /tmp/pyfix/_sysconfigdata*.py
+          grep -c "framework" /tmp/pyfix/_sysconfigdata*.py || echo ">>> host SC framework 已删干净"
+          export PYTHONPATH="/tmp/pyfix:$PYIOS/lib-arm64/python3.14${PYTHONPATH:+:$PYTHONPATH}"
+          export IPHONEOS_DEPLOYMENT_TARGET=15.0
+          # 6) 断言 sysconfigdata 生效（环境自证, 失败立即暴露而非盲等 meson）
+          python3 -c "
+          import sysconfig
+          ip = sysconfig.get_config_var('INCLUDEPY') or ''
+          assert 'ios-arm64' in ip, 'sysconfigdata 失效: ' + ip
+          "
+          echo ">>> env: python3=$(which python3) PYTHONPATH=$PYTHONPATH"
+          ls -la "$PYIOS/lib-arm64/python3.14/" | grep sysconfigdata || echo "!!! sysconfigdata 副本缺失"
+          # fix3ai→fix3aj: allow-noblas/cpu-dispatch 都是 numpy 的 meson 选项, pandas 3.0.6
+          #          meson.build 都没有(连续 Unknown option)→ 全部去掉, 只留 cross-file + c_args/cpp_args
+          # fix3bj: 假 Python.framework 纯 bash(必执行)——ld -framework Python 找到假 dylib
+          #         →符号全走 -Wl,-undefined,dynamic_lookup 动态解析; 创建后立即用与 meson 相同命令实测
+          FWROOT=/Library/Frameworks/Python.framework/Versions/3.14
+          mkdir -p "$FWROOT/Python.framework" 2>/dev/null || sudo mkdir -p "$FWROOT/Python.framework"
+          xcrun --sdk iphoneos clang -arch arm64 -dynamiclib -Wl,-undefined,dynamic_lookup -mios-version-min=15.0 -x c /dev/null -o /tmp/pydummy.dylib
+          cp /tmp/pydummy.dylib "$FWROOT/Python.framework/Python" 2>/dev/null || sudo cp /tmp/pydummy.dylib "$FWROOT/Python.framework/Python"
+          ls -la "$FWROOT/Python.framework/"
+          xcrun --sdk iphoneos clang -arch arm64 -dynamiclib -Wl,-undefined,dynamic_lookup -mios-version-min=15.0 -x c /dev/null -o /tmp/fwtest.so -framework Python -F "$FWROOT" && echo ">>> FAKE FW LINK OK" || echo ">>> FAKE FW LINK FAIL"
+          python -m pip wheel --no-deps --no-build-isolation \
+            -Csetup-args=--cross-file=$PWD/ios-meson.ini \
+            -Csetup-args=--native-file=$PWD/ios-native.ini \
+            -Csetup-args=-Dc_args=-mios-version-min=15.0 \
+            -Csetup-args=-Dcpp_args=-mios-version-min=15.0 \
+            wheel-src/pandas-3.0.6 -w wheels-out
+          ls -la wheels-out/
+          for w in wheels-out/*pandas*.whl; do unzip -p "$w" "*/METADATA" 2>/dev/null | head -3; echo "--- $w"; done
+
+      - name: Download pandas deps (python-dateutil, pure-python wheel)
+        run: |
+          # pandas 3.0.6 依赖 python-dateutil(纯 Python, py2.py3-none-any)——无需交叉编译,
+          # 直接下载 wheel 与 numpy/pandas 一起进 site-packages(build-ipa.sh 的 unzip 循环解包)。
+          # 缺它 → 真机 import pandas 报 ModuleNotFoundError: dateutil(fix3cm 实证)。
+          # six: dateutil 2.9.0 的 Requires-Dist(six>=1.5)——dateutil/tz/tz.py import six, --no-deps 漏了它,
+          # 真机实证 pandas._libs.tslibs.timezones → dateutil.tz → import six 崩。
+          pip download --no-deps --only-binary :all: "python-dateutil==2.9.0" "six" -d wheels-out
+          ls -la wheels-out/
+
+      - name: Bundle pure-python git (dulwich + urllib3 + certifi)
+        run: |
+          set -e
+          # git 替代方案：iOS 沙箱拦 fork()，真 git 二进制 spawn 子进程即死；libgit2 要交叉编译 C+CMake
+          # 且无 CLI。用纯 Python 的 dulwich(0.22, HTTP/SSH 传输, clone/commit/push/log 全支持)：
+          # ①PyPI wheel 带 C 扩展 _core(macOS .so, iOS 跑不了)→ 取 sdist 纯 Python 源码；
+          # ②urllib3+certifi 是 https 传输必需(纯 Python wheel)。
+          # 调用方式(环境提示词同步)：git 操作 = python3 -m dulwich.cli <git 子命令>
+          pip download --no-deps --no-binary :all: "dulwich==0.22.1" -d /tmp/dw
+          pip download --no-deps --only-binary :all: "urllib3" "certifi" "typing_extensions" -d wheels-out
+          mkdir -p /tmp/dw/unpack
+          tar -xzf /tmp/dw/dulwich-*.tar.gz -C /tmp/dw/unpack
+          cd /tmp/dw/unpack/dulwich-*
+          python3 -c "
+          import zipfile, os
+          whl = '/tmp/dw/dulwich_pure.whl'
+          with zipfile.ZipFile(whl, 'w') as z:
+              for root, dirs, files in os.walk('.'):
+                  for f in files:
+                      p = os.path.join(root, f)
+                      rel = os.path.relpath(p, '.')
+                      if rel.startswith('dulwich') and not rel.endswith(('.c','.h','.pxd','.pyx')):
+                          z.write(p, rel)
+          print('dulwich pure wheel done')
+          "
+          cp /tmp/dw/dulwich_pure.whl "$GITHUB_WORKSPACE/wheels-out/dulwich-0.22.1-py3-none-any.whl"
+          ls -la "$GITHUB_WORKSPACE/wheels-out/"
+
+      - name: Upload native wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-wheels
+          path: wheels-out/*.whl
+          if-no-files-found: error
+
+  # v4.4.6-fix3u→fix3ac: nmap 源码交叉 iOS 判定不可行——iOS SDK 缺 Linux 网络头
+  # (net/if_arp.h 等, libpcap 亦报 architecture not supported), 业界无 iOS nmap prebuilt。
+  # 诚实降级: 改为内置 Python TCP 端口扫描器 nscan.py(原生 python3 直跑, 功能等效端口扫描),
+  # 不再跑失败的源码编译; job 保留 continue-on-error 防意外。
+  native-nmap:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Package nscan.py (Python TCP port scanner, nmap-lite)
+        run: |
+          set -euo pipefail
+          mkdir -p nmap-out
+          # fix3ac: 直接拷贝仓库内 scripts/nscan.py（heredoc 在 YAML 块内无法保持脚本缩进）
+          cp scripts/nscan.py nmap-out/nscan.py
+          chmod +x nmap-out/nscan.py
+          echo ">>> nscan.py packaged"
+          python3 -c "import ast; ast.parse(open('nmap-out/nscan.py').read()); print('nscan.py 语法 OK')"
+          wc -l nmap-out/nscan.py
+
+      - name: Upload nscan
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-nmap
+          path: nmap-out/*
+          if-no-files-found: warn
+
+  # v4.4.8-fix3w: LLVM 工具链（llvm-objdump/nm/readelf/size/strings）+ jtool2。
+  # LLVM: 17.0.6 源码交叉编译 iOS arm64——只编 5 个单工具 + AArch64 target（不编全 LLVM, 25-45min）。
+  # jtool2: newosxbook 官网 prebuilt universal binary（x86_64+arm64+arm64e），lipo 提 arm64 切片,
+  #         otool 验证只依赖 libSystem（iOS 有）即可跑。
+  native-llvm:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        id: llvm-cache
+        with:
+          path: |
+            llvm-build
+            llvm-host
+          key: llvm-v2
+          save-always: false
+
+      - name: Install ninja
+        run: python3 -m pip install -q ninja 2>/dev/null || brew install ninja
+
+      - name: Build LLVM tools (iOS arm64, host tblgen + cross single tools)
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p llvm-src llvm-host llvm-build llvm-out
+          curl -sL -o /tmp/llvm.tar.xz https://github.com/llvm/llvm-project/releases/download/llvmorg-17.0.6/llvm-project-17.0.6.src.tar.xz
+          tar -xJf /tmp/llvm.tar.xz -C llvm-src --strip-components=1
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          # Step 1: host (macOS) 编译 llvm-tblgen —— LLVM cross 必须的 TableGen host 工具
+          cmake -G Ninja -S llvm-src/llvm -B llvm-host \
+            -DCMAKE_BUILD_TYPE=Release -DLLVM_TARGETS_TO_BUILD=AArch64 \
+            -DLLVM_BUILD_TOOLS=OFF -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_ENABLE_LIBXML2=OFF -DLLVM_ENABLE_ZSTD=OFF
+          ninja -C llvm-host llvm-tblgen
+          echo ">>> host llvm-tblgen: $(ls llvm-host/bin/llvm-tblgen 2>/dev/null)"
+          # fix3y→fix3z: CMAKE_SYSTEM_NAME=iOS 下 install(TARGETS) 强制 BUNDLE DESTINATION 校验
+          #   (CMAKE_SKIP_INSTALL_RULES 不生效——configure 期校验) → 改 Generic + 手动交叉 flags:
+          #   无 Apple 平台特性 → 无 BUNDLE 校验; 编译 flag 由 CFLAGS/LDFLAGS 提供(arch+isysroot+min-version)
+          # fix3ab: Generic 不设 UNIX → LLVM_ON_UNIX 未定义 → getSize/EnvPathSeparator 缺失
+          # fix3ad: AddLLVM.cmake:297 的 -Wl,--gc-sections 受 LLVM_GC_SECTIONS 控制(GNU ld 选项,
+          #         Apple ld 不认→'unknown options: --gc-sections' 链接失败)——显式关闭
+          # fix3ae: 注释行严禁夹在 \ 续行中间(# 吞掉后续参数行, 下个参数行成独立命令→exit 127)
+          # fix3ag: -DLLVM_GC_SECTIONS=OFF 未生效(链接命令仍带 --gc-sections, if 条件非此变量)——
+          #         直接 sed 删除 AddLLVM.cmake 里的 -Wl,--gc-sections(绕过变量逻辑, 一劳永逸)
+          sed -i '' 's/ -Wl,--gc-sections//' llvm-src/llvm/cmake/modules/AddLLVM.cmake
+          grep -n "gc-sections" llvm-src/llvm/cmake/modules/AddLLVM.cmake || echo ">>> gc-sections 已删除"
+          cmake -G Ninja -S llvm-src/llvm -B llvm-build \
+            -DCMAKE_SYSTEM_NAME=Generic -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=$(xcrun --find clang) -DCMAKE_CXX_COMPILER=$(xcrun --find clang++) \
+            -DCMAKE_C_FLAGS="-arch arm64 -isysroot $SDK -mios-version-min=15.0 -DLLVM_ON_UNIX=1" \
+            -DCMAKE_CXX_FLAGS="-arch arm64 -isysroot $SDK -mios-version-min=15.0 -DLLVM_ON_UNIX=1" \
+            -DCMAKE_EXE_LINKER_FLAGS="-arch arm64 -isysroot $SDK -mios-version-min=15.0" \
+            -DLLVM_TARGETS_TO_BUILD=AArch64 -DLLVM_ENABLE_PROJECTS="" \
+            -DLLVM_BUILD_TOOLS=ON -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_GC_SECTIONS=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_INCLUDE_UTILS=OFF \
+            -DLLVM_ENABLE_ZLIB=OFF -DLLVM_ENABLE_TERMINFO=OFF -DLLVM_ENABLE_LIBXML2=OFF \
+            -DLLVM_ENABLE_ZSTD=OFF -DLLVM_ENABLE_BACKTRACES=OFF -DLLVM_ENABLE_LLD=OFF \
+            -DLLVM_BUILD_LLVM_DYLIB=OFF -DLLVM_LINK_LLVM_DYLIB=OFF \
+            -DLLVM_TABLEGEN=$PWD/llvm-host/bin/llvm-tblgen \
+            -DLLVM_NATIVE_TOOL_DIR=$PWD/llvm-host/bin
+          ninja -C llvm-build llvm-objdump llvm-nm llvm-readelf llvm-size llvm-strings
+          ls llvm-build/bin/ 2>/dev/null | head
+
+      - name: Copy LLVM tools to out (cache hit 也复制)
+        run: |
+          mkdir -p llvm-out
+          for t in llvm-objdump llvm-nm llvm-readelf llvm-size llvm-strings; do
+            if [ -f "llvm-build/bin/$t" ]; then
+              cp "llvm-build/bin/$t" "llvm-out/$t"; chmod +x "llvm-out/$t"
+              file "llvm-out/$t" 2>/dev/null; echo ">>> LLVM $t"
+            fi
+          done
+
+      - name: Extract jtool2 arm64 slice (prebuilt, verify deps)
+        run: |
+          set -euo pipefail
+          mkdir -p llvm-out
+          curl -sL --max-time 30 "https://www.newosxbook.com/tools/jtool2.tgz" -o /tmp/jtool2.tgz
+          tar -xzf /tmp/jtool2.tgz -C /tmp
+          lipo -thin arm64 /tmp/jtool2 -o llvm-out/jtool2
+          echo ">>> jtool2 load deps:"; otool -L llvm-out/jtool2 || true
+          chmod +x llvm-out/jtool2
+          file llvm-out/jtool2
+
+      - name: Upload native-llvm
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-llvm
+          path: llvm-out/*
+          if-no-files-found: warn

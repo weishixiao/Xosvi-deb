@@ -1,0 +1,19 @@
+.build/
+*.ipa
+Payload/
+Xosvi.app/
+.DS_Store
+__MACOSX/
+dl_*
+artifacts
+
+# v6.6.32：只忽略 CI 生成的 iSH 头文件子目录。
+# 原来整目录忽略会把 CISH/include/wrapper.h 与 module.modulemap 一起排除出
+# git archive，导致用快照新建的仓库构建时 wrapper.c 报 'wrapper.h' file not found。
+CISH/include/ish/
+Xosvi.tipa
+Xosvi.zip
+
+# build artifacts
+*.zip
+build_out/

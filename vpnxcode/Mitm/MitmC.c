@@ -1,0 +1,278 @@
+// MitmC.c —— OpenSSL TLS MITM 引擎（Step 1.1：SNI 域名签发证书）
+// 问题背景：hev 的 SOCKS5 CONNECT 传的是 IP(已把域名 DNS 解析成 IP) → 若用 IP 签证书，CN=IP
+//   与 App 期望的域名对不上 → App 拒证书 → 连接反复失败("刷久了加载不出")。
+// 修复：App 的 TLS ClientHello 必带 SNI(域名)；在服务端握手时用 SNI 回调动态签发 CN=域名 的
+//   证书 + 用该域名连真实服务器 —— App 校验通过。
+// 链路：hev 客户端 --TCP cfd--> [TLS 服务端角色(SNI 域名证书)] --明文--> [TLS 客户端角色] --TCP--> 真实服务器
+#include "MitmC.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+#include <time.h>
+#include <unistd.h>
+#include <errno.h>
+#include <netdb.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
+#include <openssl/pem.h>
+#include <openssl/evp.h>
+#include <openssl/rsa.h>
+#include <openssl/rand.h>
+
+static X509 *g_ca_cert = NULL;
+static EVP_PKEY *g_ca_key = NULL;
+
+// 诊断日志(写 AppGroup/mitm_debug.log)——区分 SSL_accept 失败根因(gen_cert 失败 vs App 拒证书 vs 超时)
+static void mitm_dbg(const char *fmt, ...) {
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof buf, fmt, ap);
+    va_end(ap);
+    FILE *f = fopen("/var/mobile/Containers/Shared/AppGroup/1FAA4F33-8923-4681-8243-CDADD323D990/mitm_debug.log", "a");
+    if (f) { fprintf(f, "[%ld] %s\n", (long)time(NULL), buf); fclose(f); }
+}
+
+int mitm_init(const char *ca_pem, const char *ca_key_pem) {
+    SSL_library_init();
+    OpenSSL_add_all_algorithms();
+    SSL_load_error_strings();
+
+    BIO *b = BIO_new_file(ca_pem, "r");
+    if (!b) return -1;
+    g_ca_cert = PEM_read_bio_X509(b, NULL, NULL, NULL);
+    BIO_free(b);
+    if (!g_ca_cert) return -2;
+
+    b = BIO_new_file(ca_key_pem, "r");
+    if (!b) return -3;
+    g_ca_key = PEM_read_bio_PrivateKey(b, NULL, NULL, NULL);
+    BIO_free(b);
+    if (!g_ca_key) return -4;
+
+    return 0;
+}
+
+// 为 host 生成域名密钥+证书（用 CA 签发），返回证书；*out_key 传回私钥(调用方负责 EVP_PKEY_free)
+static X509 *gen_cert(const char *host, EVP_PKEY **out_key) {
+    EVP_PKEY *key = EVP_PKEY_new();
+    if (!key) return NULL;
+    RSA *rsa = RSA_new();
+    BIGNUM *e = BN_new();
+    BN_set_word(e, RSA_F4);
+    if (!RSA_generate_key_ex(rsa, 2048, e, NULL) || EVP_PKEY_assign_RSA(key, rsa) != 1) {
+        RSA_free(rsa); BN_free(e); EVP_PKEY_free(key); return NULL;
+    }
+    BN_free(e);
+
+    X509 *x = X509_new();
+    if (!x) { EVP_PKEY_free(key); return NULL; }
+    X509_set_version(x, 2);
+
+    unsigned char serial[16];
+    if (RAND_bytes(serial, sizeof serial) != 1) {
+        X509_free(x); EVP_PKEY_free(key); return NULL;
+    }
+    BIGNUM *bn = BN_bin2bn(serial, sizeof serial, NULL);
+    ASN1_INTEGER *ai = ASN1_INTEGER_new();
+    BN_to_ASN1_INTEGER(bn, ai);
+    X509_set_serialNumber(x, ai);
+    ASN1_INTEGER_free(ai); BN_free(bn);
+
+    X509_gmtime_adj(X509_get_notBefore(x), -300);             // 5 分钟前生效
+    X509_gmtime_adj(X509_get_notAfter(x), 60L * 60 * 24 * 365); // 1 年有效
+    X509_set_pubkey(x, key);
+
+    X509_NAME *name = X509_get_subject_name(x);
+    X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC,
+                               (const unsigned char *)host, -1, -1, 0);
+    X509_set_issuer_name(x, X509_get_subject_name(g_ca_cert));
+    X509_sign(x, g_ca_key, EVP_sha256());
+
+    if (out_key) *out_key = key;
+    else EVP_PKEY_free(key);
+    return x;
+}
+
+// ClientHello 回调：App 的 ClientHello 到后、握手继续前，用 SNI 域名动态签发证书并应用到该 SSL
+// 返回值用字面量(1=OK, 0=ERROR)——SSL_CLIENT_HELLO_OK/ERROR 宏在部分 OpenSSL 头缺失，避免依赖
+static int mitm_client_hello_cb(SSL *s, int *al, void *arg) {
+    const char *host = SSL_get_servername(s, TLSEXT_NAMETYPE_host_name);
+    if (!host || !host[0]) return 1;  // 无 SNI 用默认证书
+    EVP_PKEY *key = NULL;
+    X509 *x = gen_cert(host, &key);
+    if (!x || !key) {
+        mitm_dbg("client_hello gen_cert FAIL host=%s (x=%p key=%p)", host, (void*)x, (void*)key);
+        return 0;
+    }
+    if (SSL_use_certificate(s, x) != 1 || SSL_use_PrivateKey(s, key) != 1) {
+        mitm_dbg("client_hello use_cert FAIL host=%s", host);
+        X509_free(x); EVP_PKEY_free(key); return 0;
+    }
+    X509_free(x);
+    EVP_PKEY_free(key);
+    return 1;
+}
+
+// 非阻塞双向明文转发：c(服务端/客户端侧) <-> s(真实服务器侧)
+static void mitm_pump(SSL *c, SSL *s) {
+    char buf[16384];
+    int c_open = 1, s_open = 1;
+    while (c_open || s_open) {
+        if (c_open) {
+            int n = SSL_read(c, buf, sizeof buf);
+            if (n > 0) {
+                int off = 0;
+                while (off < n) {
+                    int w = SSL_write(s, buf + off, n - off);
+                    if (w <= 0) { c_open = 0; break; }
+                    off += w;
+                }
+            } else {
+                int e = SSL_get_error(c, n);
+                if (n == 0 || e == SSL_ERROR_ZERO_RETURN) c_open = 0;
+                else if (e != SSL_ERROR_WANT_READ && e != SSL_ERROR_WANT_WRITE) c_open = 0;
+            }
+        }
+        if (s_open) {
+            int n = SSL_read(s, buf, sizeof buf);
+            if (n > 0) {
+                int off = 0;
+                while (off < n) {
+                    int w = SSL_write(c, buf + off, n - off);
+                    if (w <= 0) { s_open = 0; break; }
+                    off += w;
+                }
+            } else {
+                int e = SSL_get_error(s, n);
+                if (n == 0 || e == SSL_ERROR_ZERO_RETURN) s_open = 0;
+                else if (e != SSL_ERROR_WANT_READ && e != SSL_ERROR_WANT_WRITE) s_open = 0;
+            }
+        }
+        usleep(500);
+    }
+}
+
+// 非阻塞连接真实服务器：host 优先按 IP 直连(inet_pton，无 DNS 卡)，非阻塞 connect + poll 8s 超时
+// 关键：hev 的 SOCKS5 CONNECT 传的是 IP(已 DNS 解析)——直接用 IP 连真实服务器，不再 getaddrinfo 解析 SNI 域名(避免 DNS 卡住连接堆积)
+static int connect_nb(const char *host, int port) {
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((unsigned short)port);
+    int fd = -1;
+    if (inet_pton(AF_INET, host, &addr.sin_addr) == 1) {
+        fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) return -1;
+        int fl = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+        int rc = connect(fd, (struct sockaddr *)&addr, sizeof addr);
+        if (rc == 0) {
+            int fl2 = fcntl(fd, F_GETFL, 0);
+            fcntl(fd, F_SETFL, fl2 & ~O_NONBLOCK);
+            return fd;
+        }
+        if (errno == EINPROGRESS) {
+            struct pollfd pf;
+            pf.fd = fd; pf.events = POLLOUT; pf.revents = 0;
+            if (poll(&pf, 1, 8000) > 0 && (pf.revents & POLLOUT)) {
+                int e = 0; socklen_t el = sizeof e;
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &e, &el) == 0 && e == 0) {
+                    int fl2 = fcntl(fd, F_GETFL, 0);
+                    fcntl(fd, F_SETFL, fl2 & ~O_NONBLOCK);
+                    return fd;
+                }
+            }
+        }
+        close(fd);
+        return -1;
+    }
+    // 域名兜底(getaddrinfo)——host 通常为 IP，仅在非 IP 时走这里
+    char pstr[16];
+    snprintf(pstr, sizeof pstr, "%d", port);
+    struct addrinfo h, *res = NULL;
+    memset(&h, 0, sizeof h);
+    h.ai_family = AF_UNSPEC;
+    h.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(host, pstr, &h, &res) == 0 && res) {
+        for (struct addrinfo *rp = res; rp; rp = rp->ai_next) {
+            int s = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+            if (s < 0) continue;
+            int fl = fcntl(s, F_GETFL, 0);
+            fcntl(s, F_SETFL, fl | O_NONBLOCK);
+            int rc = connect(s, rp->ai_addr, rp->ai_addrlen);
+            if (rc == 0) { fcntl(s, F_SETFL, fl); freeaddrinfo(res); return s; }
+            if (errno == EINPROGRESS) {
+                struct pollfd pf; pf.fd = s; pf.events = POLLOUT; pf.revents = 0;
+                if (poll(&pf, 1, 8000) > 0 && (pf.revents & POLLOUT)) {
+                    int e = 0; socklen_t el = sizeof e;
+                    if (getsockopt(s, SOL_SOCKET, SO_ERROR, &e, &el) == 0 && e == 0) {
+                        fcntl(s, F_SETFL, fl); freeaddrinfo(res); return s;
+                    }
+                }
+            }
+            close(s);
+        }
+        freeaddrinfo(res);
+    }
+    return -1;
+}
+
+int mitm_handle(int cfd, const char *host, int port) {
+    if (!g_ca_cert || !g_ca_key) return -100;
+
+    // 1) 服务端角色 ctx：SNI 回调动态签证书（对 hev 客户端）
+    SSL_CTX *sctx = SSL_CTX_new(TLS_server_method());
+    if (!sctx) return -3;
+    SSL_CTX_set_client_hello_cb(sctx, mitm_client_hello_cb, NULL);
+    SSL *ssr = SSL_new(sctx);
+    SSL_set_fd(ssr, cfd);
+
+    // 2) accept：触发 client_hello_cb 签发 CN=域名 的证书；同时拿到真实域名
+    if (SSL_accept(ssr) != 1) {
+        int err = SSL_get_error(ssr, -1);
+        mitm_dbg("SSL_accept FAIL host=%s ssl_err=%d errno=%d", host, err, errno);
+        SSL_free(ssr); SSL_CTX_free(sctx); return -4;
+    }
+    // SNI 用于签发证书(client_hello_cb 已用) + 客户端 TLS 的 SNI；连接真实服务器用 hev 传的 host(IP,已验证,无 DNS 卡)
+    const char *sni = SSL_get_servername(ssr, TLSEXT_NAMETYPE_host_name);
+    const char *sni_name = (sni && sni[0]) ? sni : host;
+
+    // 3) 连真实服务器：用 hev 传的 host(IP) 非阻塞直连，避免 getaddrinfo 解析 SNI 域名导致 DNS 卡住连接堆积
+    int sfd = connect_nb(host, port);
+    if (sfd < 0) {
+        SSL_free(ssr); SSL_CTX_free(sctx); return -1;
+    }
+
+    // 4) 客户端角色 TLS（连真实服务器，忽略其证书校验；SNI 用 App 的真实域名）
+    SSL_CTX *cctx = SSL_CTX_new(TLS_client_method());
+    if (!cctx) {
+        close(sfd); SSL_free(ssr); SSL_CTX_free(sctx); return -2;
+    }
+    SSL *scl = SSL_new(cctx);
+    SSL_set_fd(scl, sfd);
+    SSL_set_verify(scl, SSL_VERIFY_NONE, NULL);
+    SSL_set_tlsext_host_name(scl, sni_name);
+    if (SSL_connect(scl) != 1) {
+        SSL_free(scl); SSL_CTX_free(cctx);
+        SSL_free(ssr); SSL_CTX_free(sctx); close(sfd); return -5;
+    }
+
+    // 5) 双向明文转发
+    mitm_pump(ssr, scl);
+
+    SSL_free(scl); SSL_CTX_free(cctx);
+    SSL_free(ssr); SSL_CTX_free(sctx);
+    close(sfd);
+    return 0;
+}

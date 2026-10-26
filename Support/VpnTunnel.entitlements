@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.developer.networking.networkextension</key>
+	<array>
+		<string>packet-tunnel-provider</string>
+	</array>
+	<!-- fix3cy25o: entitlements 与 Fuck 原版 PacketTunnel.appex 完全对齐（已逆向确认）：
+	     vpn.api allow-vpn + container-required 字符串 + application-groups + network.client/server。
+	     自研此前用 no-sandbox/platform-application/personal-vpn——Fuck 原版都没有，
+	     NE(neagent) 可能因 entitlement 形态差异拒绝加载扩展。 -->
+	<key>com.apple.developer.networking.vpn.api</key>
+	<array>
+		<string>allow-vpn</string>
+	</array>
+	<key>com.apple.private.security.container-required</key>
+	<string>com.xosvi.app.VpnTunnel</string>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.ai.iosxcode</string>
+	</array>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.network.server</key>
+	<true/>
+</dict>
+</plist>

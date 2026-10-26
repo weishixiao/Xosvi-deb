@@ -1,0 +1,8 @@
+Package: com.xosvi.confighook
+Name: ConfigHook
+Version: 1.0
+Architecture: iphoneos-arm64
+Description: Config-driven UIKit hook engine for Xosvi. Reads hook_config.json from Workspace and applies navBarColor/tint/alert/methodLog without rebuilding.
+Maintainer: Xosvi
+Author: Xosvi
+Section: Tweaks

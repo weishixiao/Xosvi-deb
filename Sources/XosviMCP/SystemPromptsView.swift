@@ -1,0 +1,200 @@
+import SwiftUI
+
+// v2.9.74：系统指令选择页面
+// 系统指令是 App 内置的、不可编辑的行为规范
+// 用户可在此切换哪套作为默认，优先级高于开发者指令
+// v2.9.76：界面优化——卡片化、图标、选中态美化
+
+struct SystemPromptsView: View {
+    @State private var selectedId = SystemPrompts.shared.selectedId
+    @State private var expandedId: String? = nil
+
+    private let promptIcons: [String: String] = [
+        "default": "sparkles",
+        "developer": "hammer.fill",
+        "concise": "bolt.fill",
+        "reverse": "magnifyingglass.circle.fill",
+        "qa": "checkmark.seal.fill",
+        "pentester": "shield.lefthalf.filled",
+        "gamehacker": "gamecontroller.fill",
+        "uicontrol": "hand.point.up.fill",
+        "privacy": "lock.shield.fill",
+    ]
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 14) {
+                headerCard
+
+                VStack(spacing: 12) {
+                    ForEach(SystemPrompts.builtin) { prompt in
+                        promptCard(prompt)
+                    }
+                }
+                .padding(.horizontal, 16)
+
+                explainCard
+            }
+            .padding(.vertical, 16)
+        }
+        .background(Color(.systemGroupedBackground))
+        .navigationTitle(L10n.t("row_sys_prompts"))
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    // 顶部说明卡
+    private var headerCard: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(LinearGradient(colors: [.tmCyan, .blue], startPoint: .topLeading, endPoint: .bottomTrailing))
+                    .frame(width: 44, height: 44)
+                Image(systemName: "text.book.closed.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(.white)
+            }
+            VStack(alignment: .leading, spacing: 3) {
+                Text(L10n.t("row_sys_prompts"))
+                    .font(.headline)
+                Text(L10n.t("ui_4"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color(.secondarySystemBackground))
+        )
+        .padding(.horizontal, 16)
+    }
+
+    // 单个指令卡片
+    private func promptCard(_ prompt: SystemPrompts.Prompt) -> some View {
+        let isSelected = selectedId == prompt.id
+        let isExpanded = expandedId == prompt.id
+
+        return VStack(alignment: .leading, spacing: 10) {
+            Button(action: {
+                selectedId = prompt.id
+                SystemPrompts.shared.select(prompt.id)
+            }) {
+                HStack(spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(isSelected
+                                ? LinearGradient(colors: [.tmCyan.opacity(0.9), .blue.opacity(0.85)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                                : LinearGradient(colors: [Color(.systemGray4), Color(.systemGray5)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .frame(width: 40, height: 40)
+                        Image(systemName: promptIcons[prompt.id] ?? "sparkles")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(isSelected ? .white : .secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(prompt.name)
+                            .font(.headline)
+                            .foregroundColor(isSelected ? .tmCyan : .primary)
+                        Text(prompt.desc)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(2)
+                    }
+                    Spacer()
+                    if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 22))
+                            .foregroundColor(.tmCyan)
+                    } else {
+                        Image(systemName: "circle")
+                            .font(.system(size: 22))
+                            .foregroundColor(Color(.systemGray4))
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(PlainButtonStyle())
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    ScrollView {
+                        Text(prompt.content)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 280)
+                }
+                .background(Color(.tertiarySystemBackground))
+                .cornerRadius(10)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.tmCyan.opacity(0.2), lineWidth: 1)
+                )
+            }
+
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    expandedId = isExpanded ? nil : prompt.id
+                }
+            }) {
+                HStack(spacing: 4) {
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(isExpanded ? "收起内容" : "查看内容")
+                        .font(.caption)
+                }
+                .foregroundColor(.tmCyan)
+            }
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color(.systemBackground))
+                .shadow(color: isSelected ? Color.tmCyan.opacity(0.12) : .black.opacity(0.04), radius: isSelected ? 8 : 4, x: 0, y: 2)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(isSelected ? Color.tmCyan.opacity(0.45) : Color.clear, lineWidth: 1.5)
+        )
+    }
+
+    // 说明卡
+    private var explainCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("系统指令 vs 模型破甲提示词", systemImage: "info.circle.fill")
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(.tmCyan)
+            Text(L10n.t("ui_14"))
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Text(L10n.t("ui_13"))
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Text(L10n.t("ui_12"))
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Divider()
+                .padding(.vertical, 4)
+
+            Label("模型破甲提示词 = 破甲测试专用", systemImage: "hammer.fill")
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(.orange)
+            Text("选择「开发者模式」可以让 AI 执行破甲、越狱、注入、绕过等高级测试任务，适合做 App 破解和安全测试。")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Text("其他模式（逆向、渗透、游戏修改等）也都有各自的专业提示词，直接选对应模式即可。")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.tmCyan.opacity(0.08))
+        )
+        .padding(.horizontal, 16)
+    }
+}

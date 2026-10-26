@@ -1,0 +1,2297 @@
+﻿import SwiftUI
+import UIKit
+import RSKGrowingTextView
+import UniformTypeIdentifiers
+
+struct ChatView: View {
+    @ObservedObject private var store = ConversationStore.shared
+    @ObservedObject private var modelStore = ModelStore.shared
+    @ObservedObject private var tts = TTSService.shared
+
+    @State private var inputText = ""
+    @State private var inputHeight: CGFloat = 36
+    // v2.9.234：推理强度/智能搜索持久化(@AppStorage)——之前纯@State,关app重开必丢
+    @AppStorage("chat_reasoning") private var reasoning = 0   // 0=低 1=中 2=高 3=最高(xhigh) 4=极限(max)
+    @AppStorage("chat_smart_search") private var smartSearch = true
+    // v3.1.25：思考模型总开关——关闭时完全不思考，直接回复（reasoning_effort=none）
+    @AppStorage("chat_think_enabled") private var thinkEnabled = true
+    @State private var keyboardHeight: CGFloat = 0   // v2.9.234：键盘高度(消息列表跟随上移)
+    @State private var attachmentSheet: AttachmentSheet?
+    // v3.1.67：文件选择改用 UIKit UIDocumentPickerViewController（asCopy: true）从顶层 VC present——
+    // .fileImporter 在真机 iPhone 上有已知 bug（Apple 论坛 775056：选择器打不开/无法交互/回调不触发），
+    // UIKit 方案真机稳定。标记位 + sheet onDismiss 触发，保证面板完全关闭后再 present（不再猜时间延迟）。
+    @State private var pendingFilePick = false
+    @State private var showModelPicker = false  // v2.9.36：聊天框切换上游模型
+    // v6.6.11：右上角 + 号菜单入口
+    @State private var showTerminal = false
+    @State private var showHaxComputer = false
+    // v3.3.4：输入框 + 号展开"应用/相册/文件/浏览器"快捷行（点 + 变 x 收起）
+    @State private var attachExpanded = false
+
+    // v2.9.9：多模态图片（data URL）。选择相册图片后转 base64 暂存，发送时随消息传给模型
+    @State private var pendingImages: [String] = []
+    // v2.9.10：统一待发送附件（图片缩略图 / 应用图标 / 文件），输入栏上方预览
+    @State private var pendingAttachments: [PendingAttachment] = []
+
+    // v2.9.2：多选模式（勾选会话内容 → 复制 / 分享到其他 App）
+    @State private var selectionMode = false
+    @State private var selectedIds = Set<UUID>()
+    @State private var showToast = false
+    @State private var toastText = "已复制"
+    var body: some View {
+        CompatNav {
+            VStack(spacing: 0) {
+                if modelStore.configs.isEmpty {
+                    emptyState
+                } else if store.currentMessages.isEmpty {
+                    homeState
+                } else {
+                    messageList
+                }
+                // v2.9.72：工作流可视化步骤条
+                WorkflowProgressView()
+            }
+            // v2.9.244：输入框改用 safeAreaInset 挂底部——标准键盘避让，不再手动 padding 双重压缩内容区
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                inputBar
+            }
+            .navigationTitle(selectionMode ? "已选 \(selectedIds.count) 条" : store.currentTitle)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                // v3.4.3：标题 + 模型名（🟢 deepseek v4 ▽）与右侧图标放同一平行线（导航栏 principal）
+                ToolbarItem(placement: .principal) {
+                    // v6.6.11：模型快速切换从右上角移到任务名下方（用户要求）
+                    VStack(spacing: 1) {
+                        Text(selectionMode ? "已选 \(selectedIds.count) 条" : store.currentTitle)
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                            .lineLimit(1)
+                        if !selectionMode {
+                            Button(action: { showModelPicker = true }) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "circle.fill")
+                                        .font(.system(size: 5))
+                                        .foregroundColor(.green)
+                                    Text(modelStore.defaultConfig?.name ?? "未选择模型")
+                                        .font(.system(size: 10))
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                    Image(systemName: "chevron.down")
+                                        .font(.system(size: 8, weight: .semibold))
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            .buttonStyle(PlainButtonStyle())
+                        }
+                    }
+                }
+                ToolbarItem(placement: .navigationBarLeading) {
+                    if selectionMode {
+                        Button("取消") { exitSelection() }
+                    } else {
+                        HStack(spacing: 14) {
+                            Button(action: { withAnimation { AppUIState.shared.drawerOpen.toggle() } }) {
+                                Image(systemName: "line.horizontal.3")
+                                    .font(.system(size: 18, weight: .semibold))
+                            }
+                            // v6.6.8：左上角 + 号新建会话按钮用户要求再删除
+                            // （新建入口保留在侧滑抽屉头部 + 抽屉内长按管理）
+                        }
+                    }
+                }
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    if selectionMode {
+                        HStack(spacing: 14) {
+                            Button(action: copySelected) {
+                                Image(systemName: "doc.on.doc")
+                                    .font(.system(size: 18, weight: .semibold))
+                            }
+                            .disabled(selectedIds.isEmpty)
+                            SharePresenter.toolbarShare(text: exportText())
+                                .disabled(selectedIds.isEmpty)
+                        }
+                    } else {
+                        // v6.6.11：模型切换已移到任务名下方；右上角改为 + 号（终端 / Hax 电脑入口）
+                        Menu {
+                            Button {
+                                showTerminal = true
+                            } label: {
+                                Label("终端（自动进入 /root）", systemImage: "apple.terminal")
+                            }
+                            Button {
+                                showHaxComputer = true
+                            } label: {
+                                Label("Hax 电脑", systemImage: "desktopcomputer")
+                            }
+                        } label: {
+                            Image(systemName: "plus.circle")
+                                .font(.system(size: 18, weight: .semibold))
+                        }
+                    }
+                }
+            }
+            // v2.9.244：删除手动 keyboardHeight padding（会与键盘避让叠加导致内容区被拉高/压缩），键盘避让交给 safeAreaInset
+            // v2.9.235：键盘监听仍保留——用于键盘弹出时消息列表滚到底部
+
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { note in
+                let h = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect)?.height ?? 0
+                withAnimation(.easeOut(duration: 0.25)) { keyboardHeight = h }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+                withAnimation(.easeOut(duration: 0.25)) { keyboardHeight = 0 }
+            }
+            .overlay(Group {
+                if showToast {
+                    Text(toastText)
+                        .font(.footnote)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 8)
+                        .background(Color.black.opacity(0.75))
+                        .foregroundColor(.white)
+                        .cornerRadius(10)
+                        .padding(.top, 8)
+                }
+            }, alignment: .top)
+            // v6.2.7：边缘侧滑开关会话抽屉（用户反馈"会话页侧滑无法打开添加新对话页"）。
+            // v6.6.9：① 触发区放宽到左侧 60% 屏、阈值降到 40、minimumDistance 12；
+            //         ② 另加左侧 28pt 边缘拖拽带（highPriorityGesture）兜底——
+            //            ScrollView 的滚动手势会吃掉 simultaneousGesture 的 onEnded，
+            //            边缘带保证"从左边往右划"一定打开抽屉。
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 12, coordinateSpace: .global)
+                    .onEnded { value in
+                        let dx = value.translation.width
+                        let dy = value.translation.height
+                        guard abs(dx) > abs(dy) * 1.4, abs(dx) > 40 else { return }
+                        let ui = AppUIState.shared
+                        let leftHalfThreshold: CGFloat = UIScreen.main.bounds.width * 0.6
+                        if value.startLocation.x < leftHalfThreshold && dx > 0 && !ui.drawerOpen {
+                            withAnimation { ui.drawerOpen = true }
+                        } else if dx < 0 && ui.drawerOpen {
+                            withAnimation { ui.drawerOpen = false }
+                        }
+                    }
+            )
+            // v6.6.9：左侧边缘 28pt 高优先级拖拽带（兜底，防 ScrollView 抢手势）
+            .overlay(alignment: .leading) {
+                Color.clear
+                    .frame(width: 28)
+                    .contentShape(Rectangle())
+                    .highPriorityGesture(
+                        DragGesture(minimumDistance: 8, coordinateSpace: .global)
+                            .onEnded { value in
+                                let dx = value.translation.width
+                                let dy = value.translation.height
+                                guard dx > 30, abs(dx) > abs(dy) * 1.2 else { return }
+                                let ui = AppUIState.shared
+                                if !ui.drawerOpen {
+                                    withAnimation { ui.drawerOpen = true }
+                                }
+                            }
+                    )
+            }
+        }
+        .navigationViewStyle(.stack)
+        // v6.6.11：右上角 + 号 → 终端 / Hax 电脑
+        .sheet(isPresented: $showTerminal) {
+            CompatNav { ISHTerminalView(showCloseButton: true, autoCdRoot: true) }
+        }
+        .sheet(isPresented: $showHaxComputer) {
+            CompatNav { HaxComputerView() }
+        }
+        // v2.9.31：授权弹窗已整体移除（工具搜索即自动授权，无弹窗）。
+        .sheet(item: $attachmentSheet, onDismiss: {
+            // v3.1.67：面板完全关闭后再触发文件选择（UIKit 从顶层 VC present，真机稳定）
+            // v3.1.70：延迟 0.6s 再 present——onDismiss 触发时 SwiftUI sheet 的关闭动画
+            // （约 0.5s）还没完全结束，立即 present 的 UIDocumentPicker 会被 sheet 收尾逻辑
+            // 顶掉，表现为"弹出 0.5 秒后自动退回聊天界面"（真机实测 bug）
+            if pendingFilePick {
+                pendingFilePick = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    Self.presentDocumentPicker { urls in
+                        handlePickedFiles(urls)
+                    }
+                }
+            }
+        }) { sheet in
+            switch sheet {
+            case .panel:
+                // v2.9.35：传已选数量，面板右上角显示"已选 N"（对齐老 MCP）
+                // 紧凑半屏（老 MCP"添加内容"卡片式）；presentationDetents 需 iOS16+
+                if #available(iOS 16.0, *) {
+                    AttachmentPanelView(onPick: { pick in
+                        // v2.9.39：浏览器入口直接开悬浮窗（不占 sheet）
+                        // v3.1.67：文件入口不再用 .fileImporter（真机有 bug），改记 pendingFilePick，
+                        // 由 sheet onDismiss 在面板完全关闭后触发 UIKit 文档选择器
+                        if pick == .browser {
+                            self.attachmentSheet = nil
+                            FloatingBrowser.shared.show()
+                        } else if pick == .documentPicker {
+                            self.pendingFilePick = true
+                            self.attachmentSheet = nil
+                        } else {
+                            self.attachmentSheet = pick
+                        }
+                    }, selectedCount: pendingAttachments.count)
+                        .sheetDetentsHeight(340)   // v2.9.37：4 入口 2×2 网格需更高
+                } else {
+                    AttachmentPanelView(onPick: { pick in
+                        if pick == .browser {
+                            self.attachmentSheet = nil
+                            FloatingBrowser.shared.show()
+                        } else if pick == .documentPicker {
+                            self.pendingFilePick = true
+                            self.attachmentSheet = nil
+                        } else {
+                            self.attachmentSheet = pick
+                        }
+                    }, selectedCount: pendingAttachments.count)
+                }
+            case .browser:
+                // v2.9.39：浏览器已改为悬浮窗，面板入口在 onPick 闭包里直接开悬浮窗
+                EmptyView()
+            case .appPicker:
+                AppPickerView { app in
+                    // v2.9.10：应用选择 → 附件预览（图标 + 名称 + bundleId）
+                    let icon = Self.appIcon(for: app.path)
+                    let att = PendingAttachment(
+                        kind: .app,
+                        displayName: app.name,
+                        dataURL: nil,
+                        thumbnail: icon,
+                        bundleId: app.bundleId,
+                        fileURL: nil
+                    )
+                    self.pendingAttachments.append(att)
+                    // v2.9.61：不再往输入框塞 [📱应用] 标签，附件只在上方预览条显示（微信风格），发送时自动生成描述
+                }
+            case .photoPicker:
+                PhotoPickerView { urls in
+                    // v2.9.9：真正把图片内容转 base64 传给模型（不再只是文件名）
+                    var dataURLs: [String] = []
+                    var names: [String] = []
+                    for u in urls {
+                        if let d = Self.imageDataURL(for: u) {
+                            dataURLs.append(d)
+                            names.append(u.lastPathComponent)
+                            // v2.9.10：同时生成带缩略图的附件，输入栏预览
+                            let thumb = UIImage(contentsOfFile: u.path)
+                            self.pendingAttachments.append(PendingAttachment(
+                                kind: .image,
+                                displayName: u.lastPathComponent,
+                                dataURL: d,
+                                thumbnail: thumb,
+                                bundleId: nil,
+                                fileURL: u
+                            ))
+                        }
+                    }
+                    // v2.9.61：图片缩略图在预览条显示，不再往输入框塞 [🖼图片] 标签
+                    if dataURLs.isEmpty {
+                        self.pendingImages = []
+                    } else {
+                        self.pendingImages = dataURLs
+                    }
+                }
+            case .documentPicker:
+                // v3.1.67：文件选择已改用 UIKit UIDocumentPickerViewController（见 onDismiss + presentDocumentPicker），
+                // .fileImporter 在真机 iPhone 有已知 bug，弃用
+                EmptyView()
+            }
+        }
+        // v2.9.36：聊天框切换上游模型（点"当前模型"弹出，老 MCP 风格半屏）
+        .sheet(isPresented: $showModelPicker) {
+            // 老 MCP 半屏；presentationDetents 需 iOS16+
+            if #available(iOS 16.0, *) {
+                ChatModelPickerSheet { cfg in
+                    // 点选即切换默认模型
+                    var c = cfg
+                    c.isDefault = true
+                    modelStore.update(c)
+                    showModelPicker = false
+                    showToast("已切换：\(cfg.name)")
+                }
+                .sheetDetentsHeight(360)
+            } else {
+                ChatModelPickerSheet { cfg in
+                    var c = cfg
+                    c.isDefault = true
+                    modelStore.update(c)
+                    showModelPicker = false
+                    showToast("已切换：\(cfg.name)")
+                }
+            }
+        }
+        // v3.0.76：快捷标签 sheet
+        // v6.9.11：修复"点终端闪退"——RemoteTerminalView 由 sheet 呈现且内容没有
+        // NavigationView，却用了 .navigationTitle；更关键的是 RemoteAccessView 里
+        // 通过 NavigationLink 进入它，在没有导航容器时 NavigationLink 触发崩溃。
+        // 统一在 present 处包一层 NavigationView（stack 样式，iOS 15 可用）。
+        .sheet(isPresented: Binding(get: { AppUIState.shared.quickTerminalPresented }, set: { AppUIState.shared.quickTerminalPresented = $0 })) {
+            NavigationView {
+                RemoteTerminalView()
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .navigationBarLeading) {
+                            Button("完成") { AppUIState.shared.quickTerminalPresented = false }
+                        }
+                    }
+            }
+            .navigationViewStyle(.stack)
+        }
+        .sheet(isPresented: Binding(get: { AppUIState.shared.quickToolsPresented }, set: { AppUIState.shared.quickToolsPresented = $0 })) {
+            ToolsView()
+        }
+        .sheet(isPresented: Binding(get: { AppUIState.shared.quickSkillsPresented }, set: { AppUIState.shared.quickSkillsPresented = $0 })) {
+            AgentsAndSkillsView()
+        }
+        .sheet(isPresented: Binding(get: { AppUIState.shared.quickFilesPresented }, set: { AppUIState.shared.quickFilesPresented = $0 })) {
+            // v6.4.8：包一层 NavigationView——否则 sheet 内没有导航栏，
+            // 工作区的"完成/上一级/上传/新建"工具栏按钮全都不显示（用户实测）。
+            NavigationView {
+                WorkspaceBrowserView(onClose: { AppUIState.shared.quickFilesPresented = false })
+            }
+            .navigationViewStyle(.stack)
+        }
+        // v2.9.10：网络恢复 / 回前台提示（配合后台自动重连）
+        .onReceive(NotificationCenter.default.publisher(for: AppLifecycleMonitor.networkRestored)) { _ in
+            showToast("网络已恢复")
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AppLifecycleMonitor.willEnterForeground)) { _ in
+            if AppLifecycleMonitor.shared.isNetworkAvailable {
+                showToast("已回到前台")
+            }
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "message.badge")
+                .font(.system(size: 48))
+                .foregroundColor(.secondary)
+            Text(L10n.t("home_empty_title"))
+                .font(.headline)
+            Text(L10n.t("home_empty_sub"))
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var homeState: some View {
+        // v6.6.14：按用户要求——新会话页只保留空白。
+        // 原先的 App 图标 / 欢迎语 / 2 张主卡 / 10 张快捷卡片全部移除。
+        // 恢复方法：从 git 历史取回此方法（提交 8d59de6 之前的版本）。
+        Color.clear
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// v2.9.78：首页能力小卡片（两列网格）
+    /// v3.1.1: 点卡片时自动切换到对应的系统指令模式
+    private func miniCard(_ icon: String, _ title: String, _ subtitle: String, _ colors: [Color], promptId: String? = nil, action: @escaping () -> Void) -> some View {
+        Button {
+            // 自动切换到对应的系统指令模式
+            if let pid = promptId {
+                SystemPrompts.shared.select(pid)
+            }
+            action()
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 40, height: 40)
+                    Image(systemName: icon)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundColor(.white)
+                }
+                Text(title)
+                    .font(.headline)
+                    .fontWeight(.medium)
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, minHeight: 118, alignment: .topLeading)
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color(.secondarySystemBackground))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(colors[0].opacity(0.18), lineWidth: 1)
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+
+    private func runQuickPrompt(_ text: String) {
+        guard let cfg = modelStore.defaultConfig else { return }
+        if store.selectedId == nil { store.newConversation() }
+        inputText = ""
+        store.send(text, using: cfg, reasoningLevel: thinkEnabled ? reasoning : 5, smartSearch: smartSearch, in: store.selectedId)
+    }
+
+    private var messageList: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 12) {
+                    ForEach(store.currentMessages) { msg in
+                        MessageBubble(
+                            message: msg,
+                            selectionMode: selectionMode,
+                            isSelected: selectedIds.contains(msg.id),
+                            onToggleSelect: { toggleSelect(msg.id) },
+                            onCopy: { copyMessage(msg) },
+                            onShare: { shareMessage(msg) },
+                            onDelete: { store.removeMessage(id: msg.id) },
+                            isStreaming: store.streamingMessageId == msg.id,
+                            forceType: store.liveProducedID == msg.id,
+                            thinkEnabled: thinkEnabled
+                        )
+                        .id(msg.id)
+                    }
+                    if store.isLoading {
+                        // v2.9.34：请求过程可视化（对齐老 MCP 的"正在思考"面板）
+                        // v2.9.127：改为实时执行轨迹（豆包工作任务/Codex 式步骤流）
+                        VStack(alignment: .trailing, spacing: 6) {
+                            HStack {
+                                Spacer()
+                                HStack(spacing: 8) {
+                                    ProgressView()
+                                        .scaleEffect(0.8)
+                                    Text(L10n.t("home_thinking"))
+                                        .font(.footnote.weight(.medium))
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                // v3.1.66：tertiarySystemBackground 浅色模式≈白看不见，改 systemGray5
+                                .background(Color(.systemGray5).opacity(0.9))
+                                .cornerRadius(14)
+                                .padding(.trailing, 16)
+                            }
+                            if store.isLoading, !store.liveTrail.isEmpty {
+                                LiveTrailCard(steps: store.liveTrail)
+                                    .padding(.trailing, 16)
+                            }
+                            if let status = store.statusText {
+                                Text(status)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                    .padding(.trailing, 16)
+                            }
+                            if store.requestRound > 0 {
+                                // v4.3.71：无轮次上限 (requestRounds==0) 只显示"第 N 轮"
+                                if store.requestRounds > 0 {
+                                    Text(L10n.t("ui_157", store.requestRound, store.requestRounds))
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                        .padding(.trailing, 16)
+                                } else {
+                                    Text("第 \(store.requestRound) 轮")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                        .padding(.trailing, 16)
+                                }
+                            }
+                        }
+                    }
+                }
+                // v3.4.0：去掉整行水平 padding —— AI 气泡改为真正占满左右屏边缘；
+                // 用户气泡的右留白由 MessageBubble 内部按 isUser 处理
+                .padding(.vertical, 12)
+            }
+            // 点击聊天区空白处收起键盘（v2.9.9）
+            .simultaneousGesture(
+                TapGesture().onEnded { dismissKeyboard() }
+            )
+            .onChange(of: store.currentMessages.count) { _ in
+                if let last = store.currentMessages.last {
+                    withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                }
+            }
+            // v2.9.12：打开/切换会话时自动滚到底（老会话不再停在顶部）
+            .onAppear { scrollToBottom(proxy) }
+            .onChange(of: store.selectedId) { _ in
+                scrollToBottom(proxy)
+            }
+            // v2.9.72：AI 回复完成时结束工作流
+            .onChange(of: store.isLoading) { loading in
+                if !loading {
+                    WorkflowManager.shared.finishRun(success: true)
+                }
+            }
+            // v2.9.235：键盘高度变化→自动滚到底（高度本身由外层 VStack 监听，空会话也能避让键盘）
+            .onChange(of: keyboardHeight) { _ in
+                if keyboardHeight > 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        if let last = store.currentMessages.last {
+                            proxy.scrollTo(last.id, anchor: .bottom)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// v2.9.12：滚到当前会话最新一条
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            if let last = store.currentMessages.last {
+                proxy.scrollTo(last.id, anchor: .bottom)
+            }
+        }
+    }
+
+    private func dismissKeyboard() {
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+
+    /// v3.4.3：模型名已移入导航栏 principal（与标题、右侧图标同一平行线），此处不再占用正文顶部
+    private var chatModeBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                // v3.4.5：六个胶囊统一同宽同高（76×32），比例完全一致、长度略长
+                // v3.4.7：推理用"大脑"图标、思考用"灯泡"图标（用户指定，勿对调）
+                ChatChip(label: "推理·\(reasoningLabel())", action: {
+                    reasoning = (reasoning + 1) % 5
+                }, accent: true, icon: "brain").frame(height: 36)
+                ChatChip(label: "思考·\(thinkEnabled ? "开" : "关")", action: {
+                    thinkEnabled.toggle()
+                }, accent: thinkEnabled, icon: "lightbulb").frame(height: 36)
+                ChatChip(label: "搜索·\(smartSearch ? "开" : "关")", action: {
+                    smartSearch.toggle()
+                }, accent: smartSearch, icon: "magnifyingglass").frame(height: 36)
+                QuickTabButton(icon: "bolt", label: "技能") {
+                    AppUIState.shared.quickSkillsPresented = true
+                }.frame(height: 36)
+                // v6.9.10：删除"指令"胶囊入口——模式已由 AI 自动路由，无需手动选择。
+                // 仅移除入口，SystemPromptsView / 7 个模式的提示词内容全部保留。
+                // 恢复方法：从 git 历史取回本段（提交 c4787e5 之前的版本）。
+                QuickTabButton(icon: "folder", label: "工作区") {
+                    AppUIState.shared.quickFilesPresented = true
+                }.frame(height: 36)
+            }
+        }
+    }
+
+    private var inputBar: some View {
+        VStack(spacing: 0) {
+            // v2.9.10：待发送附件预览（图片缩略图 / 应用图标 / 文件）
+            AttachmentPreviewStrip(attachments: pendingAttachments) { att in
+                withAnimation { pendingAttachments.removeAll { $0.id == att.id } }
+            }
+            // v3.4.5：功能行（推理/思考/搜索/系统指令/技能/工作区）——胶囊与输入框、与上方都留
+            // 等距 16pt 间隙（上下对称，间距比之前加大）
+            chatModeBar
+                // v4.4.11：左边距 12→16（用户反馈推理贴左无空格）
+                .padding(.horizontal, 16)
+                // v3.4.7：顶部间距减半(16→8)，用户反馈上方空太多；底部 16 保留(胶囊到输入框的加大间距)
+                .padding(.top, 8)
+                .padding(.bottom, 16)
+
+            // v3.0.83：输入栏 —— 终端键 + 输入框 + +号 + 发送键 统一放进同一个大圆角框
+            HStack(spacing: 6) {
+                Button(action: {
+                    AppUIState.shared.quickTerminalPresented = true
+                }) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .frame(width: 32, height: 32)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PlainButtonStyle())
+
+                ChatInputTextView(text: $inputText, onSend: { send() }, height: $inputHeight)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: inputHeight)
+
+                // v3.3.4：+ 号 → 展开"应用/相册/文件/浏览器"快捷行；再点变 x 收起
+                Button(action: {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        attachExpanded.toggle()
+                    }
+                }) {
+                    Image(systemName: attachExpanded ? "xmark" : "plus")
+                        .font(.system(size: 16, weight: .semibold))
+                        // v6.3.0（对齐 OpenMinis）：+ 号改 secondarySystemBackground 底 + label 图标
+                        // （浅色无边框/深色 white 0.35 描边），替代原蓝色实心圆
+                        .foregroundColor(.primary)
+                        .frame(width: 32, height: 32)
+                        .background(attachExpanded ? Color(UIColor.tertiarySystemFill) : Color(UIColor.secondarySystemBackground))
+                        .clipShape(Circle())
+                        .overlay(
+                            Circle().stroke(
+                                Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.35, alpha: 1) : .clear }),
+                                lineWidth: 1)
+                        )
+                }
+                // v2.9.35：+号 → 半屏"添加内容"面板（对齐老 MCP 设计），不再用 actionSheet
+                // （iOS16 actionSheet 偶发点击无响应 + 无"已选 N"徽标）
+                // v2.9.36：移除麦克风按钮（语音无实际作用）
+
+                // v2.9.13：请求中时按钮变为"停止"，点击取消当前请求 (v4.5.8：仅当前选中会话在请求时显示，
+                // 切到别的会话不误显示停止）
+                if store.selectedIsRequesting {
+                    Button(action: { store.cancelCurrent() }) {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(width: 32, height: 32)
+                            .background(Color.red)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Button(action: send) {
+                        Image(systemName: "paperplane.fill")
+                            .font(.system(size: 15, weight: .semibold))
+                            // v6.3.0（对齐 OpenMinis）：发送键用 label 色（浅色黑/深色白），
+                            // 禁用态 quaternaryLabel；图标反色。替代原蓝色系统键。
+                            .foregroundColor(Color(UIColor.systemBackground))
+                            .frame(width: 32, height: 32)
+                            .background(inputText.isEmpty ? Color(UIColor.quaternaryLabel) : Color(UIColor.label))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(inputText.isEmpty)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            // v3.3.4：整行放进一个大圆角框（终端键/输入框/+号/发送键 一体）
+            // v6.3.0（对齐 OpenMinis）：底色 = 浅色纯白 / 深色 white 0.12，加 separator 细描边
+            .background(Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.12, alpha: 1) : .white }))
+            .cornerRadius(20)
+            .overlay(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .stroke(Color(UIColor.separator), lineWidth: 0.5)
+            )
+            // v3.4.5：输入框外阴影渐变，往外扩散越来越淡（多层 shadow 叠加模拟渐变发光）
+            // v3.4.7：改为灰色扩散、且收敛——用户反馈蓝色扩散太多，应偏灰
+            .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 2)
+            .shadow(color: Color.black.opacity(0.06), radius: 10, x: 0, y: 4)
+            .padding(.horizontal, 12)
+
+            // v3.4.2：点 + 底部弹出 应用/相册/文件/浏览器，把聊天框顶起来（位于输入框下方）
+            if attachExpanded {
+                attachQuickRow
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .padding(.bottom, 8)
+        .background(Color(.systemBackground))
+        // v2.9.30：授权弹窗已移出到 NavigationView 外层（见 body 链），
+        // 此处不再挂 actionSheet，避免与上方 +号 的 actionSheet 同 view 覆盖。
+    }
+
+    private func reasoningLabel() -> String {
+        // v4.3.40：档位扩为 低/中/高/最高/极限——最高档=xhigh, 极限档=max (破甲站 gpt-6.1-sol 实测支持 low/medium/high/xhigh/max)
+        let labels = ["低", "中", "高", "最高", "极限"]
+        return reasoning >= 0 && reasoning < labels.count ? labels[reasoning] : "高"
+    }
+
+    /// v3.3.4：+ 展开的快捷附件行（应用 / 相册 / 文件 / 浏览器），对齐微信式附件栏
+    /// v3.4.2：从左屏幕边缘到右屏幕边缘均匀分布——四格等宽、间隙一致（含两侧边缘间隙）
+    private var attachQuickRow: some View {
+        HStack(spacing: 12) {
+            attachQuickButton("apps.iphone", "应用") {
+                withAnimation { attachExpanded = false }
+                attachmentSheet = .appPicker
+            }
+            .frame(maxWidth: .infinity)
+            attachQuickButton("photo.on.rectangle", "相册") {
+                withAnimation { attachExpanded = false }
+                attachmentSheet = .photoPicker
+            }
+            .frame(maxWidth: .infinity)
+            attachQuickButton("folder", "文件") {
+                withAnimation { attachExpanded = false }
+                // v3.3.4：快捷行直接弹 UIKit 文档选择器（无需半屏面板中转）
+                Self.presentDocumentPicker { urls in
+                    handlePickedFiles(urls)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            attachQuickButton("globe", "浏览器") {
+                withAnimation { attachExpanded = false }
+                attachmentSheet = nil
+                FloatingBrowser.shared.show()
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, 12)
+        // v3.4.8：附件行与输入框之间留出明显间隔（参考图）
+        .padding(.top, 10)
+        .padding(.bottom, 6)
+        .frame(maxWidth: .infinity)
+    }
+
+    private func attachQuickButton(_ icon: String, _ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                // v3.4.8：方形圆角瓦片（参考图：相机/图片/文件/打电话样式），不再是圆形
+                Image(systemName: icon)
+                    .font(.system(size: 22, weight: .medium))
+                    .foregroundColor(.blue)
+                    .frame(width: 52, height: 52)
+                    .background(Color.blue.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                Text(label)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+
+    /// v2.9.93：按模型名识别供应商图标
+    private func modelIcon(for model: String) -> String {
+        let m = model.lowercased()
+        if m.contains("deepseek") { return "d.circle.fill" }
+        if m.contains("claude") { return "c.circle.fill" }
+        if m.contains("gpt") || m.contains("o1") || m.contains("o3") || m.contains("o4") { return "sparkles" }
+        if m.contains("glm") || m.contains("qwen") || m.contains("kimi") { return "brain" }
+        if m.contains("gemini") { return "sparkle.magnifyingglass" }
+        return "cpu"
+    }
+
+    private func send() {
+        guard let cfg = modelStore.defaultConfig,
+              (!inputText.isEmpty || !pendingAttachments.isEmpty || !pendingImages.isEmpty) else { return }
+        // v3.1.5: 自动提取关键信息（App 名、bundle id、文件路径等）
+        AutoContextExtractor.shared.extract(from: inputText)
+        // v3.1.1: 模型不支持视觉时，自动 OCR 识别图片文字，拼到消息里
+        var imagesToSend = pendingImages
+        if !pendingImages.isEmpty && !cfg.supportsVision {
+            // 自动 OCR：把图片文字识别出来，拼到消息里
+            var ocrTexts: [String] = []
+            for (i, imgData) in pendingImages.enumerated() {
+                if let data = Data(base64Encoded: imgData.replacingOccurrences(of: "data:image/png;base64,", with: "").replacingOccurrences(of: "data:image/jpeg;base64,", with: "")) {
+                    let tmpPath = NSTemporaryDirectory() + "ocr_\(i).png"
+                    try? data.write(to: URL(fileURLWithPath: tmpPath))
+                    if let ocrResult = try? OCRImageTool().invoke(["path": tmpPath]),
+                       let text = ocrResult["text"] as? String, !text.isEmpty {
+                        ocrTexts.append("📷 图片\(i+1) 识别到的文字：\n\(text)")
+                    }
+                    try? FileManager.default.removeItem(atPath: tmpPath)
+                }
+            }
+            if !ocrTexts.isEmpty {
+                inputText = inputText + "\n\n" + ocrTexts.joined(separator: "\n\n")
+                imagesToSend = [] // 去掉图片，只发文字
+                showToast("🔍 已自动 OCR 识别图片文字")
+            }
+        }
+        // v2.9.72：启动工作流可视化
+        WorkflowManager.shared.startRun("处理请求")
+        if store.selectedId == nil { store.newConversation() }
+        var text = inputText
+        let imgs = pendingImages
+        // v2.9.61：输入框不再有 [📱应用] 占位标签，发送时自动把应用/文件附件拼成描述文字
+        let appAtts = pendingAttachments.filter { if case .app = $0.kind { return true }; return false }
+        let fileAtts = pendingAttachments.filter { if case .file = $0.kind { return true }; return false }
+        var attDesc: [String] = []
+        for att in appAtts {
+            let bid = att.bundleId ?? "unknown"
+            attDesc.append("[📱应用：\(att.displayName)（\(bid)）]")
+        }
+        for att in fileAtts {
+            // v2.9.291：文件附件自动复制到工作区 uploads/ 并附加路径——
+            // 之前只发 [📎文件：xxx] 描述，AI 根本没有文件内容/路径可读，
+            // 导致"找不到 .deb"（文件在用户本地文件App里，AI 视野外）
+            let saved = Self.saveAttachmentToWorkspace(att)
+            if let sp = saved {
+                // v3.1.70：去掉"可用 artifact / shell.exec 读取分析"工具残留（用户反馈），
+                // 只保留路径——AI 的 fs 工具集本身就能读，无需在消息里提示
+                attDesc.append("[📎文件：\(att.displayName)] 已保存到 \(sp)")
+            } else {
+                attDesc.append("[📎文件：\(att.displayName)]（复制到工作区失败，请手动放入 \(Workspace.root.path)）")
+            }
+        }
+        if !attDesc.isEmpty {
+            text = text.isEmpty ? attDesc.joined(separator: " ") : text + " " + attDesc.joined(separator: " ")
+        }
+        inputText = ""
+        pendingImages = []
+        // v2.9.10：附件预览与发送联动——从附件里取图片 dataURL（若预览被删则不再发送）
+        let attImgs = pendingAttachments.compactMap { $0.dataURL }
+        pendingAttachments = []
+        let finalImgs = attImgs.isEmpty ? imagesToSend : attImgs
+        // v3.4.1：思考总开关接入主发送路径（此前漏传，思考·开/关在输入框无效）
+        store.send(text, using: cfg, imageDataURLs: finalImgs, reasoningLevel: thinkEnabled ? reasoning : 3, smartSearch: smartSearch, in: store.selectedId)
+        AuditLog.shared.log("chat", detail: "发送消息")
+    }
+
+    /// v2.9.9：图片文件 → base64 data URL
+    /// v2.9.292：降采样到最长边 1200px + JPEG q60 压缩——之前只限 3MB 不压缩，
+    /// 单张原图 base64 可达 2-4MB，历史里每张图每次请求全量重发 → 卡住/超时。
+    /// 压缩后单张 ~100-250KB，省 token 且不卡。
+    static func imageDataURL(for url: URL) -> String? {
+        guard let img = UIImage(contentsOfFile: url.path) else { return nil }
+        let maxDim: CGFloat = 1200
+        var out = img
+        if max(img.size.width, img.size.height) > maxDim {
+            let scale = maxDim / max(img.size.width, img.size.height)
+            let newSize = CGSize(width: img.size.width * scale, height: img.size.height * scale)
+            UIGraphicsBeginImageContextWithOptions(newSize, false, 1.0)
+            img.draw(in: CGRect(origin: .zero, size: newSize))
+            out = UIGraphicsGetImageFromCurrentImageContext() ?? img
+            UIGraphicsEndImageContext()
+        }
+        guard let data = out.jpegData(compressionQuality: 0.6) else { return nil }
+        let limit = 3 * 1024 * 1024
+        if data.count > limit { return nil }
+        return "data:image/jpeg;base64,\(data.base64EncodedString())"
+    }
+
+    /// v2.9.291：把聊天文件附件复制到工作区 uploads/ 目录，返回保存后的绝对路径
+    /// - 处理 security-scoped URL（UIDocumentPicker 返回的 URL 需 startAccessing）
+    /// - 文件名冲突时追加时间戳，避免覆盖
+    static func saveAttachmentToWorkspace(_ att: PendingAttachment) -> String? {
+        guard let src = att.fileURL else { return nil }
+        var scoped = false
+        if src.startAccessingSecurityScopedResource() { scoped = true }
+        defer { if scoped { src.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: src), data.count > 0 else { return nil }
+        let uploads = Workspace.root.appendingPathComponent("uploads", isDirectory: true)
+        try? FileManager.default.createDirectory(at: uploads, withIntermediateDirectories: true)
+        var name = src.lastPathComponent
+        if name.isEmpty { name = att.displayName }
+        var dest = uploads.appendingPathComponent(name)
+        // 重名冲突：追加 -<时间戳>
+        if FileManager.default.fileExists(atPath: dest.path) {
+            let ts = Int(Date().timeIntervalSince1970)
+            let ext = (name as NSString).pathExtension
+            let base = (name as NSString).deletingPathExtension
+            dest = uploads.appendingPathComponent("\(base)-\(ts).\(ext)")
+        }
+        do {
+            try data.write(to: dest)
+            return dest.path
+        } catch {
+            return nil
+        }
+    }
+
+    /// v2.9.10：读取应用图标（用于输入栏附件预览）
+    // v6.0.30: app图标内存缓存，所有用到图标的地方自动秒开
+    private static let iconCache = NSCache<NSString, UIImage>()
+    static func appIcon(for path: String) -> UIImage? {
+        // 先查缓存
+        if let cached = iconCache.object(forKey: path as NSString) {
+            return cached
+        }
+        guard let info = Bundle(path: path)?.infoDictionary,
+              let icons = info["CFBundleIcons"] as? [String: Any],
+              let primary = icons["CFBundlePrimaryIcon"] as? [String: Any],
+              let files = primary["CFBundleIconFiles"] as? [String],
+              let last = files.last else { return nil }
+        let p = (path as NSString).appendingPathComponent(last + "@2x.png")
+        let img = UIImage(contentsOfFile: p) ?? UIImage(contentsOfFile: (path as NSString).appendingPathComponent(last + ".png"))
+        if let img = img {
+            iconCache.setObject(img, forKey: path as NSString)
+        }
+        return img
+    }
+
+    // MARK: - v3.1.67：UIKit 文档选择器（真机稳定方案，替代 .fileImporter）
+
+    /// 从顶层 VC present UIDocumentPickerViewController（asCopy: true）。
+    /// - 真机 iPhone 上 .fileImporter 有已知 bug（Apple 论坛 775056：选择器打不开/无法交互/回调不触发），
+    ///   UIKit 方案在真机完全正常（最早版本能打开文件就是用的 UIKit 方案）。
+    /// - asCopy: true 让系统把所选文件复制进 App 沙盒，返回的 URL 直接可读、不会失效，
+    ///   无需 startAccessingSecurityScopedResource，也彻底绕开"临时 URL 失效"问题。
+    static func presentDocumentPicker(onPick: @escaping ([URL]) -> Void) {
+        guard let top = Self.topViewController() else { return }
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
+        picker.allowsMultipleSelection = true
+        picker.modalPresentationStyle = .formSheet
+        // coordinator 必须被强引用，否则 delegate 回调不触发
+        let coordinator = DocumentPickerCoordinator(onPick: onPick)
+        picker.delegate = coordinator
+        objc_setAssociatedObject(picker, &DocumentPickerCoordinator.assocKey, coordinator, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        top.present(picker, animated: true)
+    }
+
+    /// 找到当前最顶层的 UIViewController（绕开 SwiftUI sheet 层级问题，直接往 key window 上 present）
+    private static func topViewController() -> UIViewController? {
+        var vc: UIViewController?
+        if let scene = UIApplication.shared.connectedScenes.first as? UIWindowScene,
+           let window = scene.windows.first(where: { $0.isKeyWindow }) {
+            vc = window.rootViewController
+        } else if let window = UIApplication.shared.windows.first(where: { $0.isKeyWindow }) {
+            vc = window.rootViewController
+        }
+        while let presented = vc?.presentedViewController {
+            vc = presented
+        }
+        return vc
+    }
+
+    /// 选择完成：复制到工作区 uploads/（asCopy 已复制进沙盒，这里再落到 uploads 统一管理 + 防重名）
+    private func handlePickedFiles(_ urls: [URL]) {
+        for u in urls {
+            let att = PendingAttachment(
+                kind: .file,
+                displayName: u.lastPathComponent,
+                dataURL: nil,
+                thumbnail: nil,
+                bundleId: nil,
+                fileURL: u
+            )
+            if let saved = Self.saveAttachmentToWorkspace(att) {
+                self.pendingAttachments.append(PendingAttachment(
+                    kind: .file,
+                    displayName: u.lastPathComponent,
+                    dataURL: nil,
+                    thumbnail: nil,
+                    bundleId: nil,
+                    fileURL: URL(fileURLWithPath: saved)
+                ))
+            } else {
+                self.pendingAttachments.append(att)
+            }
+        }
+    }
+
+    // MARK: - 多选 / 复制 / 分享（v2.9.2）
+
+    private func enterSelection() {
+        selectionMode = true
+        selectedIds = []
+    }
+
+    private func exitSelection() {
+        selectionMode = false
+        selectedIds = []
+    }
+
+    private func toggleSelect(_ id: UUID) {
+        if selectedIds.contains(id) {
+            selectedIds.remove(id)
+        } else {
+            selectedIds.insert(id)
+        }
+    }
+
+    private func copyMessage(_ m: ChatMessage) {
+        UIPasteboard.general.string = m.content
+        showToast("已复制")
+    }
+
+    private func shareMessage(_ m: ChatMessage) {
+        presentShareSheet(text: m.content)
+    }
+
+    private func copySelected() {
+        let count = selectedIds.count
+        UIPasteboard.general.string = exportText()
+        exitSelection()
+        showToast(count > 0 ? "已复制 \(count) 条内容" : "已复制")
+    }
+
+    private func shareSelected() {
+        presentShareSheet(text: exportText())
+    }
+
+    // v4.3.46：文字分享 → 自建分享菜单（拷贝 / 存储到文件），绕开 ShareSheet
+    private func presentShareSheet(text: String) {
+        let content = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else {
+            showToast("没有可分享的内容")
+            return
+        }
+        ShareCenter.shared.presentShareMenuText(content)
+    }
+
+    /// 把勾选的消息拼成可读文本（按会话内顺序），用于复制 / 分享。
+    private func exportText() -> String {
+        let msgs = store.currentMessages.filter { selectedIds.contains($0.id) }
+        guard !msgs.isEmpty else { return "" }
+        var parts: [String] = []
+        let title = store.currentTitle
+        if !title.isEmpty && title != "新会话" {
+            parts.append("【\(title)】")
+        }
+        for m in msgs {
+            parts.append(formatted(m))
+        }
+        return parts.joined(separator: "\n\n")
+    }
+
+    private func formatted(_ m: ChatMessage) -> String {
+        switch m.role {
+        case "user":
+            return "我：\(m.content)"
+        case "tool":
+            let name = m.toolName.map { "（\($0)）" } ?? ""
+            return "工具结果\(name)：\(m.content)"
+        default:
+            return m.content
+        }
+    }
+
+    private func showToast(_ text: String) {
+        toastText = text
+        withAnimation { showToast = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            withAnimation { showToast = false }
+        }
+    }
+}
+
+struct ChatChip: View {
+    let label: String
+    let action: () -> Void
+    // v2.9.36：浅蓝=开启/强调，灰=关闭（老 MCP 风格）
+    var accent: Bool = true
+    // v2.9.79：前置小图标（推理强度 / 智能搜索）
+    var icon: String = ""
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                if !icon.isEmpty {
+                    Image(systemName: icon)
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                Text(label)
+                    .font(.system(size: 15, weight: .semibold))
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            .frame(height: 36)
+            .padding(.horizontal, 10)
+            .background(accent ? Color.blue.opacity(0.14) : Color(.systemGray5))
+            .foregroundColor(accent ? Color.blue : Color.secondary)
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(accent ? Color.blue.opacity(0.35) : Color.clear, lineWidth: 1)
+            )
+            .cornerRadius(16)
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+}
+
+// v3.0.76：输入框上方快捷标签按钮
+struct QuickTabButton: View {
+    let icon: String
+    let label: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 13, weight: .semibold))
+                Text(label)
+                    .font(.system(size: 15, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .frame(height: 36)
+            // v3.4.4：与 ChatChip 统一内边距/圆角，保证滑动模块比例一致
+            .padding(.horizontal, 10)
+            .background(Color(.secondarySystemBackground))
+            .foregroundColor(.secondary)
+            .cornerRadius(16)
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+}
+
+// v2.9.36：聊天框"当前模型"点击弹出的上游模型选择（老 MCP 风格半屏）
+struct ChatModelPickerSheet: View {
+    @ObservedObject private var modelStore = ModelStore.shared
+    @Environment(\.dismiss) private var dismissSheet
+    let onSelect: (ModelConfig) -> Void
+
+    // v6.3.2：按用户思路重构——"选择模型"面板列出已保存模型，点进去即进入该站详情页，
+    // 详情页自动获取该中转站的上游模型列表，点选某个模型就切换到它。
+    @State private var search = ""
+
+    private var filteredConfigs: [ModelConfig] {
+        guard !search.isEmpty else { return modelStore.configs }
+        return modelStore.configs.filter {
+            ($0.name + " " + $0.model + " " + $0.provider).localizedCaseInsensitiveContains(search)
+        }
+    }
+
+    var body: some View {
+        NavigationView {
+            List {
+                Section {
+                    HStack(spacing: 8) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 14))
+                            .foregroundColor(.secondary)
+                        TextField("搜索模型", text: $search)
+                            .font(.subheadline)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                        if !search.isEmpty {
+                            Button { search = "" } label: {
+                                Image(systemName: "xmark.circle.fill").foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
+                Section(header: Text("已保存的模型"),
+                        footer: Text("点某个模型 → 进入该站点，自动获取其上游模型列表，可直接切换")) {
+                    ForEach(filteredConfigs) { cfg in
+                        NavigationLink {
+                            UpstreamModelsView(config: cfg) { picked, model in
+                                switchTo(picked, model: model)
+                            }
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: cfg.isDefault ? "checkmark.circle.fill" : "circle")
+                                    .font(.system(size: 20))
+                                    .foregroundColor(cfg.isDefault ? .blue : Color(UIColor.tertiaryLabel))
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(cfg.name)
+                                        .font(.body)
+                                        .foregroundColor(.primary)
+                                        .lineLimit(1)
+                                    HStack(spacing: 4) {
+                                        Text("\(cfg.provider) · \(cfg.model)")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                            .lineLimit(1)
+                                        ForEach(ModelTags.tags(for: cfg.model), id: \.self) { t in
+                                            Text(t)
+                                                .font(.system(size: 10, weight: .medium))
+                                                .padding(.horizontal, 5)
+                                                .padding(.vertical, 1)
+                                                .background(Color(UIColor.secondarySystemFill))
+                                                .foregroundColor(.secondary)
+                                                .cornerRadius(4)
+                                        }
+                                    }
+                                }
+                                Spacer()
+                            }
+                        }
+                    }
+                }
+                Section {
+                    Button(action: {
+                        dismissSheet()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                            AppUIState.shared.settingsJumpToModels = true
+                            AppUIState.shared.settingsPresented = true
+                        }
+                    }) {
+                        Label("在设置中管理模型", systemImage: "gearshape.fill")
+                            .font(.footnote)
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("选择模型")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("完成") { dismissSheet() }
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+    }
+
+    private func switchTo(_ cfg: ModelConfig, model: String?) {
+        var c = cfg
+        if let m = model { c.model = m }
+        c.isDefault = true
+        modelStore.update(c)
+        onSelect(c)
+        dismissSheet()
+    }
+}
+
+/// v6.3.2：某个已保存模型的详情页——进入即自动获取该中转站上游模型列表，
+/// 点选即切换到对应模型（同时支持"直接用该配置"）。
+struct UpstreamModelsView: View {
+    let config: ModelConfig
+    let onPick: (ModelConfig, String?) -> Void
+
+    @State private var models: [String] = []
+    @State private var loading = false
+    @State private var loadError: String?
+    @State private var search = ""
+
+    private var filtered: [String] {
+        guard !search.isEmpty else { return models }
+        return models.filter { $0.localizedCaseInsensitiveContains(search) }
+    }
+
+    var body: some View {
+        List {
+            Section {
+                Button { onPick(config, nil) } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: config.isDefault ? "checkmark.circle.fill" : "circle")
+                            .font(.system(size: 20))
+                            .foregroundColor(config.isDefault ? .blue : Color(UIColor.tertiaryLabel))
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("使用该配置")
+                                .foregroundColor(.primary)
+                            Text(config.model)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                    }
+                }
+            }
+            Section(header: HStack(spacing: 6) {
+                Text("上游模型")
+                Spacer()
+                if loading {
+                    ProgressView().scaleEffect(0.7)
+                } else {
+                    Button { fetch() } label: {
+                        Image(systemName: "arrow.clockwise").font(.caption)
+                    }
+                }
+            }, footer: Text(config.baseURL).font(.caption2)) {
+                if let e = loadError {
+                    Text(e).font(.caption).foregroundColor(.red).lineLimit(3)
+                }
+                if !loading && models.isEmpty && loadError == nil {
+                    Text("未返回模型列表（该站可能不支持 /models）")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                ForEach(filtered, id: \.self) { m in
+                    Button { onPick(config, m) } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: config.model == m ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 20))
+                                .foregroundColor(config.model == m ? .blue : Color(UIColor.tertiaryLabel))
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(m)
+                                    .font(.system(.body, design: .monospaced))
+                                    .foregroundColor(.primary)
+                                    .lineLimit(1)
+                                if !ModelTags.tags(for: m).isEmpty {
+                                    HStack(spacing: 4) {
+                                        ForEach(ModelTags.tags(for: m), id: \.self) { t in
+                                            Text(t)
+                                                .font(.system(size: 10, weight: .medium))
+                                                .padding(.horizontal, 5)
+                                                .padding(.vertical, 1)
+                                                .background(Color(UIColor.secondarySystemFill))
+                                                .foregroundColor(.secondary)
+                                                .cornerRadius(4)
+                                        }
+                                    }
+                                }
+                            }
+                            Spacer()
+                        }
+                    }
+                }
+            }
+        }
+        .searchable(text: $search, prompt: "搜索模型")
+        .navigationTitle(config.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            if models.isEmpty { fetch() }
+        }
+    }
+
+    private func fetch() {
+        loading = true
+        loadError = nil
+        ModelAPIClient.shared.fetchModelList(config: config) { result in
+            loading = false
+            switch result {
+            case .success(let list):
+                models = list
+                if list.isEmpty { loadError = nil }
+            case .failure(let e):
+                loadError = e
+            }
+        }
+    }
+}
+
+/// v6.3.1：模型能力标签（按模型名启发式，用于选择面板展示 img/video/pdf/img-out）
+enum ModelTags {
+    static func tags(for model: String) -> [String] {
+        let m = model.lowercased()
+        var t: [String] = []
+        if m.contains("vl") || m.contains("vision") || m.contains("-image") || m.contains("image-")
+            || m.contains("gpt-4o") || m.contains("gemini") || m.contains("o4-") { t.append("img") }
+        if m.contains("video") { t.append("video") }
+        if m.contains("pdf") { t.append("pdf") }
+        if m.contains("dall") || m.contains("flux") || m.contains("image-out") || m.contains("-img-out") { t.append("img-out") }
+        return t
+    }
+}
+
+struct QuickActionCard: View {
+    let icon: String
+    let title: String
+    let subtitle: String
+    var colors: [Color] = [.blue, .tmCyan]   // v2.9.78：渐变图标底
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 44, height: 44)
+                    Image(systemName: icon)
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundColor(.white)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.headline)
+                        .fontWeight(.medium)
+                        .foregroundColor(.primary)
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer()
+                Image(systemName: "arrow.up.forward")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(colors[0])
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color(.secondarySystemBackground))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(colors[0].opacity(0.15), lineWidth: 1)
+                    )
+            )
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+}
+
+// v4.4.15：气泡点击手势——仅 tool 折叠 / 多选模式注册 onTapGesture；
+// 纯文本气泡(非tool非selection)不注册任何点击手势，否则父级 contentShape+onTapGesture
+// 的手势识别器会抢占内部 Text 的 textSelection 长按 → AI 回复一大段文字长按选字失效(用户实测)
+private struct MessageTapModifier: ViewModifier {
+    let isTool: Bool
+    let selectionMode: Bool
+    let onToggleSelect: (() -> Void)?
+    let onToolToggle: () -> Void
+    func body(content: Content) -> some View {
+        if isTool || selectionMode {
+            content
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    if selectionMode { onToggleSelect?() }
+                    else { onToolToggle() }
+                }
+        } else {
+            content
+        }
+    }
+}
+
+struct MessageBubble: View {
+    let message: ChatMessage
+    // v4.3.77：安装进度——工具"执行中"气泡渲染实时进度条（引用处位于本 struct）
+    @ObservedObject private var installRegistry = InstallationRegistry.shared
+    var selectionMode: Bool = false
+    var isSelected: Bool = false
+    var onToggleSelect: (() -> Void)? = nil
+    var onCopy: (() -> Void)? = nil
+    var onShare: (() -> Void)? = nil
+    // v6.2.7：长按气泡删除单条消息（用户要求"长按会话框弹出删除功能"——
+    // 顶栏勾选选择模式已移除，删除入口改长按菜单）
+    var onDelete: (() -> Void)? = nil
+    // v3.4.5：当前正在流式生成的 AI 消息 → 打字机逐字显示
+    var isStreaming: Bool = false
+    // v3.4.9：本轮刚生成完成的消息（工具解说/整段到达的回复）也要逐字打出——
+    // 这些消息 isStreaming=false 且内容在出现前已定好，靠 onAppear 强制启动打字机
+    var forceType: Bool = false
+    // v3.5.31：思考开关——思考关时隐藏思考块（API 仍可能返回 thinking，UI 一律不显示）
+    var thinkEnabled: Bool = true
+
+    // v6.0.28：工具结果默认折叠，用户手动点才展开
+    @State private var expanded = false
+    @State private var expandedToolIds: Set<String> = []
+    // v3.4.5：打字机效果——已显示字符数 + 定时器（显示与网络解耦，逐字稳定刷出）
+    // v3.4.7：降速到 25 字/秒(0.04s/字)让打字感清晰可见；且不依赖 isStreaming——
+    // 只要内容在增长就持续打字到完整，兼容"整段一次性到达"的中转
+    // v3.5.4：用户反馈太慢 → 提速到 ~133 字/秒 (0.015s/tick × 2 字符），快但仍看得出打字感
+    @State private var revealedCount = 0
+    @State private var typeTimer: Timer?
+    // v4.4.18：流式自动朗读——记录已朗读到的字符位置，content 增长时只把新增整句送 TTS
+    @State private var autoSpokenUpTo = 0
+
+    // v3.5.4：自适应打字机（业界：平时 ~50 字/秒舒适，积压多自动提速追平网络，标点/换行稍停顿更自然）。
+    // 不像固定 133 字/秒那样一快到底；也不像 25 字/秒那样拖沓。
+    private func startTypeTimer() {
+        guard typeTimer == nil else { return }
+        // v3.5.4：MessageBubble 是 SwiftUI 结构体(值类型)，不能用 [weak self]；定时器 onDisappear 会 invalidate
+        typeTimer = Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { _ in
+            DispatchQueue.main.async {
+                guard self.revealedCount < self.message.content.count else { self.stopTypeTimer(); return }
+                let total = self.message.content.count
+                let backlog = total - self.revealedCount
+                let idx = self.message.content.index(self.message.content.startIndex, offsetBy: self.revealedCount)
+                let ch = self.message.content[idx]
+                let isPause = ch == "\n" || "，。；：！？、,.。;:!?… ".contains(ch)
+                let step: Int
+                if backlog > 60 { step = 8 }        // 积压很多 → 大幅提速追平
+                else if backlog > 30 { step = 4 }   // 积压多 → 提速
+                else if backlog > 12 { step = 2 }   // 稍积压 → 中速
+                else if isPause { step = 1 }        // 标点/换行 → 慢速停顿(真人感)
+                else { step = 1 }                    // 常规 ~50 字/秒(0.02s/字)
+                self.revealedCount = min(total, self.revealedCount + step)
+            }
+        }
+    }
+    private func stopTypeTimer() {
+        typeTimer?.invalidate()
+        typeTimer = nil
+    }
+    // v4.4.20：自动朗读——用 autoSpokenUpTo 增量读"没读过"的部分；流式/非流式 onAppear+onChange 双触发共用，防重复
+    // 句子边界：句末标点切分；无标点长段攒够 60 字也强制读（防一直憋着不读）
+    private func autoSpeak(_ full: String) {
+        let chars = Array(full)
+        if autoSpokenUpTo >= chars.count { return }
+        var boundary = autoSpokenUpTo
+        while boundary < chars.count {
+            let isPunct = "。！？!?\n…".contains(chars[boundary])
+            let overLimit = (boundary - autoSpokenUpTo) >= 60
+            if isPunct || overLimit {
+                let sentence = String(chars[autoSpokenUpTo...boundary]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !sentence.isEmpty { TTSService.shared.speak(sentence) }
+                autoSpokenUpTo = boundary + 1
+            }
+            boundary += 1
+        }
+    }
+    // v3.5.4：思考黄泡——思考进行中(isStreaming)自动展开让用户看到模型在动；
+    // 思考结束自动收起(除非用户手动展开)。业界(掘金/Koder/DeepSeek Harness)一致做法。
+    private var thinkingExpanded: Bool {
+        isStreaming ? true : expandedToolIds.contains(message.id.uuidString)
+    }
+    private func toggleThinking() {
+        let id = message.id.uuidString
+        if expandedToolIds.contains(id) { expandedToolIds.remove(id) }
+        else { expandedToolIds.insert(id) }
+    }
+
+    private var isUser: Bool { message.role == "user" }
+    private var isTool: Bool { message.isTool }
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            if isUser {
+                if selectionMode { selectionBadge }
+                Spacer(minLength: 50)
+            }
+
+            if isTool {
+                toolBubble
+            } else {
+                textBubble
+            }
+
+            if !isUser {
+                // v3.4.0：AI 输出不追加右侧 Spacer —— 气泡随 .frame(maxWidth:.infinity) 填满整个可用宽度
+                if selectionMode { selectionBadge }
+            }
+        }
+        // v3.4.4：AI/工具气泡左右各留 16 边距（用户反馈 10 仍太小）；用户气泡右侧留白 12
+        .padding(.horizontal, isUser ? 12 : 16)
+        // v4.4.15：条件点击手势——tool/多选才注册，纯文本气泡不注册(让 textSelection 长按生效)
+        .modifier(MessageTapModifier(
+            isTool: isTool,
+            selectionMode: selectionMode,
+            onToggleSelect: onToggleSelect,
+            onToolToggle: { withAnimation { expanded.toggle() } }
+        ))
+        // v6.2.7：长按气泡菜单（复制/分享/删除）——用户要求"长按会话框弹出删除功能"。
+        // 历史 v4.4.13 曾移除 contextMenu 保文字选择；现按用户新要求恢复长按菜单，
+        // 菜单含"复制全文"补偿部分复制需求。
+        .contextMenu {
+            if let onCopy = onCopy {
+                Button(action: onCopy) { Label("复制全文", systemImage: "doc.on.doc") }
+            }
+            if let onShare = onShare {
+                Button(action: onShare) { Label("分享", systemImage: "square.and.arrow.up") }
+            }
+            if let onDelete = onDelete {
+                Button(action: onDelete) { Label("删除此消息", systemImage: "trash") }
+            }
+        }
+        // v3.4.5：打字机效果——内容增长即逐字显示，直到完整
+        .onAppear {
+            if (isStreaming || forceType), revealedCount < message.content.count { startTypeTimer() }
+        }
+        .onDisappear { stopTypeTimer() }
+        .onChange(of: isStreaming) { streaming in
+            if streaming, revealedCount < message.content.count {
+                startTypeTimer()
+            } else if !streaming {
+                // v6.6.4：流式结束立即补齐剩余文字。旧行为：forceType 要整轮结束才清，
+                // 期间仍按 prefix(revealedCount) 渲染 → 打字机没跟上就停在半句，
+                // 必须等下一轮输出/重绘才显示全（用户实测）。
+                revealedCount = message.content.count
+                stopTypeTimer()
+            }
+        }
+        .onChange(of: message.content) { _ in
+            if revealedCount < message.content.count { startTypeTimer() }
+        }
+    }
+
+    private var selectionBadge: some View {
+        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+            .font(.system(size: 20))
+            .foregroundColor(isSelected ? .blue : Color.secondary)
+            .padding(.bottom, 10)
+    }
+
+    // v4.4.11：AI 正文行内代码(反引号)→橙色(与"已深度思考"同色)。手动正则解析，
+    // 容错流式打字机未闭合反引号(不配对则视为普通文本)。仅 assistant 生效, user 保持纯文本。
+    // v4.4.12：正文 markdown 加粗(**xx**)→粗体(semibold)。代码段优先(橙色)，代码段外再匹配粗体。
+    /// v4.4.21：消息文本视图——流式/打字机/用户消息用轻量 Text（避免 UITextView 高频刷新闪跳）；assistant 完成消息用 SelectableText(UITextView) 长按选字/划词/复制
+    @ViewBuilder
+    private func messageTextView(_ shown: String) -> some View {
+        // v6.2.8（对齐 OpenMinis）：正文字号 16.5；超长文本（>5 万字）截断渲染，
+        // 避免单条消息超长文本拖垮 SwiftUI 布局（崩溃 3 巨型递归栈的可疑诱因之一）
+        let capped = shown.count > 50000
+            ? String(shown.prefix(50000)) + "\n\n…[内容过长，仅渲染前 5 万字；完整内容见会话数据]"
+            : shown
+        if isStreaming || forceType || isUser {
+            // v6.4.0（对齐 OpenMinis：流式期间用廉价渲染，完成后才上富文本）：
+            // 旧实现在每个 delta 都跑 coloredBody（正则解析代码段/加粗）→ 长输出卡顿。
+            // 流式期间直接 Text(纯文本)，完成后再走 attributed/SelectableText 富文本路径。
+            Text(isUser ? AttributedString(capped) : AttributedString(capped))
+                .font(.system(size: 16.5))
+                .textSelection(.enabled)
+        } else {
+            // v4.5.0：完成消息用原生 NSAttributedString 富文本（加粗/橙色/暗黑模式都正确渲染），避免 SwiftUI AttributedString 桥接丢失样式
+            SelectableText(attributed: attributedBody(capped), textColor: .label)
+        }
+    }
+
+    private func coloredBody(_ text: String) -> AttributedString {
+        var out = AttributedString()
+        let pattern = "`([^`]+)`"
+        var pos = text.startIndex
+        while let range = text.range(of: pattern, options: .regularExpression, range: pos..<text.endIndex) {
+            if pos < range.lowerBound { out += styledBold(text[pos..<range.lowerBound]) }
+            let inner = text[text.index(after: range.lowerBound)..<text.index(before: range.upperBound)]
+            var c = AttributedString(inner)
+            c.foregroundColor = .orange
+            c.font = .system(.body, design: .monospaced)
+            out += c
+            pos = range.upperBound
+        }
+        if pos < text.endIndex { out += styledBold(text[pos..<text.endIndex]) }
+        return out
+    }
+
+    // v4.4.12：代码段外的 markdown 加粗(**xx**)→粗体；未闭合的 ** 容错为普通文本
+    private func styledBold(_ s: Substring) -> AttributedString {
+        var out = AttributedString()
+        let boldPat = "\\*\\*([^*]+)\\*\\*"
+        var pos = s.startIndex
+        while let r = s.range(of: boldPat, options: .regularExpression, range: pos..<s.endIndex) {
+            if pos < r.lowerBound { out += AttributedString(s[pos..<r.lowerBound]) }
+            let inner = s[s.index(after: r.lowerBound)..<s.index(before: r.upperBound)]
+            var b = AttributedString(inner)
+            b.font = .system(size: 17, weight: .semibold) // v4.4.14: .system(_:weight:) 需 iOS16+, 改 system(size:weight:) 兼容更低部署目标
+            out += b
+            pos = r.upperBound
+        }
+        if pos < s.endIndex { out += AttributedString(s[pos..<s.endIndex]) }
+        return out
+    }
+
+    // v4.5.0：原生 NSAttributedString 富文本——给 SelectableText(UITextView) 用。
+    // 解析 **加粗** 与 `代码`(橙色)；直接写 UIKit font + UIColor（动态 .label 适配暗黑模式），
+    // 不走 SwiftUI AttributedString 桥接（会丢橙色/加粗样式，导致暗黑下看不清、字体变小）。
+    private func attributedBody(_ text: String) -> NSAttributedString {
+        let baseColor = UIColor.label
+        let orangeColor = UIColor.systemOrange
+        let regular = UIFont.systemFont(ofSize: 17)
+        let bold = UIFont.boldSystemFont(ofSize: 17)
+        let mono = UIFont.monospacedSystemFont(ofSize: 17, weight: .regular)
+
+        let base: [NSAttributedString.Key: Any] = [.font: regular, .foregroundColor: baseColor]
+        let boldAttrs: [NSAttributedString.Key: Any] = [.font: bold, .foregroundColor: baseColor]
+        let orangeAttrs: [NSAttributedString.Key: Any] = [.font: mono, .foregroundColor: orangeColor]
+
+        let ns = text as NSString
+        let pattern = #"\*\*([^*]+)\*\*|`([^`]+)`"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return NSAttributedString(string: text, attributes: base)
+        }
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+        let ms = NSMutableAttributedString()
+        var pos = 0
+        for m in matches {
+            if m.range.location > pos {
+                ms.append(NSAttributedString(string: ns.substring(with: NSRange(location: pos, length: m.range.location - pos)), attributes: base))
+            }
+            // 捕获组编号：组1 = **加粗** 内容，组2 = `代码` 内容（共2组，无组3）
+            let boldGroup = m.range(at: 1)
+            if boldGroup.location != NSNotFound {
+                ms.append(NSAttributedString(string: ns.substring(with: boldGroup), attributes: boldAttrs))
+            } else {
+                ms.append(NSAttributedString(string: ns.substring(with: m.range(at: 2)), attributes: orangeAttrs))
+            }
+            pos = m.range.location + m.range.length
+        }
+        if pos < ns.length {
+            ms.append(NSAttributedString(string: ns.substring(with: NSRange(location: pos, length: ns.length - pos)), attributes: base))
+        }
+        return ms
+    }
+
+    private var textBubble: some View {
+        VStack(alignment: isUser ? .trailing : .leading, spacing: 2) {
+            // v2.9.10：消息内图片缩略图（用户选择相册图片后，气泡里直接显示图片）
+            if let imgs = message.imageDataURLs, !imgs.isEmpty {
+                messageImageStrip(imgs)
+            }
+            // v2.9.20：思考记录（reasoning）可展开显示
+            // v3.5.31：加 thinkEnabled —— 思考关时即使 API 返回 thinking 也一律不显示
+            if !isUser, thinkEnabled, let th = message.thinking, !th.isEmpty {
+                thinkingView(th)
+            }
+            // v3.0.2: 去掉旧的 TrailCard，改用 toolBubble 显示工具调用
+            // v3.0.2e：如果 content 是空的，就不显示气泡（避免空白气泡）
+            // v3.5.12 修订：解说=单独长气泡(一长)。模型"先解说后执行"的正文就作为普通 assistant 气泡
+            // 显示在工具卡上方；工具卡标题=机械短标签(一短,见 toolShortLabel)，两者分开、不重复。
+            // 模型本轮没写解说(content空)则无气泡，卡片标题仍显示机械短标签，不落空。
+            if !message.content.isEmpty {
+                // v3.4.5：打字机——流式中按 revealedCount 逐字显示；完成后显示全文
+                // v3.5.4：打字机——isStreaming 或 forceType 都按 revealedCount 逐字显示；
+                // 此前只有 isStreaming 才走前缀，forceType(内容在出现前已定好、isStreaming=false)走了全文分支，
+                // 导致"打字机一下有一下没有"(用户实测反馈)。修复后非流式完成的消息也逐字打出来。
+                let shown = (isStreaming || forceType) ? String(message.content.prefix(revealedCount)) : message.content
+                // v4.4.11：assistant 行内代码橙色高亮, user 纯文本
+                VStack(alignment: .leading, spacing: 3) {
+                    // v4.4.21：完成消息用 SelectableText(UITextView) 长按划词/复制；流式打字机+用户消息用 Text(轻量)
+                    messageTextView(shown)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        // v3.3.4：AI 回复气泡从左拉伸到右（全宽）；用户气泡保持靠右自适应
+                        .frame(maxWidth: isUser ? nil : .infinity, alignment: .leading)
+                        // v6.2.8：对齐 OpenMinis 会话样式——用户气泡改淡灰 tertiarySystemFill + 常规文字色
+                        // （原巨魔蓝渐变），AI 回复去气泡背景（纯文本，更干净）。字号 16.5 见 messageTextView
+                        .background(
+                            Group {
+                                    if isUser {
+                                        Color(UIColor.tertiarySystemFill)
+                                    } else if message.isError {
+                                        Color.red.opacity(0.15)
+                                    } else {
+                                        Color.clear
+                                    }
+                                }
+                        )
+                        .foregroundColor(.primary)
+                        .cornerRadius(18)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18)
+                                .strokeBorder(isSelected ? (isUser ? Color.white : Color.blue) : Color.clear, lineWidth: 2)
+                        )
+                    // v4.4.18：朗读喇叭按钮（assistant 消息）——点一下朗读这条全文；长按仍保留选字复制
+                    if !isUser && !message.isTool {
+                        HStack(spacing: 6) {
+                            Button(action: { TTSService.shared.speakForced(id: message.id.uuidString, message.content) }) {
+                                Image(systemName: TTSService.shared.speakingId == message.id.uuidString ? "speaker.wave.2.fill" : "speaker.wave.2")
+                                    .font(.system(size: 18, weight: .medium))
+                                    .foregroundColor(TTSService.shared.speakingId == message.id.uuidString ? .tmCyan : .secondary)
+                                    .padding(.vertical, 6)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.bottom, 4)
+                    }
+                }
+                .frame(maxWidth: isUser ? nil : .infinity, alignment: .leading)
+                // v4.5.7：移除 onAppear 自动朗读——重开 App/切换会话时历史 assistant 消息
+                // 会触发 autoSpeak(全文) 复读(用户反馈)。只留 onChange 流式增量朗读新回复；
+                // 历史/完成消息不复读，需要时点气泡喇叭手动朗读。
+                .onChange(of: message.content) { newContent in
+                    guard message.role == "assistant", !message.isTool, TTSService.shared.speakerEnabled else { return }
+                    autoSpeak(newContent)
+                }
+            }
+        }
+    }
+
+    /// v2.9.20：思考记录（reasoning）折叠视图
+    private func thinkingView(_ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button(action: { withAnimation { toggleThinking() } }) {
+                HStack(spacing: 6) {
+                    Image(systemName: thinkingExpanded ? "chevron.down.circle" : "chevron.right.circle")
+                        .font(.system(size: 14))
+                    // v3.5.4：思考中→"思考中…"；思考完→"已深度思考 N 字"(业界一致)
+                    Text(isStreaming ? "思考中…" : "已深度思考 \(text.count) 字")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundColor(.orange)
+                    Spacer()
+                    if thinkingExpanded {
+                        Button(action: { UIPasteboard.general.string = text }) {
+                            Image(systemName: "doc.on.doc")
+                                .font(.system(size: 13))
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            if thinkingExpanded {
+                // v6.5.6：思考区固定高度 + 内部滚动（对齐 OpenMinis 固定思考区）——
+                // 旧实现文本多长就撑多高，长思考内容让会话页布局越来越卡。
+                ScrollView(.vertical, showsIndicators: true) {
+                    Text(text)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(height: min(max(CGFloat(text.count) * 0.5, 80), 220))
+                .background(Color.orange.opacity(0.08))
+                .cornerRadius(8)
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.bottom, 4)
+    }
+
+    /// v2.9.10：data URL → UIImage
+    private func messageImageStrip(_ dataURLs: [String]) -> some View {
+        let images = dataURLs.compactMap { Self.uiImage(fromDataURL: $0) }
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(Array(images.enumerated()), id: \.offset) { _, img in
+                    Image(uiImage: img)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 140, height: 140)
+                        .cornerRadius(12)
+                        .clipped()
+                }
+            }
+            .padding(.horizontal, 4)
+            .padding(.vertical, 4)
+        }
+    }
+
+    /// v2.9.10：data URL → UIImage（用于消息气泡图片显示）
+    static func uiImage(fromDataURL s: String) -> UIImage? {
+        guard let comma = s.firstIndex(of: ",") else { return nil }
+        let b64 = String(s[s.index(after: comma)...])
+        guard let data = Data(base64Encoded: b64) else { return nil }
+        return UIImage(data: data)
+    }
+
+    /// v3.5.16：卡片标题只显示工具名（去掉"命令符/命令"），像 Minis 步骤标签那样简洁。
+    /// 具体命令/参数仍在卡片下方 args 等宽行完整显示，标题不再拼命令，避免命令符状态占据标题。
+    private func toolShortLabel() -> String {
+        message.toolName ?? "工具"
+    }
+
+    private var toolBubble: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // 📝 1. 思考过程（独立橙色气泡）
+            // v3.5.31：加 thinkEnabled —— 思考关时不显示思考气泡
+            if thinkEnabled, let thinking = message.thinking, !thinking.isEmpty {
+                thinkingMiniBubble(thinking)
+            }
+
+            // 🔧✅ 2. 工具调用 + 工具结果（同一个灰色大气泡）
+            VStack(alignment: .leading, spacing: 6) {
+                        // 工具调用胶囊（工具名 + 耗时 + 执行命令，边做边说可见；结果在下方展开）
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "terminal.fill")
+                            .font(.system(size: 13))
+                            .foregroundColor(.blue)
+                        // v3.5.13：卡片标题=机械短标签(一短,像Minis)——从工具名+关键参数提炼(如
+                        // "shell.exec: ls -la" / "browser: dnf.qq.com")，简短稳定、次次一致，客观陈述跑了哪个
+                        // 工具干了什么，不代表模型说话；真正的解说由单独的 assistant 气泡(一长)承载。
+                        Text(toolShortLabel())
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundColor(.blue)
+                            .lineLimit(2)
+                            .layoutPriority(1)
+                        // v3.5.7：工具状态徽章（对齐 shadcn React AI Tool）——机制级：由真实执行结果渲染，
+                        // 不是模型说的话。v3.5.10：running 态显示"执行中…"转圈，完成=✓绿 / 出错=✗红。
+                        if message.isRunning {
+                            // v4.4.1：徽章只显示"执行中…"转圈——进度条只在工具结果迷你气泡内渲染，
+                            // 同一安装任务不再两处重复显示（此前 v4.3.75 双渲染导致"两个进度条"）。
+                            HStack(spacing: 4) {
+                                ProgressView().scaleEffect(0.7)
+                                Text("执行中…").font(.caption2.bold())
+                            }
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.blue.opacity(0.15))
+                            .foregroundColor(.blue)
+                            .cornerRadius(6)
+                        } else {
+                            Text(message.isError ? "✗ 出错" : "✓ 完成")
+                                .font(.caption2.bold())
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                // v4.4.11：完成绿→蓝(与执行中同色, 减颜色), 仅出错保留红
+                                .background(message.isError ? Color.red.opacity(0.15) : Color.blue.opacity(0.15))
+                                .foregroundColor(message.isError ? .red : .blue)
+                                .cornerRadius(6)
+                        }
+                        // v3.3.4：工具执行耗时（对齐 OpenMinis 步骤耗时样式）
+                        if let dur = message.toolDuration {
+                            Text(String(format: "%.1fs", dur))
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                    }
+                    // v3.5.13：标题已是"工具名: 关键参数"机械短标签，无需再补一行副标题工具名。
+                    // v3.5.4：工具执行的命令/参数完整显示（5=A）——不再截 60 字符/单行，
+                    // 用等宽可换行，让用户看清这步到底执行了什么命令。
+                    if let args = message.toolArgs, !args.isEmpty {
+                        Text(args)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .textSelection(.enabled)
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.blue.opacity(0.1))
+                .cornerRadius(8)
+
+                // 工具结果（可折叠）
+                toolResultMiniBubble
+            }
+            .padding(10)
+            // v3.1.66：修复"工具气泡浅色模式不显示"——tertiarySystemBackground 在浅色模式≈纯白，
+            // 与聊天背景融为一体；改用 secondarySystemBackground（与 AI 回复气泡同色，浅色=浅灰白/深色=深灰）
+            .background(Color(.secondarySystemBackground))
+            .cornerRadius(10)
+        }
+    }
+
+    // 📝 思考过程迷你气泡
+    private func thinkingMiniBubble(_ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button(action: { withAnimation { toggleThinking() } }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "brain.head.profile")
+                        .font(.system(size: 14))
+                        .foregroundColor(.orange)
+                    Text(isStreaming ? "思考中…" : "已深度思考 \(text.count) 字")
+                        .font(.subheadline)
+                        .fontWeight(.medium)
+                        .foregroundColor(.orange)
+                    Spacer()
+                }
+            }
+            .buttonStyle(.plain)
+            if thinkingExpanded {
+                Text(text)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.orange.opacity(0.08))
+                    .cornerRadius(8)
+            }
+        }
+    }
+
+    // ✅ 工具结果迷你气泡
+    private var toolResultMiniBubble: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button(action: { withAnimation { if !message.isRunning { expanded.toggle() } } }) {
+                HStack(spacing: 6) {
+                    if message.isRunning {
+                        // v4.3.75：有活动安装任务 → 迷你气泡显示实时进度（阶段+包数+最近行）
+                        if let prog = installRegistry.active, prog.ok == nil {
+                            VStack(alignment: .leading, spacing: 2) {
+                                ProgressView(value: prog.fraction)
+                                    .progressViewStyle(.linear)
+                                    .frame(width: 130)
+                                Text(prog.progressText)
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.blue)
+                                if !prog.lastLine.isEmpty {
+                                    Text(prog.lastLine)
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                        .frame(width: 160, alignment: .leading)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            HStack(spacing: 6) {
+                                ProgressView().scaleEffect(0.8)
+                                Text("工具执行中…")
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.blue)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    } else {
+                        Image(systemName: message.isError ? "exclamationmark.circle" : "checkmark.circle")
+                            .font(.system(size: 14))
+                            .foregroundColor(message.isError ? .red : .blue)
+                        Text(expanded ? "工具结果 ▴" : "工具结果 ▾")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundColor(message.isError ? .red : .blue)
+                    }
+                    Spacer()
+                }
+            }
+            .buttonStyle(.plain)
+            // v3.5.10：执行中不展示结果区（content 为空）
+            if !message.isRunning && expanded {
+                Text(message.content)
+                    .font(.system(.caption, design: .monospaced))
+                    // v3.1.74：工具结果背景日/夜都改纯黑（用户要求），文字改白色保证黑底可读
+                    .foregroundColor(.white)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.black)
+                    .cornerRadius(8)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(Color(.separator), lineWidth: 0.5)
+                    )
+
+                // v3.1.6: 工具结果里的文件 → 可点击卡片
+                let files = FilePathExtractor.extractFiles(from: message.content)
+                if !files.isEmpty {
+                    VStack(spacing: 6) {
+                        ForEach(files, id: \.self) { url in
+                            FileCardRow(url: url)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// v3.1.6: 聊天里的文件卡片 —— 点了直接 QuickLook 预览
+struct FileCardRow: View {
+    let url: URL
+    @State private var showPreview = false
+
+    private var fileName: String { url.lastPathComponent }
+    private var ext: String { (fileName as NSString).pathExtension.lowercased() }
+    private var isImage: Bool { ["png","jpg","jpeg","gif","webp","heic"].contains(ext) }
+
+    private var iconName: String {
+        if isImage { return "photo" }
+        switch ext {
+        case "ipa","tipa": return "shippingbox"
+        case "deb","zip","tar","gz": return "archivebox"
+        case "dylib","framework": return "hammer"
+        case "plist","json": return "doc.text"
+        case "pdf": return "doc.richtext"
+        case "swift","h","m","c","cpp": return "chevron.left.slash.chevron.right"
+        default: return "doc"
+        }
+    }
+
+    private var sizeText: String {
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let size = attrs[.size] as? Int64 else { return "" }
+        if size > 1024*1024 { return String(format: "%.1f MB", Double(size)/1024/1024) }
+        if size > 1024 { return String(format: "%.0f KB", Double(size)/1024) }
+        return "\(size) B"
+    }
+
+    var body: some View {
+        Button(action: { showPreview = true }) {
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.tmCyan.opacity(0.12))
+                        .frame(width: 36, height: 36)
+                    Image(systemName: iconName)
+                        .font(.system(size: 16))
+                        .foregroundColor(.tmCyan)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(fileName)
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(sizeText)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Image(systemName: "eye")
+                    .font(.caption)
+                    .foregroundColor(.tmCyan)
+            }
+            .padding(10)
+            // v3.1.66：同 toolBubble——tertiarySystemBackground 浅色模式≈白色看不见，改 systemGray5
+            .background(Color(.systemGray5))
+            .cornerRadius(10)
+        }
+        .buttonStyle(PlainButtonStyle())
+        .contextMenu {
+            SharePresenter.menuShare(url: url)
+            // v4.3.46：用 TrollStore 安装 → 打开方式（UIDocumentInteractionController）。
+            // TrollStore 注册了 .tipa/.ipa 的打开方式，不经过 ShareSheet（系统分享面板
+            // 在本设备侧载环境 MobileIcons/CoreImage SIGSEGV，任何路径都崩）。
+            // v4.3.51：URL scheme 直调 TrollStore 安装（不渲染 App 图标列表，安全）
+            if ext == "tipa" || ext == "ipa" {
+                Button(action: { ShareCenter.shared.openInTrollStore(url) }) {
+                    Label("用 TrollStore 安装", systemImage: "shippingbox")
+                }
+            }
+        }
+        .sheet(isPresented: $showPreview) {
+            QLFilePreview(urls: [url])
+        }
+    }
+}
+
+struct TypingIndicator: View {
+    @State private var offset: CGFloat = 0
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<3) { i in
+                Circle()
+                    .frame(width: 6, height: 6)
+                    .foregroundColor(.secondary)
+                    .offset(y: offset)
+                    .animation(Animation.easeInOut(duration: 0.4).repeatForever().delay(Double(i) * 0.15), value: offset)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 12)
+        .background(Color(.secondarySystemBackground))
+        .cornerRadius(18)
+        .onAppear { offset = -4 }
+    }
+}
+
+// MARK: - v2.9.127 执行轨迹组件（豆包工作任务/Codex 式过程流）
+
+/// 实时轨迹卡片：请求进行中，在"正在思考"下方竖排显示步骤流
+struct LiveTrailCard: View {
+    let steps: [TrailStep]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(steps) { step in
+                TrailRow(step: step)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // v3.1.66：同 toolBubble——tertiarySystemBackground 浅色模式≈白色看不见，改 systemGray5
+        .background(Color(.systemGray5).opacity(0.85))
+        .cornerRadius(12)
+    }
+}
+
+/// 历史轨迹卡片：assistant 消息气泡内，可折叠展开执行全过程
+struct TrailCard: View {
+    let steps: [TrailStep]
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button(action: { withAnimation { expanded.toggle() } }) {
+                HStack(spacing: 6) {
+                    Image(systemName: expanded ? "chevron.down.circle" : "chevron.right.circle")
+                        .font(.system(size: 13))
+                    Text(L10n.t("ui_158", steps.count))
+                        .font(.caption.weight(.medium))
+                        .foregroundColor(.blue)
+                    Spacer()
+                    Text(summaryText)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .buttonStyle(.plain)
+            if expanded {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(steps) { step in
+                        TrailRow(step: step)
+                    }
+                }
+                .padding(.top, 2)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.blue.opacity(0.06))
+        .cornerRadius(12)
+    }
+
+    private var summaryText: String {
+        let ok = steps.filter { $0.status == .success }.count
+        let fail = steps.filter { $0.status == .failed }.count
+        if fail > 0 { return "✅\(ok) ❌\(fail)" }
+        return "✅ \(ok) 步成功"
+    }
+}
+
+/// 单步行：图标 + 名称 + 状态色 + 可展开 detail
+struct TrailRow: View {
+    let step: TrailStep
+    @State private var detailExpanded = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: iconFor)
+                .font(.system(size: 12))
+                .foregroundColor(colorFor)
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(step.name)
+                    .font(.caption)
+                    .fontWeight(step.status == .running ? .medium : .regular)
+                    .foregroundColor(step.status == .running ? .primary : (step.status == .failed ? .red : .primary))
+                    .lineLimit(1)
+                if step.status == .running {
+                    Text(L10n.t("ui_64"))
+                        .font(.caption2)
+                        .foregroundColor(.blue)
+                } else if !step.detail.isEmpty {
+                    if detailExpanded {
+                        Text(step.detail)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .lineLimit(6)
+                            .onTapGesture { detailExpanded = false }
+                    } else {
+                        Text(step.detail)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .onTapGesture { detailExpanded = true }
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var iconFor: String {
+        switch step.kind {
+        case .think: return "brain"
+        case .tool: return "wrench.and.screwdriver"
+        case .result: return step.status == .failed ? "xmark.circle.fill" : "checkmark.circle.fill"
+        case .note: return "flag"
+        }
+    }
+
+    private var colorFor: Color {
+        switch step.status {
+        case .running: return .blue
+        case .success: return .blue
+        case .failed: return .red
+        }
+    }
+}
+
+// MARK: - v2.9.234 输入框：UITextView 包装(检测 markedText，修复"没打完自动回车")
+// SwiftUI TextField 读不到输入法 markedText(拼音未上屏)，iOS16+第三方输入法组合下
+// 按回车会直接 submit → 发出去一串拼音。UITextView delegate 可读 markedTextRange：
+// 组词中按回车=上屏候选词(return true)，无组词按回车=发送(return false)。
+
+struct ChatInputTextView: UIViewRepresentable {
+    @Binding var text: String
+    var onSend: () -> Void
+    @Binding var height: CGFloat
+
+    func makeUIView(context: Context) -> RSKGrowingTextView {
+        let tv = RSKGrowingTextView()
+        tv.backgroundColor = .clear
+        tv.font = .systemFont(ofSize: 16)
+        tv.textColor = UIColor.label
+        tv.placeholder = "输入消息..."
+        tv.placeholderColor = .gray
+        tv.minimumNumberOfLines = 1
+        tv.maximumNumberOfLines = 4
+        tv.delegate = context.coordinator
+        return tv
+    }
+
+    func updateUIView(_ uiView: RSKGrowingTextView, context: Context) {
+        uiView.text = text
+        height = uiView.intrinsicContentSize.height
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, RSKGrowingTextViewDelegate {
+        var parent: ChatInputTextView
+        init(_ p: ChatInputTextView) { parent = p }
+        func textViewDidChange(_ textView: UITextView) {
+            parent.text = textView.text
+            parent.height = textView.intrinsicContentSize.height
+        }
+    }
+}
+
+// MARK: - v3.1.67：UIKit 文档选择器 delegate（真机稳定，替代 .fileImporter）
+
+final class DocumentPickerCoordinator: NSObject, UIDocumentPickerDelegate {
+    static var assocKey = "DocumentPickerCoordinatorKey"
+    let onPick: ([URL]) -> Void
+
+    init(onPick: @escaping ([URL]) -> Void) {
+        self.onPick = onPick
+    }
+
+    func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+        onPick(urls)
+    }
+
+    func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+        // 用户取消，无操作
+    }
+}

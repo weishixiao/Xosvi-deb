@@ -1,0 +1,1667 @@
+import Foundation
+// v6.9.5：app.entitlements 走静态 Mach-O 解析，不 spawn ldid。
+// extractEntitlements 直接消费 MachOKit 的 MachOFile / CodeSign 结构，必须显式导入
+// （与 MachoTools.swift 用同一 @_spi 访问级别）。
+@_spi(Support) import MachOKit
+
+import UIKit
+import Security
+import AdSupport
+
+
+
+// v2.9.72：符号浏览器 + 插件系统 + 兼容矩阵 + 崩溃复现 hook 模板生成
+
+
+
+// MARK: - 二进制符号浏览器
+
+
+
+final class BinarySymbolsTool: MCPTool {
+
+    let definition = ToolDefinition(
+
+        name: "binary.symbols",
+
+        summary: "Extract symbols from a binary file (ObjC classes/methods, strings, imports). Use for: reverse engineer an app, analyze binary structure, find interesting classes/methods to hook. Don't use for: inject dylib (use injection.enable), check app deps (use app.deps). Example: user says 'what classes does 小红书 have' → extract ObjC symbols.",
+
+        parameters: [
+
+            "path": "Path to binary file (get main binary path via ipa.inspect)",
+
+            "type": "What to extract: objc (classes/methods) / strings / imports / all (default)",
+
+            "search": "Search keyword filter (optional)",
+
+            "limit": "Max results (default 100)"
+
+        ],
+
+    verified: true, category: "analysis")
+
+
+
+    func invoke(_ params: [String: Any]) throws -> [String: Any] {
+
+        guard let path = params["path"] as? String, !path.isEmpty else {
+
+            throw MCPError.invalidParams("path required")
+
+        }
+
+        let type = (params["type"] as? String) ?? "all"
+
+        let search = (params["search"] as? String) ?? ""
+
+        let limit = (params["limit"] as? Int) ?? 100
+        let direction = (params["direction"] as? String) ?? ""
+
+
+
+        guard FileManager.default.fileExists(atPath: path) else {
+
+            return ["error": "file not found: \(path)"]
+
+        }
+
+        // v4.3.9: 定向分析模式——按方向(内购/VIP/广告)提取精简骨架, 大文件不全量喂 AI, AI 全读再分析原理
+        if !direction.isEmpty {
+            return directionalAnalyze(path: path, direction: direction)
+        }
+
+
+
+        var result: [String: Any] = ["path": path, "type": type]
+
+
+
+        // 用 nm 提取符号 (如果有 nm）
+
+        let nmPath = Bundle.main.path(forResource: "nm", ofType: nil, inDirectory: "bin") ?? "/usr/bin/nm"
+
+        if FileManager.default.fileExists(atPath: nmPath) {
+
+            let nmResult = InjectionManager.shared.spawnRootDetailed(nmPath, args: ["-g", "-U", path], timeout: 60)
+
+            var symbols: [String] = []
+
+            for line in nmResult.stdout.components(separatedBy: .newlines) {
+
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+                if !trimmed.isEmpty && (search.isEmpty || trimmed.localizedCaseInsensitiveContains(search)) {
+
+                    symbols.append(trimmed)
+
+                }
+
+            }
+
+            result["symbols"] = Array(symbols.prefix(limit))
+
+            result["total"] = symbols.count
+
+        }
+
+
+
+        // 用 strings 提取字符串
+
+        if type == "strings" || type == "all" {
+
+            let stringsPath = Bundle.main.path(forResource: "strings", ofType: nil, inDirectory: "bin") ?? "/usr/bin/strings"
+
+            if FileManager.default.fileExists(atPath: stringsPath) {
+
+                let strResult = InjectionManager.shared.spawnRootDetailed(stringsPath, args: [path], timeout: 60)
+
+                var strings: [String] = []
+
+                for line in strResult.stdout.components(separatedBy: .newlines) {
+
+                    let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+                    if trimmed.count >= 4 && (search.isEmpty || trimmed.localizedCaseInsensitiveContains(search)) {
+
+                        strings.append(trimmed)
+
+                    }
+
+                }
+
+                result["strings"] = Array(strings.prefix(limit))
+
+                result["strings_total"] = strings.count
+
+            } else {
+
+                // v4.3.3: bin/strings 未打包时, 用 Swift 原生分块扫描(不依赖外部工具)。
+                // 原生 iOS 读大文件(如 22MB 砸壳二进制)内存充足, 不触发 Alpine OOM。
+                let native = extractStringsNative(path: path, search: search)
+
+                result["strings"] = Array(native.prefix(limit))
+
+                result["strings_total"] = native.count
+
+                result["strings_native"] = true
+
+            }
+
+        }
+
+
+
+        // Objective-C class name (从字符串中提取）
+
+        if type == "objc" || type == "all" {
+
+            if let strings = result["strings"] as? [String] {
+
+                let classes = strings.filter { $0.hasPrefix("_OBJC_CLASS_$_") || $0.hasPrefix("OBJC_CLASS_$_") }
+
+                    .map { $0.replacingOccurrences(of: "_OBJC_CLASS_$_", with: "").replacingOccurrences(of: "OBJC_CLASS_$_", with: "") }
+
+                let selectors = strings.filter { $0.contains(":") && $0.count < 60 && !$0.contains(" ") }
+
+                result["objc_classes"] = Array(classes.prefix(limit))
+
+                result["objc_selectors_sample"] = Array(selectors.prefix(50))
+
+            }
+
+        }
+
+
+
+        if result["symbols"] == nil && result["strings"] == nil {
+
+            result["hint"] = "nm/strings not bundled; use otool -ov to view ObjC sections, or ldid -e to view signature"
+
+        }
+
+
+
+        return result
+
+    }
+
+
+
+    /// v4.3.3: 原生 strings 扫描（bin/strings 未打包时的 fallback）。
+    /// 用 FileManager/Data 分块读取并扫描可读 ASCII 串, 不依赖外部二进制, 大文件(22MB)原生读不 OOM。
+    private func extractStringsNative(path: String, search: String) -> [String] {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return [] }
+        defer { try? handle.close() }
+        let chunkSize = 4 * 1024 * 1024
+        var strings: [String] = []
+        var tail = Data()
+        var total = 0
+        while true {
+            let chunk = (try? handle.read(upToCount: chunkSize)) ?? nil
+            guard let chunk, !chunk.isEmpty else { break }
+            total += chunk.count
+            if total > 256 * 1024 * 1024 { break } // 防御: 超 256MB 截断, 防耗时
+            var buf = tail; buf.append(chunk)
+            // 拆可读 ASCII 串
+            var cur = Data()
+            for byte in buf {
+                if byte >= 0x20 && byte <= 0x7e {
+                    cur.append(byte)
+                } else {
+                    if cur.count >= 4, let s = String(data: cur, encoding: .utf8),
+                       (search.isEmpty || keywordsMatch(s, search)) {
+                        strings.append(s)
+                    }
+                    cur = Data()
+                }
+            }
+            // 保留末尾未闭合串到下一块(避免跨块切断)
+            tail = cur
+        }
+        if tail.count >= 4, let s = String(data: tail, encoding: .utf8),
+           (search.isEmpty || keywordsMatch(s, search)) {
+            strings.append(s)
+        }
+        return strings
+    }
+
+    // v4.3.9: 多关键词匹配——search 支持 "|" 分隔(如 "StoreKit|SKPayment|VIP"), 命中任一即算。
+    private func keywordsMatch(_ s: String, _ pattern: String) -> Bool {
+        if pattern.isEmpty { return true }
+        return pattern.split(separator: "|").contains { s.localizedCaseInsensitiveContains($0) }
+    }
+
+    // v4.3.9: 定向分析模式——按方向(内购/VIP/广告)提取精简骨架, 大文件不全量喂 AI。
+    // 方法: 1) nm 符号表筛相关类/方法(符号表小, 不随文件大小长) 2) 分块扫 strings 按方向关键词筛命中
+    //      3) 输出骨架(相关类+方法+关键字符串), AI 可全量读取再分析原理。
+    func directionalAnalyze(path: String, direction: String) -> [String: Any] {
+        let kws = directionalKeywords(direction)
+        var related: [String] = []
+        // 1) nm 符号表筛相关类/方法
+        let nmPath = Bundle.main.path(forResource: "nm", ofType: nil, inDirectory: "bin") ?? "/usr/bin/nm"
+        if FileManager.default.fileExists(atPath: nmPath) {
+            let nmResult = InjectionManager.shared.spawnRootDetailed(nmPath, args: ["-g", "-U", path], timeout: 120)
+            for line in nmResult.stdout.components(separatedBy: .newlines) {
+                let t = line.trimmingCharacters(in: .whitespaces)
+                if !t.isEmpty, kws.contains(where: { t.localizedCaseInsensitiveContains($0) }) {
+                    related.append(t)
+                }
+            }
+        }
+        // 2) 分块扫 strings 按方向关键词筛命中(定向, 不全量返回)
+        let hits = extractStringsNative(path: path, search: kws.joined(separator: "|"))
+        // 3) 骨架输出(精简, AI 全读)
+        return [
+            "status": "analyzed_direction",
+            "direction": direction,
+            "keywords": kws,
+            "related_symbols": Array(related.prefix(200)),
+            "related_symbols_total": related.count,
+            "key_strings": Array(hits.prefix(150)),
+            "key_strings_total": hits.count,
+            "note": "定向骨架已精简(相关类/方法+关键字符串), AI 可全量读取并推导内购/校验原理"
+        ]
+    }
+
+    // v4.3.9: 方向 → 关键词组
+    private func directionalKeywords(_ d: String) -> [String] {
+        let lc = d.lowercased()
+        if lc.contains("内购") || lc.contains("iap") || lc.contains("purchase") || lc.contains("vip") || lc.contains("pay") {
+            return ["StoreKit", "SKProduct", "SKPayment", "Transaction", "AppTransaction", "StoreKitManager",
+                    "Payment", "Purchase", "Receipt", "Entitlement", "VIP", "RealPaidVIP", "lifetimeProduct",
+                    "productID", "price", "iap", "subscription", "IAP"]
+        }
+        if lc.contains("广告") || lc.contains("ad") || lc.contains("banner") {
+            return ["Advert", "Banner", "Reward", "Interstitial", "AdSDK", "AdManager", "SDKAd", "ADManager"]
+        }
+        return [d]
+    }
+
+}
+
+
+
+// MARK: - 插件系统 (简化版）
+
+
+
+final class PluginManager {
+
+    static let shared = PluginManager()
+
+    private(set) var plugins: [PluginInfo] = []
+
+
+
+    struct PluginInfo: Identifiable {
+
+        let id = UUID()
+
+        let name: String
+
+        let path: String
+
+        let type: PluginType
+
+        let version: String
+
+        var enabled: Bool
+
+
+
+        enum PluginType: String {
+
+            case dylib = "dylib"
+
+            case tool = "tool"
+
+            case skill = "skill"
+
+        }
+
+    }
+
+
+
+    func scan() {
+
+        let pluginDir = NSHomeDirectory().appending("/Documents/Workspace/plugins")
+
+        try? FileManager.default.createDirectory(atPath: pluginDir, withIntermediateDirectories: true)
+
+
+
+        plugins = []
+
+        // 扫描内置 tweaks
+
+        if let builtinDir = Bundle.main.path(forResource: "tweaks", ofType: nil) {
+
+            if let files = try? FileManager.default.contentsOfDirectory(atPath: builtinDir) {
+
+                for file in files where file.hasSuffix(".dylib") {
+
+                    plugins.append(PluginInfo(
+
+                        name: file.replacingOccurrences(of: ".dylib", with: ""),
+
+                        path: builtinDir.appending("/\(file)"),
+
+                        type: .dylib,
+
+                        version: "builtin",
+
+                        enabled: true
+
+                    ))
+
+                }
+
+            }
+
+        }
+
+        // 扫描用户插件目录
+
+        if let files = try? FileManager.default.contentsOfDirectory(atPath: pluginDir) {
+
+            for file in files {
+
+                let fullPath = pluginDir.appending("/\(file)")
+
+                if file.hasSuffix(".dylib") {
+
+                    plugins.append(PluginInfo(name: file, path: fullPath, type: .dylib, version: "user", enabled: true))
+
+                }
+
+            }
+
+        }
+
+    }
+
+
+
+    func list() -> [[String: Any]] {
+
+        scan()
+
+        return plugins.map { [
+
+            "name": $0.name,
+
+            "path": $0.path,
+
+            "type": $0.type.rawValue,
+
+            "version": $0.version,
+
+            "enabled": $0.enabled
+
+        ] }
+
+    }
+
+}
+
+
+
+final class PluginTool: MCPTool {
+
+    let definition = ToolDefinition(
+
+        name: "plugin.list",
+
+        summary: "List installed dylib plugins (built-in + user). Use for: see what plugins are available, check plugin status. Don't use for: inject plugin into app (use injection.enable), list injected apps (use injection.status). Example: user says 'what plugins are available' → list plugins.",
+
+        parameters: [
+
+            "action": "list (show all) / enable / disable",
+
+            "name": "Plugin name (required for enable/disable action)"
+
+        ],
+
+    verified: true, category: "analysis")
+
+
+
+    func invoke(_ params: [String: Any]) throws -> [String: Any] {
+
+        let action = (params["action"] as? String) ?? "list"
+
+        if action == "list" {
+
+            return ["plugins": PluginManager.shared.list(), "count": PluginManager.shared.plugins.count]
+
+        }
+
+        return ["error": "unsupported action: \(action)"]
+
+    }
+
+}
+
+
+
+// MARK: - 崩溃复现 hook 模板生成
+
+
+
+final class CrashReproTool: MCPTool {
+
+    let definition = ToolDefinition(
+
+        name: "crash.repro_template",
+
+        summary: "Generate a Logos hook template from a crash report. Use for: debug why app crashes, create hook to reproduce/fix crash. Don't use for: collect crash logs (use log.collect), analyze crash (use diagnose.crash). Example: user says '小红书 keeps crashing, generate a hook for me' → generate repro template.",
+
+        parameters: [
+
+            "crash_log": "Crash log text (get from diagnose.crash first)",
+
+            "bundle_id": "Target App bundle ID (for context)"
+
+        ],
+
+    verified: true, category: "diagnose")
+
+
+
+    func invoke(_ params: [String: Any]) throws -> [String: Any] {
+
+        guard let crashLog = params["crash_log"] as? String, !crashLog.isEmpty else {
+
+            throw MCPError.invalidParams("crash_log required")
+
+        }
+
+        let bundleId = params["bundle_id"] as? String ?? "com.example.app"
+
+
+
+        // 从崩溃日志中提取关键信息
+
+        var exceptionType = ""
+
+        var crashedThread = "0"
+
+
+
+        for line in crashLog.components(separatedBy: .newlines) {
+
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+            if trimmed.hasPrefix("Exception Type:") {
+
+                exceptionType = trimmed.replacingOccurrences(of: "Exception Type: ", with: "")
+
+            } else if trimmed.hasPrefix("Triggered by Thread:") {
+
+                crashedThread = trimmed.replacingOccurrences(of: "Triggered by Thread: ", with: "")
+
+            } else if trimmed.contains("Thread \(crashedThread) Crashed:") {
+
+                // 下一帧是崩溃位置
+
+            }
+
+        }
+
+
+
+        // 提取崩溃线程第一帧
+
+        let lines = crashLog.components(separatedBy: .newlines)
+
+        var inCrashedThread = false
+
+        var firstFrame = ""
+
+        for line in lines {
+
+            if line.contains("Thread \(crashedThread) Crashed:") {
+
+                inCrashedThread = true
+
+                continue
+
+            }
+
+            if inCrashedThread && !line.isEmpty {
+
+                firstFrame = line.trimmingCharacters(in: .whitespaces)
+
+                break
+
+            }
+
+        }
+
+
+
+        // 生成 hook 模板
+
+        let template = """
+
+        // 自动生成的崩溃复现 hook 模板
+
+        // 崩溃类型: \(exceptionType)
+
+        // 崩溃线程: \(crashedThread)
+
+        // 崩溃帧: \(firstFrame)
+
+        // 目标: \(bundleId)
+
+
+
+        #import <Foundation/Foundation.h>
+
+        #import <UIKit/UIKit.h>
+
+
+
+        static NSString *kCrashLog = @"/var/mobile/Documents/Workspace/crash_repro_\(bundleId).log";
+
+
+
+        static void logRepro(NSString *msg) {
+
+            NSString *ts = [NSDateFormatter localizedStringFromDate:[NSDate date] dateStyle:NSDateFormatterNoStyle timeStyle:NSDateFormatterMediumStyle];
+
+            NSString *line = [NSString stringWithFormat:@"[%@] %@\\n", ts, msg];
+
+            NSFileHandle *fh = [NSFileHandle fileHandleForWritingAtPath:kCrashLog];
+
+            if (!fh) { [[NSData data] writeToFile:kCrashLog atomically:YES]; fh = [NSFileHandle fileHandleForWritingAtPath:kCrashLog]; }
+
+            [fh seekToEndOfFile];
+
+            [fh writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+
+            [fh closeFile];
+
+        }
+
+
+
+        // TODO: 根据崩溃帧替换下面的 hook 目标
+
+        // 用 binary.symbols 搜索崩溃帧中的class name和方法名
+
+        %hook UIApplication
+
+
+
+        - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+
+            logRepro(@"[REPRO] application didFinishLaunching");
+
+            logRepro([NSString stringWithFormat:@"[REPRO] launchOptions: %@", launchOptions]);
+
+            return %orig;
+
+        }
+
+
+
+        %end
+
+
+
+        // 崩溃帧 hook (需根据实际崩溃位置修改）
+
+        // %hook <CrashedClass>
+
+        // - (<ReturnType>)<crashedMethod>:(id)arg {
+
+        //     logRepro([NSString stringWithFormat:@"[REPRO] %@ called with: %@", NSStringFromSelector(_cmd), arg]);
+
+        //     @try {
+
+        //         return %orig(arg);
+
+        //     } @catch (NSException *e) {
+
+        //         logRepro([NSString stringWithFormat:@"[REPRO] CAUGHT: %@", e]);
+
+        //         logRepro([NSString stringWithFormat:@"[REPRO] callStack: %@", [e callStackSymbols]]);
+
+        //         @throw e;
+
+        //     }
+
+        // }
+
+        // %end
+
+
+
+        __attribute__((constructor))
+
+        static void init() {
+
+            logRepro(@"[REPRO] CrashRepro dylib loaded");
+
+        }
+
+        """
+
+
+
+        // 输出到工作区
+
+        let outputPath = NSHomeDirectory().appending("/Documents/Workspace/crash_repro_\(bundleId).x")
+
+        try? template.write(toFile: outputPath, atomically: true, encoding: .utf8)
+
+
+
+        return [
+
+            "exception_type": exceptionType,
+
+            "crashed_thread": crashedThread,
+
+            "crashed_frame": firstFrame,
+
+            "template_path": outputPath,
+
+            "template": template,
+
+            "next_steps": [
+
+                "1. use binary.symbols to find the class name and method name in the crash frame",
+
+                "2. replace the TODO parts in the template to hook the crashing method",
+
+                "3. compile the dylib online",
+
+                "4. inject into the target App and reproduce the crash",
+
+                "5. read crash_repro_*.log to inspect the call arguments"
+
+            ]
+
+        ]
+
+    }
+
+}
+
+// MARK: - v2.9.90 高级工具组 (借鉴 Fuck 巨魔工具箱：opainject 内存injected / ProbeEngine 类探测 / FuckEngine 配置化 Hook / 绿盾式设备伪装）
+
+// MARK: - 进程/启动辅助
+
+enum ProcessHelper {
+    // MARK: - libproc 进程枚举 (v3.0.42：根治 pidOf——不依赖 /bin/ps 输出解析）
+    // iOS 系统库 /usr/lib/libproc.dylib：proc_listpids 枚举全部 pid，proc_pidpath 拿可执行路径。
+    // 比 ps 解析稳 (Darwin ps 的 comm= 列有 15 字符截断/格式差异问题），且无需额外权限。
+    private enum LibProc {
+        typealias ListPidsFn = @convention(c) (UInt32, UInt32, UnsafeMutableRawPointer?, Int32) -> Int32
+        typealias PidPathFn = @convention(c) (Int32, UnsafeMutableRawPointer?, UInt32) -> Int32
+        static let handle: UnsafeMutableRawPointer? = dlopen("/usr/lib/libproc.dylib", RTLD_LAZY)
+        static let listPids: ListPidsFn? = {
+            guard let h = handle, let s = dlsym(h, "proc_listpids") else { return nil }
+            return unsafeBitCast(s, to: ListPidsFn.self)
+        }()
+        static let pidPath: PidPathFn? = {
+            guard let h = handle, let s = dlsym(h, "proc_pidpath") else { return nil }
+            return unsafeBitCast(s, to: PidPathFn.self)
+        }()
+    }
+
+    /// 按可执行名查 pid：优先 libproc (枚举所有 pid + 完整可执行路径），failed回退 ps 解析。
+    static func pidOf(executableName: String) -> Int? {
+        // 方案 A：libproc (平台原生）
+        if let pid = pidOfViaLibProc(executableName: executableName) {
+            return pid
+        }
+        // 方案 B：ps -A 解析 (兜底）
+        let (_, out) = InjectionManager.shared.spawn("/bin/ps", args: ["ps", "-A", "-o", "pid=,comm="])
+        for line in out.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let spaceIdx = trimmed.firstIndex(of: " ") else { continue }
+            let pidStr = String(trimmed[..<spaceIdx]).trimmingCharacters(in: .whitespaces)
+            let comm = String(trimmed[trimmed.index(after: spaceIdx)...]).trimmingCharacters(in: .whitespaces)
+            // 精确匹配
+            if comm == executableName, let pid = Int(pidStr) {
+                return pid
+            }
+            // 包含匹配 (comm 可能是完整路径）
+            if comm.contains(executableName), let pid = Int(pidStr) {
+                // 确保是完整文件名匹配，不是子串
+                let lastPath = (comm as NSString).lastPathComponent
+                if lastPath == executableName {
+                    return pid
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func pidOfViaLibProc(executableName: String) -> Int? {
+        guard let listPids = LibProc.listPids, let pidPath = LibProc.pidPath else { return nil }
+        let capacity = 4096
+        var pids = [Int32](repeating: 0, count: capacity)
+        let bytes = listPids(1 /* PROC_ALL_PIDS */, 0, &pids, Int32(capacity * MemoryLayout<Int32>.size))
+        guard bytes > 0 else { return nil }
+        let count = Int(bytes) / MemoryLayout<Int32>.size
+        for i in 0..<min(count, capacity) {
+            if pids[i] <= 0 { continue }
+            var buf = [CChar](repeating: 0, count: 4096)
+            let len = pidPath(pids[i], &buf, UInt32(buf.count))
+            if len > 0 {
+                let path = String(cString: buf)
+                if (path as NSString).lastPathComponent == executableName {
+                    return Int(pids[i])
+                }
+            }
+        }
+        return nil
+    }
+
+    /// 启动 App：优先 SBSLaunchApplicationWithIdentifier (需 frontboard/springboard entitlements），
+    /// failed 回退 LSApplicationWorkspace（主 App 有 backboardd.launchapplications），再回退 openURL，
+    /// 再 failed 返回提示。v6.1.5-14f：加 LSWorkspace 兜底 + 代开日志（/var/mobile/Documents/hud.log）
+    @discardableResult
+    static func launchApp(bundleId: String) -> (Bool, String) {
+        // v6.1.5-14f：代开日志——HUD 点菜单→主 App 代开的目标/结果，供真机诊断
+        let logLine = "\(Date()): main-open bid=\(bundleId)\n"
+        let logURL = URL(fileURLWithPath: "/var/mobile/Documents/hud.log")
+        if let h = try? FileHandle(forWritingTo: logURL) { h.seekToEndOfFile(); h.write(logLine.data(using: .utf8)!); try? h.close() }
+        else { try? logLine.data(using: .utf8)?.write(to: logURL, options: .atomic) }
+
+        if let handle = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_LAZY) {
+            typealias SBSLaunchFn = @convention(c) (CFString, Bool) -> Int32
+            if let sym = dlsym(handle, "SBSLaunchApplicationWithIdentifier") {
+                let fn = unsafeBitCast(sym, to: SBSLaunchFn.self)
+                let ret = fn(bundleId as CFString, false)
+                if ret == 0 {
+                    return (true, "SBSLaunchApplicationWithIdentifier launch OK")
+                }
+            }
+            dlclose(handle)
+        }
+        // v6.1.5-14f：LSApplicationWorkspace 兜底（主 App 有 backboardd.launchapplications）
+        if let wsCls = NSClassFromString("LSApplicationWorkspace") as? NSObject.Type,
+           let wsUnmanaged = wsCls.perform(NSSelectorFromString("defaultWorkspace")) {
+            let ws = wsUnmanaged.takeUnretainedValue()
+            if ws.responds(to: NSSelectorFromString("openApplicationWithBundleID:")) {
+                let ret = ws.perform(NSSelectorFromString("openApplicationWithBundleID:"), with: bundleId)
+                if let num = ret?.takeUnretainedValue() as? NSNumber, num.boolValue {
+                    return (true, "LSApplicationWorkspace open OK")
+                }
+            }
+        }
+        // v6.1.5-14i：SBSLaunchApplicationWithIdentifierAndLaunchOptions 第二路（新版 SBS API，
+        // TheBall 二进制实测用这个打开 app，主 App 有 backboardd/frontboard launchapplications 权限）
+        if let handle2 = dlopen("/System/Library/PrivateFrameworks/SpringBoardServices.framework/SpringBoardServices", RTLD_LAZY) {
+            typealias SBSLaunch2Fn = @convention(c) (CFString, CFDictionary?, CFDictionary?, Bool) -> Int32
+            if let sym2 = dlsym(handle2, "SBSLaunchApplicationWithIdentifierAndLaunchOptions") {
+                let fn2 = unsafeBitCast(sym2, to: SBSLaunch2Fn.self)
+                let ret2 = fn2(bundleId as CFString, nil, nil, false)
+                if ret2 == 0 {
+                    return (true, "SBSLaunchApplicationWithIdentifierAndLaunchOptions launch OK")
+                }
+            }
+            dlclose(handle2)
+        }
+        if let url = URL(string: "xosvi://") {
+            if UIThreadBridge.openURL(url, timeout: 3) { return (true, "openURL launch OK") }
+        }
+        return (false, "cannot auto-launch (SBS unavailable and App has no URL scheme), open the target App manually on the home screen")
+    }
+
+    /// 找 App 主可执行名 (CFBundleExecutable）
+    static func executableName(for app: AppCatalog.AppEntry) -> String {
+        guard let dict = NSDictionary(contentsOfFile: app.path + "/Info.plist"),
+              let exe = dict["CFBundleExecutable"] as? String, !exe.isEmpty else {
+            return app.bundleId.components(separatedBy: ".").last ?? app.bundleId
+        }
+        return exe
+    }
+
+    /// tweaks 目录内 dylib 路径
+    static func tweakPath(_ name: String) -> String? {
+        let p = Bundle.main.bundleURL.appendingPathComponent("tweaks").appendingPathComponent(name).path
+        return FileManager.default.fileExists(atPath: p) ? p : nil
+    }
+
+    /// 写 JSON 配置文件到工作区
+    static func writeWorkspaceConfig(_ fileName: String, dict: [String: Any]) -> Bool {
+        let dir = "/var/mobile/Documents/Workspace"
+        if !FileManager.default.fileExists(atPath: dir) {
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        }
+        let path = dir + "/" + fileName
+        guard let data = try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys]) else { return false }
+        do {
+            try data.write(to: URL(fileURLWithPath: path))
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    static func removeWorkspaceConfig(_ fileName: String) -> Bool {
+        let path = "/var/mobile/Documents/Workspace/" + fileName
+        guard FileManager.default.fileExists(atPath: path) else { return true }
+        do {
+            try FileManager.default.removeItem(atPath: path)
+            return true
+        } catch {
+            return false
+        }
+    }
+}
+
+// MARK: - injection.mem：内存injected (opainject）
+
+final class InjectionMemTool: MCPTool {
+    let definition = ToolDefinition(
+        name: "injection.mem",
+        summary: "Memory injection: inject dylib into a running app WITHOUT modifying its files. Use for: temporary testing, probing app internals. Don't use for: permanent injection (use injection.enable, survives restart). Note: dies when app restarts. Example: user says 'temporarily inject 小红书 for testing' → memory inject.",
+        parameters: [
+            "bundle_id": "Target App bundle ID (required)",
+            "dylib_path": "Dylib path (optional, default: ProbeAgent)",
+            "auto_launch": "Auto-launch app if not running (default: true)"
+        ],
+        returns: [
+            "status": "injected_alive_http / injected_alive_nohttp / injected_crashed / failed",
+            "pid": "Target App process id",
+            "app_alive": "true if App still running after injection",
+            "http_ready": "true if localhost:4791 HTTP server is up",
+            "note": "Human-readable result explanation"
+        ],
+        verified: true
+    )
+
+    func invoke(_ params: [String: Any]) throws -> [String: Any] {
+        guard let bundleId = params["bundle_id"] as? String, !bundleId.isEmpty else {
+            throw MCPError.invalidParams("bundle_id required")
+        }
+        guard let app = AppCatalog.find(bundleId) else {
+            return ["error": "app not found: \(bundleId)", "hint": "use injection.list to search"]
+        }
+
+        // v3.0.89：iOS 17+ 不支持内存injected (opainject 依赖 ct_bypass，已失效）
+        let majorVer = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        if majorVer >= 17 {
+            return [
+                "error": "iOS 17+ does not support memory injection (opainject/ct_bypass deprecated)",
+                "hint": "use injection.static (static injection: insert_dylib + trollstorehelper reinstall)",
+                "ios_version": majorVer
+            ]
+        }
+
+        let exeName = ProcessHelper.executableName(for: app)
+        var dylibPath = params["dylib_path"] as? String ?? ""
+        if dylibPath.isEmpty {
+            dylibPath = ProcessHelper.tweakPath("ProbeAgent.dylib") ?? ""
+        }
+        guard !dylibPath.isEmpty, FileManager.default.fileExists(atPath: dylibPath) else {
+            return ["error": "dylib does not exist: \(dylibPath)", "hint": "pass dylib_path or ensure built-in tweaks/ProbeAgent.dylib exists"]
+        }
+
+        var pid = ProcessHelper.pidOf(executableName: exeName)
+        if pid == nil {
+            let autoLaunch = (params["auto_launch"] as? Bool) ?? true
+            if autoLaunch {
+                _ = ProcessHelper.launchApp(bundleId: bundleId)
+                for _ in 0..<10 {
+                    usleep(500_000)
+                    pid = ProcessHelper.pidOf(executableName: exeName)
+                    if pid != nil { break }
+                }
+            }
+        }
+        guard let targetPid = pid else {
+            return ["error": "target App not running, cannot memory-inject", "hint": "open target App first, or pass auto_launch=true"]
+        }
+
+        AuditLog.shared.log("injection.mem", detail: "\(bundleId) pid=\(targetPid)")
+        let (exit, output) = InjectionManager.shared.injectDylib(pid: targetPid, dylib: dylibPath)
+        let success = output.contains("dlopen succeeded") || (exit == 0 && output.contains("handle"))
+        // v3.0.59：注入后确认进程存活 (一键闭环：启动→注入→存活确认）
+        let alive = ProcessHelper.pidOf(executableName: exeName) != nil
+        // v3.0.65：注入后 HTTP ready检查 (ProbeAgent/ControlAgent localhost:4791）
+        var httpReady = false
+        if success && alive {
+            for _ in 0..<10 {
+                usleep(500_000)  // 0.5s × 10 = 5s
+                if let url = URL(string: "http://127.0.0.1:4791/"),
+                   let resp = try? Data(contentsOf: url, options: .alwaysMapped),
+                   !resp.isEmpty {
+                    httpReady = true
+                    break
+                }
+            }
+        }
+        return [
+            "status": success ? (alive ? (httpReady ? "injected_alive_http" : "injected_alive_nohttp") : "injected_crashed") : "failed",
+            "mode": "memory",
+            "bundle_id": bundleId,
+            "app": app.name,
+            "pid": targetPid,
+            "app_alive": alive,
+            "http_ready": httpReady,
+            "dylib": dylibPath,
+            "exit": exit,
+            "output": output,
+            "note": success
+                ? (alive ? (httpReady ? "Memory injection OK: process alive + HTTP ready. Ready for probe.inspect." : "Memory injection OK: process alive but HTTP not ready (dylib loaded, service not up. Check dylib deps/port conflict).") : "Memory injection OK but App crashed (dylib caused crash. Try different dylib or rollback).")
+                : "opainject failed. See output for reason (permission/arch/process state)."
+        ]
+    }
+}
+
+// MARK: - probe.inspect：运行时类探测 (ProbeAgent）
+
+final class ProbeInspectTool: MCPTool {
+    let definition = ToolDefinition(
+        name: "probe.inspect",
+        summary: "Inspect running app internals: list ObjC classes, see class methods/properties, read UserDefaults. Use for: reverse engineer an app, understand how it works internally, find classes to hook. Don't use for: static binary analysis (use binary.symbols), AI-powered analysis (use ai.analyze_app). Prerequisite: inject ProbeAgent first. Example: user says 'what ViewController classes does 小红书 have' → probe classes.",
+        parameters: [
+            "bundle_id": "Target App bundle ID (required)",
+            "query": "What to inspect: classes (list all) / class (details of one) / userdefaults / info",
+            "class_name": "Specific class name (when query=class)",
+            "prefix": "Filter classes by name prefix (reduces noise)",
+            "limit": "Max classes to return (default 30, max 100)",
+            "cleanup": "Remove ProbeAgent after query (default false)"
+        ],
+        prerequisites: ["【密文 App(cryptid=1)此工具无效】——报 TARGET_INCOMPATIBLE / 'encrypted (cryptid=1)' 时不重试, 先 app command=decrypt 砸壳 + replace_decrypted 后再分析", "必须先 inject enable ProbeAgent 注入探针(前置): 对加密 App 无法注入(见 inject prerequisites)"]
+    )
+
+    func invoke(_ params: [String: Any]) throws -> [String: Any] {
+        guard let bundleId = params["bundle_id"] as? String, !bundleId.isEmpty else {
+            throw MCPError.invalidParams("bundle_id required")
+        }
+        guard let app = AppCatalog.find(bundleId) else {
+            return ["error": "app not found: \(bundleId)", "hint": "use injection.list to search"]
+        }
+
+        // v3.0.89：iOS 17+ 不支持探针injected (opainject 依赖 ct_bypass，已失效）
+        let majorVer = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        if majorVer >= 17 {
+            return [
+                "error": "iOS 17+ does not support probe.inspect (depends on opainject/ct_bypass, deprecated)",
+                "hint": "use injection.static (static injection) then retry",
+                "ios_version": majorVer
+            ]
+        }
+
+        let query = (params["query"] as? String) ?? "classes"
+        let exeName = ProcessHelper.executableName(for: app)
+
+        // v4.3.6: 前置自检——加密 App(cryptid=1) 直接提示先砸壳, 不浪费 opainject。
+        // 之前 probe.inspect 无此检测, 对加密 app 直接试注入→TARGET_INCOMPATIBLE→AI 同参数循环重试。
+        // 注入前拦截, 返回明确 code=TARGET_INCOMPATIBLE + next_step, 杜绝"加密 app 探针失败"循环源头。
+        let probeMainBin = app.path + "/" + exeName
+        if let pmo = MachOAnalyzer.analyze(probeMainBin), pmo.cryptID > 0 {
+            return ["error": "target App is encrypted (cryptid=\(pmo.cryptID)), ProbeAgent cannot inject to read class structure",
+                    "code": "TARGET_INCOMPATIBLE", "reason": "target",
+                    "next_step": "switch to terminal: shell.exec run 'app.decrypt \(bundleId)' to decrypt, then use terminal to analyze decrypted_work/ decrypted binary. Do NOT retry probe.inspect (permanently ineffective)",
+                    "hint": "all App Store apps are encrypted; probe is permanently ineffective here"]
+        }
+
+        var probeInjected = false
+        if let pid = ProcessHelper.pidOf(executableName: exeName) {
+            if let (code, _) = httpGet(port: 4791, path: "/status"), code == 200 {
+                probeInjected = true
+            } else {
+                let dylib = ProcessHelper.tweakPath("ProbeAgent.dylib") ?? ""
+                if !dylib.isEmpty {
+                    let (_, out) = InjectionManager.shared.injectDylib(pid: pid, dylib: dylib)
+                    probeInjected = out.contains("dlopen succeeded")
+                }
+            }
+        } else {
+            let (launched, msg) = ProcessHelper.launchApp(bundleId: bundleId)
+            if !launched { return ["error": msg, "hint": "open target App manually then retry"] }
+            var pid: Int? = nil
+            for _ in 0..<12 {
+                usleep(500_000)
+                pid = ProcessHelper.pidOf(executableName: exeName)
+                if pid != nil { break }
+            }
+            if let pid = pid {
+                let dylib = ProcessHelper.tweakPath("ProbeAgent.dylib") ?? ""
+                if !dylib.isEmpty {
+                    let (_, out) = InjectionManager.shared.injectDylib(pid: pid, dylib: dylib)
+                    probeInjected = out.contains("dlopen succeeded")
+                }
+            }
+        }
+        guard probeInjected else {
+            let running = ProcessHelper.pidOf(executableName: exeName) != nil
+            return ["error": "ProbeAgent injection failed (\(running ? "opainject rejected/anti-debug blocked" : "App not running"))",
+                    "next_step": running ? "target has anti-injection/anti-debug detection; try injection.mem memory-injection bypass" : "start target App with app.start bundle_id first, or open manually then retry",
+                    "hint": "injection failure does not mean the App is broken; follow next_step first"]
+        }
+
+        var ready = false
+        for _ in 0..<10 {
+            usleep(400_000)
+            if let (code, _) = httpGet(port: 4791, path: "/status"), code == 200 { ready = true; break }
+        }
+        guard ready else {
+            return ["error": "ProbeAgent HTTP not ready (port 4791)"]
+        }
+
+        var path = "/probe/classes"
+        var limit = params["limit"] as? Int ?? 30
+        if limit > 100 { limit = 100 }
+        let prefix = params["prefix"] as? String ?? ""
+        switch query {
+        case "class":
+            guard let cn = params["class_name"] as? String, !cn.isEmpty else {
+                throw MCPError.invalidParams("query=class requires class_name param")
+            }
+            path = "/probe/class?name=" + cn.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!
+        case "userdefaults":
+            path = "/probe/userdefaults"
+        case "info":
+            path = "/status"
+        default:
+            var qs = "limit=\(limit)"
+            if !prefix.isEmpty { qs += "&prefix=" + prefix.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)! }
+            path = "/probe/classes?" + qs
+        }
+        guard let (code, body) = httpGet(port: 4791, path: path) else {
+            return ["error": "ProbeAgent query timeout"]
+        }
+        var result: [String: Any] = ["status": code == 200 ? "ok" : "error", "query": query, "bundle_id": bundleId, "app": app.name]
+        if let data = body.data(using: .utf8), let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            result["data"] = obj
+        } else {
+            result["raw"] = body
+        }
+
+        let cleanup = (params["cleanup"] as? Bool) ?? false
+        if cleanup {
+            if let pid = ProcessHelper.pidOf(executableName: exeName) {
+                _ = InjectionManager.shared.runAsRoot("killall", args: ["killall", "-9", exeName])
+                result["cleanup"] = "target process killed; memory injection disappears with the process"
+            }
+        } else {
+            result["cleanup"] = "injection kept (queryable while process alive); clear with cleanup=true or App restart"
+        }
+        AuditLog.shared.log("probe.inspect", detail: "\(bundleId) query=\(query)")
+        return result
+    }
+}
+
+// MARK: - hook.apply：配置化 Hook (ConfigHook）
+
+final class HookApplyTool: MCPTool {
+    let definition = ToolDefinition(
+        name: "hook.apply",
+        summary: "Apply UI customization hook (change navbar color, show startup alert, log methods). Use for: customize app UI, add startup popup, log specific method calls. Don't use for: memory modification (use memory), device spoofing (use device.fake). Example: user says 'change 小红书 navbar to red' → apply hook config.",
+        parameters: [
+            "bundle_id": "Target App bundle_id (required)",
+            "config": "JSON config: navbar color, tint color, startup alert, method log rules",
+            "restart": "Restart app after applying (default true)"
+        ], verified: true, category: "injection")
+
+    func invoke(_ params: [String: Any]) throws -> [String: Any] {
+        guard let bundleId = params["bundle_id"] as? String, !bundleId.isEmpty else {
+            throw MCPError.invalidParams("bundle_id required")
+        }
+        guard let app = AppCatalog.find(bundleId) else {
+            return ["error": "app not found: \(bundleId)"]
+        }
+        var config: [String: Any] = [:]
+        if let cfg = params["config"] as? String, !cfg.isEmpty {
+            guard let data = cfg.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw MCPError.invalidParams("config is not valid JSON")
+            }
+            config = obj
+        } else if let dict = params["config"] as? [String: Any] {
+            config = dict
+        }
+        guard !config.isEmpty else {
+            throw MCPError.invalidParams("config cannot be empty")
+        }
+        guard ProcessHelper.writeWorkspaceConfig("hook_config.json", dict: config) else {
+            return ["error": "failed to write hook_config.json (workspace permission)"]
+        }
+        let injected = ((InjectionManager.shared.inspect(bundleId)["injected"] as? Bool) ?? false)
+        if !injected {
+            let dylib = ProcessHelper.tweakPath("ConfigHook.dylib") ?? ""
+            guard !dylib.isEmpty else { return ["error": "built-in ConfigHook.dylib does not exist"] }
+            let r = try InjectionManager.shared.enable(bundleId: bundleId, dylibSourcePath: dylib)
+            if (r["status"] as? String) != "injected" {
+                return ["error": "ConfigHook injection failed", "detail": r]
+            }
+        }
+        let restart = (params["restart"] as? Bool) ?? true
+        var relaunchNote = ""
+        if restart {
+            let exe = ProcessHelper.executableName(for: app)
+            _ = InjectionManager.shared.runAsRoot("killall", args: ["killall", "-9", exe])
+            _ = ProcessHelper.launchApp(bundleId: bundleId)
+            relaunchNote = "已重启 App 使配置生效"
+        } else {
+            relaunchNote = "未重启；下次 App 启动时配置生效"
+        }
+        AuditLog.shared.log("hook.apply", detail: "\(bundleId) keys=\(config.keys)")
+        return [
+            "status": "applied",
+            "bundle_id": bundleId,
+            "app": app.name,
+            "config_path": "/var/mobile/Documents/Workspace/hook_config.json",
+            "config": config,
+            "injected": true,
+            "note": relaunchNote + "; restart App after changing config (no re-injection needed)"
+        ]
+    }
+}
+
+// MARK: - device.fake / device.restore：设备伪装 (FakeDevice，绿盾式）
+
+final class DeviceFakeTool: MCPTool {
+    let definition = ToolDefinition(
+        name: "device.fake",
+        summary: "Spoof device info (model, iOS version, etc.). Use for: fake device model to bypass device detection, test app on different device. Don't use for: restore real device info (use device.restore), inject dylib (use injection.enable). Mechanism: device disguise is built into ConfigHook.dylib (reads fake_device.json), no separate FakeDevice. Example: user says 'spoof phone as iPhone 16 Pro Max' → fake device.",
+        parameters: [
+            "bundle_id": "Target App bundle_id (required)",
+            "name": "Fake device name (e.g. iPhone 16 Pro Max)",
+            "model": "Fake model (e.g. iPhone)",
+            "model_identifier": "Fake model identifier (e.g. iPhone17,2; some Apps read via sysctl, info only)",
+            "system_version": "Fake iOS version (e.g. 18.0)",
+            "mode": "memory (default, opainject memory injection) / file (legacy file injection, high risk, special use only)"
+        ],
+        verified: true, category: "device")
+
+    func invoke(_ params: [String: Any]) throws -> [String: Any] {
+        guard let bundleId = params["bundle_id"] as? String, !bundleId.isEmpty else {
+            throw MCPError.invalidParams("bundle_id required")
+        }
+        guard let app = AppCatalog.find(bundleId) else {
+            return ["error": "app not found: \(bundleId)"]
+        }
+        var config: [String: Any] = [:]
+        if let name = params["name"] as? String, !name.isEmpty { config["name"] = name }
+        if let model = params["model"] as? String, !model.isEmpty { config["model"] = model }
+        if let mi = params["model_identifier"] as? String, !mi.isEmpty { config["modelIdentifier"] = mi }
+        if let sv = params["system_version"] as? String, !sv.isEmpty { config["systemVersion"] = sv }
+        guard !config.isEmpty else {
+            throw MCPError.invalidParams("provide at least one spoof field (name/model/model_identifier/system_version)")
+        }
+        guard ProcessHelper.writeWorkspaceConfig("fake_device.json", dict: config) else {
+            return ["error": "failed to write fake_device.json (workspace permission)"]
+        }
+
+        let mode = (params["mode"] as? String) ?? "memory"
+        if mode == "file" {
+            // 旧式文件注入：保留但明确标注风险
+            let dylib = ProcessHelper.tweakPath("ConfigHook.dylib") ?? ""
+            guard !dylib.isEmpty else { return ["error": "built-in ConfigHook.dylib does not exist"] }
+            let r = try InjectionManager.shared.enable(bundleId: bundleId, dylibSourcePath: dylib)
+            if (r["status"] as? String) != "injected" {
+                return ["error": "ConfigHook file injection failed", "detail": r]
+            }
+            let exe = ProcessHelper.executableName(for: app)
+            _ = InjectionManager.shared.runAsRoot("killall", args: ["killall", "-9", exe])
+            _ = ProcessHelper.launchApp(bundleId: bundleId)
+            AuditLog.shared.log("device.fake.file", detail: "\(bundleId) \(config)")
+            return [
+                "status": "faked",
+                "mode": "file",
+                "bundle_id": bundleId,
+                "app": app.name,
+                "config": config,
+                "config_path": "/var/mobile/Documents/Workspace/fake_device.json",
+                "note": "file injection applied (App binary modified, backed up). Use device.restore to revert"
+            ]
+        }
+
+        // 默认：内存injected (opainject）——不碰任何文件
+        let exeName = ProcessHelper.executableName(for: app)
+        let dylib = ProcessHelper.tweakPath("ConfigHook.dylib") ?? ""
+        guard !dylib.isEmpty, FileManager.default.fileExists(atPath: dylib) else {
+            return ["error": "built-in ConfigHook.dylib does not exist", "hint": "check tweaks/ConfigHook.dylib inside the IPA"]
+        }
+        var pid = ProcessHelper.pidOf(executableName: exeName)
+        if pid == nil {
+            _ = ProcessHelper.launchApp(bundleId: bundleId)
+            for _ in 0..<12 {
+                usleep(500_000)
+                pid = ProcessHelper.pidOf(executableName: exeName)
+                if pid != nil { break }
+            }
+        }
+        guard let targetPid = pid else {
+            return ["error": "target App failed to launch, cannot memory-inject", "hint": "open target App manually then retry"]
+        }
+        let (exit, output) = InjectionManager.shared.injectDylib(pid: targetPid, dylib: dylib)
+        let ok = output.contains("dlopen succeeded") || (exit == 0 && output.contains("handle"))
+        AuditLog.shared.log("device.fake.mem", detail: "\(bundleId) pid=\(targetPid) ok=\(ok)")
+        return [
+            "status": ok ? "faked" : "failed",
+            "mode": "memory",
+            "bundle_id": bundleId,
+            "app": app.name,
+            "pid": targetPid,
+            "config": config,
+            "config_path": "/var/mobile/Documents/Workspace/fake_device.json",
+            "exit": exit,
+            "output": output,
+            "note": ok
+                ? "内存注入OK：设备伪装(ConfigHook)已在进程内生效，未改动任何文件；App 重启后自动还原真实设备"
+                : "opainject failed (见 output)。App 文件未被动过，无需恢复"
+        ]
+    }
+}
+
+final class DeviceRestoreTool: MCPTool {
+    let definition = ToolDefinition(
+        name: "device.restore",
+        summary: "Restore real device info. Use for: undo device spoofing after testing. Don't use for: start spoofing (use device.fake), check device info (use device.info). Example: user says 'restore real device info' → restore device.",
+        parameters: ["bundle_id": "Target app bundle ID"], verified: true, category: "device")
+    func invoke(_ params: [String: Any]) throws -> [String: Any] {
+        guard let bundleId = params["bundle_id"] as? String, !bundleId.isEmpty else {
+            throw MCPError.invalidParams("bundle_id required")
+        }
+        let removed = ProcessHelper.removeWorkspaceConfig("fake_device.json")
+        guard let app = AppCatalog.find(bundleId) else {
+            return ["status": "restored", "bundle_id": bundleId, "config_removed": removed,
+                    "injection_removed": false, "note": "App not found; fake_device.json deleted"]
+        }
+        let exe = ProcessHelper.executableName(for: app)
+        // 检查是否为文件injected (旧版遗留）
+        let injected = ((InjectionManager.shared.inspect(bundleId)["injected"] as? Bool) ?? false)
+        var injectionRemoved = false
+        var restoreError = ""
+        if injected {
+            do {
+                let r = try InjectionManager.shared.disable(bundleId: bundleId)
+                injectionRemoved = ((r["status"] as? String) == "reverted") || !((r["restored_from_backup"] as? [String]) ?? []).isEmpty
+                if !injectionRemoved {
+                    restoreError = "disable 未确认还原 (见 injection.disable 输出)"
+                }
+            } catch {
+                restoreError = "恢复failed：\(error.localizedDescription)"
+                AuditLog.shared.log("device.restore.error", detail: "\(bundleId) \(restoreError)")
+            }
+        }
+        // 内存注入：杀进程即还原；文件注入：杀进程确保新状态生效
+        _ = InjectionManager.shared.runAsRoot("killall", args: ["killall", "-9", exe])
+        _ = ProcessHelper.launchApp(bundleId: bundleId)
+        AuditLog.shared.log("device.restore", detail: "\(bundleId) injected=\(injected)")
+        if !restoreError.isEmpty {
+            return ["status": "error", "bundle_id": bundleId, "config_removed": removed,
+                    "injection_removed": injectionRemoved, "error": restoreError,
+                    "note": "fake_device.json deleted and App restarted; old file injection uninstall failed, use Emergency Restore (one-click full recovery) in the Inject and Automation page"]
+        }
+        return [
+            "status": "restored",
+            "bundle_id": bundleId,
+            "config_removed": removed,
+            "injection_removed": injectionRemoved,
+            "mode": injected ? "file" : "memory",
+            "note": injected
+                ? "已删除 fake_device.json、卸载旧文件注入并重启 App"
+                : "已删除 fake_device.json 并重启 App (内存注入随进程结束自动消失，零残留)"
+        ]
+    }
+}
+
+// MARK: - v2.9.95 设备指纹 / 容器 / entitlements 工具 (对齐 Fuck 工具箱 + 绿盾式）
+
+/// 查看 App entitlements (ldid -e 解析）
+final class AppEntitlementsTool: MCPTool {
+    let definition = ToolDefinition(
+        name: "app.entitlements",
+        summary: "Check an app's code signing entitlements (cs_debug, task_for_pid, etc). Use for: check if app can be debugged, see if it has special permissions. Don't use for: check if encrypted (use app.encrypt_info), list dependencies (use app.deps). Example: user says 'can 小红书 be debugged' → check entitlements.",
+        parameters: ["bundle_id": "Target App bundle ID (e.g. com.xingin.discover)"]
+    )
+    func invoke(_ params: [String: Any]) throws -> [String: Any] {
+        guard let bundleId = params["bundle_id"] as? String, !bundleId.isEmpty else {
+            throw MCPError.invalidParams("bundle_id required")
+        }
+        guard let app = AppCatalog.find(bundleId) else {
+            return ["error": "app not found: \(bundleId)"]
+        }
+        let main = InjectionManager.shared.executablePath(app)
+        // v2.9.116：先查加密——加密二进制解不出 entitlements，不能当"没有"
+        var cryptID: UInt32 = 0
+        if let mo = MachOAnalyzer.analyze(main) { cryptID = mo.cryptID }
+
+        // v6.9.5：静态解析为主路径。
+        // entitlements 就在二进制 LC_CODE_SIGNATURE 里，根本不需要提权也不需要 ldid 进程。
+        // 旧实现无条件先跑 ldid -e（runAsRoot），在 rootless/rootHide 环境下 syscall 被拦，
+        // 每次 4ms 返回 85 (ENOSYS) —— 既慢又刷满审计日志，且一旦连续失败还会触发
+        // 调用循环熔断（"已连续 N 次用相同参数调用"）。
+        var dict: [String: Any] = [:]
+        var source = "machokit"
+        var parseError = ""
+        var ldidDiag: [String: Any]? = nil
+
+        if let staticEnts = Self.entitlementsViaMachO(path: main) {
+            let inner = staticEnts["entitlements"] as? [String: Any] ?? [:]
+            dict = inner
+            if inner.isEmpty, let d = staticEnts["diagnosis"] { parseError = (d as? [String])?.first ?? "" }
+        } else {
+            // 静态解析失败（非 Mach-O / 截断文件）→ 才回退 ldid
+            source = "ldid"
+            let (rc, raw) = InjectionManager.shared.runAsRootData("ldid", args: ["-e", main])
+            if rc == 0,
+               let d = try? PropertyListSerialization.propertyList(from: raw, options: [], format: nil) as? [String: Any] {
+                dict = d
+            } else {
+                parseError = Self.describeLdidFailure(rc, cryptID: cryptID)
+                ldidDiag = [
+                    "exit_code": Int(rc),
+                    "errno_name": Self.errnoName(rc),
+                    "classified": Self.classifyLdidErrno(rc),
+                ]
+            }
+        }
+
+        var out: [String: Any] = [
+            "bundle_id": bundleId,
+            "binary": main,
+            "source": source,
+            "entitlements": dict,
+            "keychain_groups": dict["keychain-access-groups"] ?? [],
+            "platform_app": dict["platform-application"] as? Bool ?? false,
+            "no_sandbox": dict["com.apple.private.security.no-sandbox"] as? Bool ?? false,
+            "task_for_pid": dict["task_for_pid-allow"] as? Bool ?? false,
+            "get_task_allow": dict["get-task-allow"] as? Bool ?? false,
+            "parse_error": parseError,
+            "hint": parseError.isEmpty
+                ? "keychain_groups can be passed to device.keychain_wipe to precisely clear the target App keychain"
+                : parseError + " (empty value does not mean no permission)"
+        ]
+        if let d = ldidDiag { out["ldid"] = d }
+        return out
+    }
+
+    // MARK: - 静态解析（MachOKit）
+
+    /// 直接读二进制 LC_CODE_SIGNATURE 里的 entitlements blob，不 spawn 任何进程。
+    /// 返回 nil 表示"这不是一个能解析的 Mach-O"（此时才值得退回 ldid）。
+    static func entitlementsViaMachO(path: String) -> [String: Any]? {
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        // 复用 macho 工具的加载器：已处理 thin/fat、.app 目录、错误文案
+        guard let file = try? MachoExecTool.openMachO(path: path) else { return nil }
+        return Self.extractEntitlements(file)
+    }
+
+    /// 只取 entitlements 字典（没有则空字典）——调用方不需要关心中间 dict 结构。
+    static func entitlementsDict(path: String) -> [String: Any] {
+        guard let r = entitlementsViaMachO(path: path) else { return [:] }
+        return r["entitlements"] as? [String: Any] ?? [:]
+    }
+
+    /// 把 entitlements 字典渲染成可读 JSON（空字典返回空串）。
+    static func entitlementsJSON(_ dict: [String: Any], limit: Int) -> String {
+        guard !dict.isEmpty,
+              let data = try? JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted, .sortedKeys]),
+              let str = String(data: data, encoding: .utf8) else { return "" }
+        return String(str.prefix(limit))
+    }
+
+    private static func extractEntitlements(_ file: MachOFile) -> [String: Any] {
+        guard let cs = file.codeSign else {
+            return [
+                "entitlements": [:] as [String: Any],
+                "diagnosis": ["[缺失] 二进制没有 LC_CODE_SIGNATURE（未签名或签名被剥离），不是“没有权限”"],
+            ]
+        }
+        let ents = cs.embeddedEntitlements ?? [:]
+        var out: [String: Any] = ["entitlements": ents, "count": ents.count]
+        if ents.isEmpty {
+            out["diagnosis"] = ["[空] 有签名但没有 entitlements blob（ad-hoc 签名或权限被剥离），不是“没有权限”"]
+        }
+        return out
+    }
+
+    // MARK: - ldid 兜底错误归因
+
+    /// 把 runAsRoot 的退出码翻译成人话。iOS 上 spawn 失败常见 return = 128+signal
+    /// 或直接透传 errno（85=ENOSYS 是 rootLESS/rootHide 环境的典型值）。
+    static func errnoName(_ code: Int32) -> String {
+        switch code {
+        case 1: return "EPERM"
+        case 2: return "ENOENT"
+        case 13: return "EACCES"
+        case 22: return "EINVAL"
+        case 78: return "ENOSYS"
+        case 85: return "ENOSYS"
+        case 126: return "ENOEXEC"
+        case 127: return "ENOENT(找不到 ldid 可执行文件)"
+        default: return ""
+        }
+    }
+
+    static func classifyLdidErrno(_ code: Int32) -> String {
+        switch code {
+        case 85, 78: return "环境不支持：persona/root spawn 被内核拒绝（rootless/rootHide）。读 entitlements 不需要提权，应走静态解析"
+        case 127, 2: return "ldid 二进制不存在或路径错误（检查 Resources/bin/ldid 是否随包分发）"
+        case 126: return "ldid 不是可执行文件或架构不匹配（arm64 vs arm64e）"
+        case 1, 13: return "权限不足：ldid 需要 root，当前 App 无 platform-application/no-sandbox"
+        default: return "未归类，需查看 ldid 原始 stderr"
+        }
+    }
+
+    static func describeLdidFailure(_ rc: Int32, cryptID: UInt32) -> String {
+        if cryptID > 0 {
+            return "加密 App (cryptid=\(cryptID))，entitlements 需先砸壳（app.decrypt）"
+        }
+        let name = errnoName(rc)
+        if !name.isEmpty {
+            return "ldid -e failed (\(rc) \(name))：\(classifyLdidErrno(rc))"
+        }
+        return "ldid 输出非 plist，解析失败 (exit=\(rc))"
+    }
+}
+
+/// 清理指定 App 钥匙串条目 (按 entitlements 的 keychain-access-groups 精确删除）
+final class KeychainWipeTool: MCPTool {
+    let definition = ToolDefinition(
+        name: "device.keychain_wipe",
+        summary: "Wipe an app's keychain (login tokens/passwords). Use for: reset app login state, force re-login. Don't use for: clear app cache (use cleanup.execute), uninstall app (use app.uninstall). Warning: this will log the user out! Example: user says 'log out of 小红书' → wipe keychain.",
+        parameters: ["bundle_id": "Target App bundle_id (required). e.g. com.xingin.discover"]
+    )
+    func invoke(_ params: [String: Any]) throws -> [String: Any] {
+        guard let bundleId = params["bundle_id"] as? String, !bundleId.isEmpty else {
+            throw MCPError.invalidParams("bundle_id required")
+        }
+        guard let app = AppCatalog.find(bundleId) else {
+            return ["error": "app not found: \(bundleId)"]
+        }
+        let main = InjectionManager.shared.executablePath(app)
+        // v6.9.5：与 app.entitlements 同源——直接读签名 blob，不再 spawn ldid
+        // （rootHide 环境下 ldid 恒返回 85，旧实现会静默退回默认组，删不到目标 App 条目）
+        var groups: [String] = []
+        var entSource = "machokit"
+        if let staticEnts = AppEntitlementsTool.entitlementsViaMachO(path: main),
+           let gs = (staticEnts["entitlements"] as? [String: Any])?["keychain-access-groups"] as? [String] {
+            groups = gs
+        } else {
+            entSource = "ldid"
+            let (rc2, raw2) = InjectionManager.shared.runAsRootData("ldid", args: ["-e", main])
+            if rc2 == 0,
+               let d2 = try? PropertyListSerialization.propertyList(from: raw2, options: [], format: nil) as? [String: Any],
+               let gs2 = d2["keychain-access-groups"] as? [String] {
+                groups = gs2
+            }
+        }
+        if groups.isEmpty { groups = ["TROLLTROLL.com.xosvi.app"] }
+        var deleted = 0
+        var failed = 0
+        var errors: [String] = []
+        // v2.9.96：优先 root 直改 keychain-2.db (sqlite_wipe 内置工具），
+        // 不受跨组 entitlements 限制，精确删除目标 App 全部钥匙串条目。
+        let im = InjectionManager.shared
+        let (rc, rout) = im.runAsRoot("sqlite_wipe", args: ["sqlite_wipe"] + groups)
+        if rc == 0 {
+            let tokens = rout.split(separator: " ")
+            let wiped = (tokens.count >= 3 ? Int(tokens[1]) : nil) ?? 0
+            return [
+                "bundle_id": bundleId,
+                "method": "sqlite_wipe(root keychain-2.db)",
+                "entitlements_source": entSource,
+                "groups_tried": groups,
+                "deleted_count": wiped,
+                "output": rout.trimmingCharacters(in: .whitespacesAndNewlines),
+                "hint": "deleted target App entries from system keychain database by keychain-access-groups (login state will reset). If App is still running, kill and restart it"
+            ]
+        }
+        errors.append("sqlite_wipe: \(rc) \(rout)")
+        // fallback：SecItemDelete (受本 App entitlements 限制，尽量删自己组）
+        for g in groups {
+            for cls in [kSecClassGenericPassword, kSecClassInternetPassword, kSecClassKey] {
+                let q: [String: Any] = [
+                    kSecClass as String: cls,
+                    kSecAttrAccessGroup as String: g,
+                    kSecMatchLimit as String: kSecMatchLimitAll
+                ]
+                let st = SecItemDelete(q as CFDictionary)
+                if st == errSecSuccess { deleted += 1 }
+                else if st != errSecItemNotFound {
+                    failed += 1
+                    errors.append("\(g): \(st)")
+                }
+            }
+        }
+        return [
+            "bundle_id": bundleId,
+            "groups_tried": groups,
+            "deleted_count": deleted,
+            "failed_count": failed,
+            "errors": errors,
+            "hint": failed > 0
+                ? "部分条目需要系统级 keychain 权限 (本 App 未声明该组)。"
+                : "已清理目标 App 钥匙串条目 (登录态将被重置)"
+        ]
+    }
+}
+
+// v2.9.312：device.keychain_reset 已删除——清空整机钥匙串太危险，
+// 会导致所有 App 密码/登录态丢失。保留 device.keychain_wipe (按指定 App 清理）。
+
+/// 广告标识符 (IDFA）读取 / 刷新
+final class AdvertisingTool: MCPTool {
+    let definition = ToolDefinition(
+        name: "device.advertising",
+        summary: "Read or reset IDFA (advertising identifier). Use for: check ad tracking status, reset ad ID for fresh identity. Don't use for: device spoofing (use device.fake), wipe app keychain (use device.keychain_wipe). Example: user says 'reset advertising ID' → reset IDFA.",
+        parameters: ["action": "read (show current) / reset (get new ID)"],
+        verified: true, category: "device")
+    func invoke(_ params: [String: Any]) throws -> [String: Any] {
+        let action = (params["action"] as? String)?.lowercased() ?? "read"
+        var result: [String: Any] = [:]
+        let m = ASIdentifierManager.shared()
+        result["idfa"] = m.advertisingIdentifier.uuidString
+        result["tracking_enabled"] = m.isAdvertisingTrackingEnabled
+        result["tracking_limited"] = !m.isAdvertisingTrackingEnabled
+        if action == "reset" {
+            let any = m as AnyObject
+            let sel = NSSelectorFromString("resetIdentifier")
+            if any.responds(to: sel) {
+                any.perform(sel)
+                result["reset"] = "resetIdentifier called"
+                result["idfa_after"] = ASIdentifierManager.shared().advertisingIdentifier.uuidString
+            } else {
+                result["reset"] = "resetIdentifier not supported on this system (public API removed on iOS14+)"
+                result["hint"] = "IDFA refresh restricted on iOS14+"
+            }
+        }
+        return result
+    }
+}
+
+/// 读取设备/App 的 identifierForVendor
+final class IdfvTool: MCPTool {
+    let definition = ToolDefinition(
+        name: "device.idfv",
+        summary: "Read IDFV (identifier for vendor) - device fingerprint. Use for: check device fingerprint, see if app can track you. Don't use for: reset IDFV (no public API, delete app instead), spoof device model (use device.fake). Example: user says 'what is my IDFV' → read IDFV.",
+        parameters: ["bundle_id": "Optional: target app bundle ID"],
+        verified: true, category: "device")
+    func invoke(_ params: [String: Any]) throws -> [String: Any] {
+        let sys = UIDevice.current.identifierForVendor?.uuidString ?? "N/A"
+        var extra: [String: Any] = ["system_idfv": sys]
+        if let bid = params["bundle_id"] as? String, !bid.isEmpty {
+            extra["requested_bundle_id"] = bid
+            extra["app_idfv"] = "(read inside target App process; device-level IDFV above)"
+        }
+        extra["hint"] = "IDFV has no public refresh API: system decides after App deletion; usually unchanged on backup restore"
+        return extra
+    }
+}
+
+/// 刷新 (重置）指定 App 数据容器——数据保留在备份目录，可 restore 恢复
+final class RefreshContainerTool: MCPTool {
+    let definition = ToolDefinition(
+        name: "device.refresh_container",
+        summary: "Reset app data container (rename old one to backup, system creates fresh empty one). Use for: factory reset app data but can restore later. Don't use for: wipe keychain only (use device.keychain_wipe), uninstall app (use app.uninstall). Warning: this clears all app data! Example: user says 'reset 小红书 to factory state' → refresh container.",
+        parameters: [
+            "bundle_id": "Target App bundle_id (required)",
+            "restore": "If true, restore from previous backup instead of resetting"
+        ], verified: true)
+    func invoke(_ params: [String: Any]) throws -> [String: Any] {
+        guard let bundleId = params["bundle_id"] as? String, !bundleId.isEmpty else {
+            throw MCPError.invalidParams("bundle_id required")
+        }
+        guard let app = AppCatalog.find(bundleId) else {
+            return ["error": "app not found: \(bundleId)"]
+        }
+        guard let container = AppCatalog.lookupContainer(bundleId: app.bundleId), !container.isEmpty else {
+            return ["error": "cannot locate data container", "hint": "LSApplicationProxy returned no dataContainerURL (may lack AppDataContainers entitlement)"]
+        }
+        let restore = (params["restore"] as? Bool) ?? false
+        let bk = container + ".xosvi.bak"
+        let im = InjectionManager.shared
+        if restore {
+            if !FileManager.default.fileExists(atPath: bk) {
+                return ["error": "no backup directory found", "backup": bk]
+            }
+            _ = im.runAsRoot("rm", args: ["-rf", container])
+            let (c, o) = im.runAsRoot("mv", args: [bk, container])
+            if c != 0 { return ["error": "restore failed (\(c)): \(o)"] }
+            _ = im.runAsRoot("chown", args: ["33:33", container])
+            let exe = ProcessHelper.executableName(for: app)
+            _ = im.runAsRoot("killall", args: ["killall", "-9", exe])
+            return ["status": "restored", "container": container, "hint": "container restored from backup and process killed, App data back to pre-reset state"]
+        }
+        if FileManager.default.fileExists(atPath: bk) {
+            _ = im.runAsRoot("rm", args: ["-rf", bk])
+        }
+        let (c, o) = im.runAsRoot("mv", args: [container, bk])
+        if c != 0 { return ["error": "reset failed (\(c)): \(o)"] }
+        _ = im.runAsRoot("chown", args: ["33:33", bk])
+        let exe = ProcessHelper.executableName(for: app)
+        _ = im.runAsRoot("killall", args: ["killall", "-9", exe])
+        return [
+            "status": "refreshed",
+            "container": container,
+            "backup": bk,
+            "hint": "container renamed as backup (data kept). System rebuilds an empty container on next App launch. To restore: call again with restore=true"
+        ]
+    }
+}
+
+// MARK: - HTTP 辅助 (localhost）
+
+private func httpGet(port: Int, path: String, timeout: TimeInterval = 4) -> (Int, String)? {
+    var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(path)")!)
+    setTimeoutInterval(timeout, on: &request)
+    var result: (Int, String)? = nil
+    let sem = DispatchSemaphore(value: 0)
+    URLSession.shared.dataTask(with: request) { data, response, _ in
+        if let data = data, let http = response as? HTTPURLResponse {
+            result = (http.statusCode, String(data: data, encoding: .utf8) ?? "")
+        }
+        sem.signal()
+    }.resume()
+    _ = sem.wait(timeout: .now() + timeout + 1)
+    return result
+}
+

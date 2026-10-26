@@ -1,0 +1,377 @@
+// VpnManager：MITM 抓包 VPN/代理控制（v3.3.0）
+// 两种模式：
+//  - VPN 模式：NEVPNManager + VpnTunnel appex（PacketTunnelProvider + NEProxySettings 自动接管流量）
+//  - 本地代理模式：主 App 进程跑 MitmProxy，配合用户手动在 WiFi 设置里配 HTTP 代理
+// 证书：首次运行 MitmProxy 自动生成根 CA（Workspace/certs/ca.pem），generateMobileConfig 产出描述文件供安装信任。
+
+import Foundation
+import NetworkExtension
+import Security
+import MitmCore
+import CMitm
+
+final class VpnManager {
+    static let shared = VpnManager()
+
+    /// v4.4.11-dbg: VPN 链路诊断日志（写 Workspace/logs/vpn.log，远程可读，替代盲测）。
+    /// 记录 save/load/start/stop 每次关键回调的真实错误与状态，定位"连不上"根因。
+    static func vpnlog(_ msg: String) {
+        let fm = FileManager.default
+        let dir = "/var/mobile/Documents/Workspace/logs"
+        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let line = "[\(Date().timeIntervalSince1970)] \(msg)\n"
+        if let fh = FileHandle(forWritingAtPath: dir + "/vpn.log") {
+            fh.seekToEndOfFile()
+            fh.write(line.data(using: .utf8)!)
+            try? fh.close()
+        } else {
+            try? line.data(using: .utf8)?.write(to: URL(fileURLWithPath: dir + "/vpn.log"))
+        }
+    }
+
+    // v3.5.2：packet-tunnel 网络扩展必须用 NETunnelProviderManager。
+    // 之前用 NEVPNManager.shared()（IPSec/IKEv2 旧版 VPN 管理器）挂 NETunnelProviderProtocol，
+    // 系统不会在"设置→VPN"注册、startVPNTunnel 也不生效——表现为"VPN 不显示、打不开"。
+    private var manager = NETunnelProviderManager()
+    private(set) var localProxyRunning = false
+    let proxyPort: UInt16 = 18180
+
+    /// VPN 连接状态（未加载配置时可能不准，先 loadPreferences）
+    var vpnStatus: NEVPNStatus { manager.connection.status }
+    var vpnConfigured: Bool { manager.protocolConfiguration != nil }
+
+    /// v3.3.2：开关状态 = VPN 已连接/连接中 或 本地代理运行中
+    var vpnActive: Bool {
+        let s = manager.connection.status
+        return s == .connected || s == .connecting || localProxyRunning
+    }
+
+    /// v3.3.2：一键开/关（AI 的 vpn.capture start/stop 走同一底层；开关失败回调 err）
+    func toggleVpn(completion: @escaping (String?) -> Void = { _ in }) {
+        if vpnActive {
+            stopVpn()
+            stopLocalProxy()
+            completion(nil)
+        } else {
+            startVpn(completion: completion)
+        }
+    }
+
+    func loadPreferences(completion: @escaping (Bool) -> Void) {
+        manager.loadFromPreferences { err in
+            completion(err == nil)
+        }
+    }
+
+    // MARK: - VPN 模式
+
+    func startVpn(completion: @escaping (String?) -> Void) {
+        VpnManager.vpnlog("startVpn called")
+        // fix3cy（P1 修正方向 A）：VPN 隧道【剥离】kfd 注入。
+        //   已实证 fuck_helper 是"信任自己"的黑盒引擎，无法定向信任 VpnTunnel；且每次开 VPN
+        //   触发注入→目标不匹配→DMA panic 黑屏。VpnTunnel.appex 本身已有
+        //   no-sandbox / platform-application / task_for_pid entitlements，MITM 解密靠 entitlements 即可跑，
+        //   kfd 注入(fuck_helper)改作独立高级能力(信任自己/dylib注入)，不再绑定 VPN 启动。
+        // v3.5.16f：对齐 Apple 可运行案例(100518/104280/661560)的启动流程——
+        // ① 用 loadAllFromPreferences 拿系统"注册过"的 manager(而非新建 NETunnelProviderManager())；
+        // ② saveToPreferences 之后必须再 loadFromPreferences 一次，把 manager 绑定到系统刚保存的
+        //    配置，再 startVPNTunnel。此前"新建 manager + save 后直接 start"导致系统按 providerBundleIdentifier
+        //    建不出扩展("Failed to create an NSExtension with type …: (null)")→ NEVPNErrorConfigurationInvalid(1)。
+        self.startVpnViaRegisteredManager(retryLeft: 1, completion: completion)
+    }
+
+    /// 通过 loadAllFromPreferences 拿系统注册的 manager（找不到则新建），按需清失效配置后保存并启动。
+    private func startVpnViaRegisteredManager(retryLeft: Int, completion: @escaping (String?) -> Void) {
+        VpnManager.vpnlog("startVpnViaRegisteredManager retryLeft=\(retryLeft)")
+        NETunnelProviderManager.loadAllFromPreferences { [weak self] managers, _ in
+            guard let self = self else { return }
+            VpnManager.vpnlog("loadAllFromPreferences count=\(managers?.count ?? -1)")
+            // 优先复用系统已注册的"Xosvi 抓包 VPN"配置；没有则新建。
+            self.manager = managers?.first(where: { $0.localizedDescription == "Xosvi 抓包 VPN" })
+                              ?? NETunnelProviderManager()
+            self.manager.loadFromPreferences { [weak self] _ in
+                guard let self = self else { return }
+                VpnManager.vpnlog("loadFromPreferences status=\(self.manager.connection.status.rawValue) proto=\(self.manager.protocolConfiguration != nil)")
+                // 残留的是失效配置(非 packet-tunnel 协议)才清；正常直接保存。
+                let isStale = (self.manager.protocolConfiguration != nil)
+                             && !(self.manager.protocolConfiguration is NETunnelProviderProtocol)
+                // v3.5.16h：重装App后系统对VPN的"允许"批准可能失效——配置还在(非stale)但
+                // connection.status==.invalid，此时直接save不会重新弹批准窗，会一直卡在invalid。
+                // 若配置存在但状态invalid，删掉重建，强制系统重新弹"允许"窗。
+                let approvalStale = (self.manager.protocolConfiguration != nil)
+                                    && self.manager.connection.status == .invalid
+                if isStale || approvalStale {
+                    self.manager.removeFromPreferences { [weak self] _ in
+                        self?.saveAndStart(retryLeft: retryLeft, completion: completion)
+                    }
+                } else {
+                    self.saveAndStart(retryLeft: retryLeft, completion: completion)
+                }
+            }
+        }
+    }
+
+    /// 组装全新 NETunnelProviderProtocol 配置 → save → 重新 load → startVPNTunnel；失败可重试一次。
+    private func saveAndStart(retryLeft: Int, completion: @escaping (String?) -> Void) {
+        let proto = NETunnelProviderProtocol()
+        // v3.3.3：serverAddress 必须是合法地址（此前 "xosvi-mitm" 被系统判为 invalid protocol）
+        proto.serverAddress = "127.0.0.1"
+        proto.providerBundleIdentifier = "com.xosvi.app.VpnTunnel"
+        proto.disconnectOnSleep = false
+        // fix3cy5（P2-配置链路补全）：主 App 从未把抓包配置传给隧道引擎——这是"Fuck 引擎搬过来
+        //   但抓不到包"的直接原因（引擎起来不知道抓什么/存哪）。这里一次性补两条：
+        //   ① providerConfiguration（随 startVPNTunnel 以 options 传入 appex）；
+        //   ② CFPreferences 写 start-state（appex 硬编码键全名 com.ai.iosxcode.packet-tunnel.start-state，
+        //      用 CFPropertyListCreateWithData 解析 + setHTTPServer:/setHTTPSServer: 配系统代理）。
+        //   fix3cy6：Fuck 主 App bundle=com.ai.iosxcode，写偏好天然落 com.ai.iosxcode 域；我们 bundle
+        //   不同 → 三个可能被读的域【全部写入】，键用 appex 硬编码全名；值内同时提供
+        //   host/port（NEProxyServer 所需）与 TunnelServices 配置项（localBindIP/storeFolder/certPath 等），
+        //   多写键无副作用，appex 只取它认识的。
+        // fix3cy7（P2-配置键补全）：按 Fuck 引擎(TunnelServices/MitmService)还原出的【属性名全集】
+        //   补齐 start-state 键。此前版本只写 host/port/localBindIP 等，缺 localEnable/localPort/wifiEnable
+        //   等【监听开关+端口】键 → MitmService.openLocalServer 不执行 → 隧道 connected 但无数据。
+        //   键名 = MitmService @objc 属性名（localEnable:NSNumber / localPort:NSNumber / localAddress:String …
+        //   证据：TunnelServices 符号 $s14TunnelServices11MitmServiceC…localEnableSo8NSNumberCv /
+        //   localPortSo8NSNumberCv / wifiEnableSo8NSNumberCv / wifiPortSo8NSNumberCv，
+        //   appex startTunnel 读 start-state(com.ai.iosxcode.packet-tunnel.start-state, CFPropertyListCreateWithData)
+        //   → MitmService.prepare/run → openLocalServer(ip:port:) 消费。值类型与 plist 互转兼容。
+        let startState: [String: Any] = [
+            // NEProxyServer 地址（appex setHTTPServer:/setHTTPSServer: 配系统代理用）
+            "host": "127.0.0.1",
+            "port": 18180,
+            "proxyHost": "127.0.0.1",
+            "proxyPort": 18180,
+            // MitmService 本地代理（local server）：开启监听的关键键
+            "localEnable": true,
+            "localAddress": "127.0.0.1",
+            "localIP": "127.0.0.1",
+            "localPort": 18180,
+            "localBindIP": "127.0.0.1",
+            "localBindPort": 18180,
+            "localStarted": false,
+            "localState": 0,
+            // MitmService WiFi 代理（wifi server：局域网抓包，默认关）
+            "wifiEnable": false,
+            "wifiIP": "192.169.89.1",
+            "wifiPort": 8080,
+            "wifiBindIP": "192.169.89.1",
+            "wifiBindPort": 8080,
+            "wifiIsOpen": false,
+            "wifiChannel": 1,
+            "wifiStarted": false,
+            "wifiState": 0,
+            // 存储 / 证书 / DB
+            "storeFolder": "/var/mobile/Documents/Workspace/mitm",
+            "fileFolder": "/var/mobile/Documents/Workspace/mitm",
+            "dbName": "xosvi.db",
+            "getCertPath": "/var/mobile/Documents/Workspace/certs/ca.pem",
+            // 抓包任务元数据（task 表记录用；taskID 由引擎生成，这里给个初始标识）
+            "taskID": "xosvi-capture",
+            "ruleName": "默认抓包",
+            "hostFilters": []
+        ]
+        let config: [String: Any] = startState
+        proto.providerConfiguration = config
+        if let data = try? PropertyListSerialization.data(fromPropertyList: config, format: .binary, options: 0) {
+            let key = "com.ai.iosxcode.packet-tunnel.start-state" as CFString
+            // 域 1：appex 当前 bundle（重签后 = com.xosvi.app.VpnTunnel，CFPreferencesCopyAppValue 命中）
+            CFPreferencesSetValue(key, data as CFData,
+                                  "com.xosvi.app.VpnTunnel" as CFString,
+                                  kCFPreferencesCurrentUser, kCFPreferencesCurrentHost)
+            // 域 2：Fuck 原始 bundle（appex 若硬编码读 com.ai.iosxcode suite 命中）
+            CFPreferencesSetValue(key, data as CFData,
+                                  "com.ai.iosxcode" as CFString,
+                                  kCFPreferencesCurrentUser, kCFPreferencesCurrentHost)
+            // 域 3：AppGroup 域（appex 若经 group 共享容器读命中）
+            CFPreferencesSetValue(key, data as CFData,
+                                  "group.com.ai.iosxcode" as CFString,
+                                  kCFPreferencesCurrentUser, kCFPreferencesCurrentHost)
+            CFPreferencesSynchronize("com.xosvi.app.VpnTunnel" as CFString,
+                                     kCFPreferencesCurrentUser, kCFPreferencesCurrentHost)
+            CFPreferencesSynchronize("com.ai.iosxcode" as CFString,
+                                     kCFPreferencesCurrentUser, kCFPreferencesCurrentHost)
+            CFPreferencesSynchronize("group.com.ai.iosxcode" as CFString,
+                                     kCFPreferencesCurrentUser, kCFPreferencesCurrentHost)
+            VpnManager.vpnlog("start-state written to 3 domains (keys: \(startState.keys))")
+        }
+        self.manager.protocolConfiguration = proto
+        self.manager.isEnabled = true
+        self.manager.localizedDescription = "Xosvi 抓包 VPN"
+        VpnManager.vpnlog("saveAndStart: proto=\(proto.serverAddress ?? "nil") bundle=\(proto.providerBundleIdentifier ?? "nil")")
+        self.manager.saveToPreferences { [weak self] err2 in
+            guard let self = self else { return }
+            if let e = err2 {
+                VpnManager.vpnlog("saveToPreferences FAILED: \(e.localizedDescription) code=\((e as NSError).code)")
+                completion("save failed: \(e.localizedDescription)")
+                return
+            }
+            VpnManager.vpnlog("saveToPreferences OK")
+            // v3.5.16g：等用户批准——saveToPreferences 会弹"Xosvi 想添加VPN配置/允许/不允许"，
+            // 但 save 的回调在用户点"允许"之前就返回。若立刻 startVPNTunnel，配置尚未批准生效
+            // (connection.status==.invalid) → 系统报 NEVPNErrorConfigurationInvalid(1)。
+            // 改为轮询等待状态从 .invalid 变为有效(.disconnected/.connecting)后再启动；
+            // 超时(约8s)仍未批准则提示用户去弹窗点"允许"。
+            self.loadAndStartAfterApproval(retryLeft: retryLeft, waitTick: 0, completion: completion)
+        }
+    }
+
+    /// 重新 loadFromPreferences 后轮询等待用户批准(状态离开 .invalid)，再 startVPNTunnel。
+    private func loadAndStartAfterApproval(retryLeft: Int, waitTick: Int, completion: @escaping (String?) -> Void) {
+        self.manager.loadFromPreferences { [weak self] _ in
+            guard let self = self else { return }
+            let status = self.manager.connection.status
+            VpnManager.vpnlog("loadAndStartAfterApproval tick=\(waitTick) status=\(status.rawValue)")
+            // .invalid = 配置未批准/无效；其余(.disconnected/.connecting/.connected)视为已批准可启动
+            if status == .invalid {
+                if waitTick < 16 { // 16 * 0.5s = 8s 等待窗口
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                        self?.loadAndStartAfterApproval(retryLeft: retryLeft, waitTick: waitTick + 1, completion: completion)
+                    }
+                    return
+                }
+                VpnManager.vpnlog("approval wait TIMEOUT (16 ticks) status=invalid")
+                completion("请先在系统弹窗点「允许」后再连接 (NEVPNErrorConfigurationInvalid=1)")
+                return
+            }
+            do {
+                try self.manager.connection.startVPNTunnel()
+                VpnManager.vpnlog("startVPNTunnel OK, status=\(self.manager.connection.status.rawValue)")
+                // v3.5.16i：别报"假成功"——startVPNTunnel 没抛错≠真连上。若系统没弹批准窗/隧道没起来，
+                // 状态会停在 .disconnected/.invalid。等最多 3s 观察实际连接状态，真连上(.connecting/.connected)
+                // 才报成功；否则明确提示环境限制并建议用本地代理抓包。
+                self.confirmConnected(retryLeft: retryLeft, tick: 0, completion: completion)
+            } catch {
+                let ne = error as? NEVPNError
+                let code = ne.map { " NEVPNErrorCode=\($0.code.rawValue)" } ?? ""
+                VpnManager.vpnlog("startVPNTunnel THREW: \(error.localizedDescription)\(code)")
+                if retryLeft > 0 {
+                    self.manager.removeFromPreferences { [weak self] _ in
+                        self?.startVpnViaRegisteredManager(retryLeft: 0, completion: completion)
+                    }
+                    return
+                }
+                completion("start failed: \(error.localizedDescription)\(code)")
+            }
+        }
+    }
+
+    /// 启动后观察实际连接状态，确认真连上而非"假成功"。
+    private func confirmConnected(retryLeft: Int, tick: Int, completion: @escaping (String?) -> Void) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self = self else { return }
+            let status = self.manager.connection.status
+            if status == .connecting || status == .connected {
+                VpnManager.vpnlog("confirmConnected OK tick=\(tick) status=\(status.rawValue)")
+                completion(nil)
+            } else if tick < 8 { // 8 * 0.4s ≈ 3.2s
+                self.confirmConnected(retryLeft: retryLeft, tick: tick + 1, completion: completion)
+            } else {
+                VpnManager.vpnlog("confirmConnected TIMEOUT status=\(status.rawValue) retryLeft=\(retryLeft)")
+                // 没真连上：状态仍是 disconnected/invalid → 系统批准窗没弹/隧道没起（TrollStore 环境限制）
+                completion("VPN 启动未生效：系统未弹「允许」窗或隧道未连接（TrollStore 环境限制），请改用「本地代理」抓包（WiFi 手动代理 127.0.0.1:18180）")
+            }
+        }
+    }
+
+    func stopVpn() {
+        manager.connection.stopVPNTunnel()
+        // fix3cy8：关闭时彻底清理系统 VPN 配置（stopVPNTunnel 只停隧道，NEVPNManager 配置会残留，
+        //   残留配置让 App 下次启动 loadFromPreferences 卡在 invalid 状态 → 8790 服务失效、
+        //   局域网/HTTP 全连不上。这里连配置一起删，隧道+代理+路由一起清掉）。
+        VpnManager.vpnlog("stopVpn: stopping tunnel + removing preferences")
+        manager.removeFromPreferences { err in
+            if let e = err {
+                VpnManager.vpnlog("stopVpn removeFromPreferences FAILED: \(e.localizedDescription)")
+            } else {
+                VpnManager.vpnlog("stopVpn removeFromPreferences OK (config removed)")
+            }
+        }
+    }
+
+    /// fix3cy8：App 启动时清理残留 VPN 配置。
+    /// 上次开 VPN 后异常退出 / 旧版本关 VPN 只停隧道没删配置 → 系统里残留"Xosvi 抓包 VPN"配置，
+    /// 其隧道路由没撤销 → 局域网入站（8790）被残留 utun 路由黑洞 → 远程连不上。
+    /// 这里启动即查：存在我们的配置且不在 connected 状态 → 删掉（路由随配置撤销）。
+    static func cleanupStaleConfig() {
+        NETunnelProviderManager.loadAllFromPreferences { managers, _ in
+            guard let stale = managers?.first(where: { $0.localizedDescription == "Xosvi 抓包 VPN" }),
+                  stale.connection.status != .connected else { return }
+            stale.removeFromPreferences { err in
+                VpnManager.vpnlog("cleanupStaleConfig: removed stale config, status was \(stale.connection.status.rawValue) err=\(err?.localizedDescription ?? "nil")")
+            }
+        }
+    }
+
+    // MARK: - 本地代理模式
+
+    @discardableResult
+    func startLocalProxy() -> Bool {
+        guard !localProxyRunning else { return true }
+        let ok = MitmProxy.shared.start(port: proxyPort)
+        localProxyRunning = ok
+        return ok
+    }
+
+    func stopLocalProxy() {
+        MitmProxy.shared.stop()
+        localProxyRunning = false
+    }
+
+    // MARK: - 证书
+
+    /// 根 CA 是否已生成
+    var caExists: Bool {
+        FileManager.default.fileExists(atPath: MitmProxy.shared.certDir + "/ca.pem")
+    }
+
+    /// 生成 mobileconfig 描述文件（含根证书 DER）。返回文件路径，失败 nil。
+    func generateMobileConfig() -> String? {
+        // 确保 CA 存在（没有则先初始化）
+        if !caExists {
+            let ok = MitmProxy.shared.start(port: proxyPort)
+            if !ok { return nil }
+            MitmProxy.shared.stop()
+        }
+        // iOS 只认 DER：优先读 ca.der；老 CA 没有 der 就现场导出
+        let derPath = MitmProxy.shared.certDir + "/ca.der"
+        if !FileManager.default.fileExists(atPath: derPath) {
+            guard mitm_ca_export_der(MitmProxy.shared.certDir) == 0 else { return nil }
+        }
+        guard let der = try? Data(contentsOf: URL(fileURLWithPath: derPath)) else { return nil }
+
+        // ⚠️ PayloadContent 必须是 <data>（DER 二进制）类型，iOS 才认：
+        // 传 base64 字符串会输出 <string> 导致安装时报 "字段 PayloadContent 无效"。
+        let certPayload: [String: Any] = [
+            "PayloadType": "com.apple.security.root",
+            "PayloadVersion": 1,
+            "PayloadIdentifier": "com.xosvi.app.mitmca",
+            "PayloadUUID": UUID().uuidString,
+            "PayloadDisplayName": "Xosvi MITM CA",
+            "PayloadContent": der,
+            "PayloadCertificateFileName": "XosviCA.der"
+        ]
+        let profile: [String: Any] = [
+            "PayloadType": "Configuration",
+            "PayloadVersion": 1,
+            "PayloadIdentifier": "com.xosvi.app.mitm",
+            "PayloadUUID": UUID().uuidString,
+            "PayloadDisplayName": "Xosvi 抓包证书",
+            "PayloadDescription": "安装并信任后，Xosvi 可解密 HTTPS 明文用于抓包分析",
+            "PayloadContent": [certPayload]
+        ]
+        guard let data = try? PropertyListSerialization.data(fromPropertyList: profile, format: .xml, options: 0) else { return nil }
+        let path = MitmProxy.shared.certDir + "/XosviCA.mobileconfig"
+        do {
+            try data.write(to: URL(fileURLWithPath: path))
+            return path
+        } catch {
+            return nil
+        }
+    }
+
+    /// 抓包记录目录
+    var mitmLogDir: String { MitmProxy.shared.logDir }
+
+    /// 根证书目录（含 ca.pem / ca.der / mobileconfig）
+    var certDir: String { MitmProxy.shared.certDir }
+}
