@@ -94,11 +94,11 @@ final class DeviceSnapshotTool: MCPTool {
     }
 }
 
-// MARK: - 网络搜索 (v2.9.79：Bing 主引擎 + DuckDuckGo 免 key fallback，对齐 OpenClaw/Hermes 设计）
+// MARK: - 网络搜索 (v2.9.79 起；v7.0.0：百度主引擎 + 必应/DuckDuckGo 备用）
 
 final class WebSearchTool: MCPTool {
     let definition = ToolDefinition(name: "web.search",
-        summary: "Search the web with multi-engine fallback (Bing → DuckDuckGo → Baidu) and multi-query support. Use for: find information online, look up facts, search tutorials/docs. Don't use for: open a specific website (use browser.open), search saved knowledge (use knowledge.search). v4.3.65: queries:[...] 并行拆词检索并自动去重合并；sort=true 官方/媒体优先；save=true 自动沉淀知识库。Example: user says 'when was iPhone 16 released' → search web.",
+        summary: "Search the web with multi-engine fallback (Baidu → Bing → DuckDuckGo) and multi-query support. Use for: find information online, look up facts, search tutorials/docs. Don't use for: open a specific website (use haxbrowser {command:'open'}), search saved knowledge (use knowledge.search). v4.3.65: queries:[...] 并行拆词检索并自动去重合并；sort=true 官方/媒体优先；save=true 自动沉淀知识库。Example: user says 'when was iPhone 16 released' → search web.",
         parameters: ["query": "Search keywords (e.g. 'iOS 17 jailbreak guide')",
                      "queries": "Array of search terms to run in parallel & merge (optional, preferred for complex topics)",
                      "limit": "Max results per query (default 8)",
@@ -140,16 +140,17 @@ final class WebSearchTool: MCPTool {
         var engineCounts: [String: Int] = [:]
         for q in queries {
             let enc = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q
-            var res = fetchBing(query: enc, limit: limit)
+            // v7.0.0：搜索引擎顺序改为 百度 → 必应 → DuckDuckGo（用户要求百度为默认、主流做备用）
+            var res = fetchBaidu(query: enc, limit: limit)
+            if res.isEmpty {
+                res = fetchBing(query: enc, limit: limit)
+                engineCounts["Bing", default: 0] += res.count
+            } else {
+                engineCounts["Baidu", default: 0] += res.count
+            }
             if res.isEmpty {
                 res = fetchDuckDuckGo(query: enc, limit: limit)
                 engineCounts["DuckDuckGo", default: 0] += res.count
-            } else {
-                engineCounts["Bing", default: 0] += res.count
-            }
-            if res.isEmpty {
-                res = fetchBaidu(query: enc, limit: limit)
-                engineCounts["Baidu", default: 0] += res.count
             }
             all += res
         }
@@ -425,7 +426,7 @@ final class WebSearchTool: MCPTool {
 
 final class WebFetchTool: MCPTool {
     let definition = ToolDefinition(name: "web.fetch",
-        summary: "Fetch and read text content from a web page URL. Use for: read an article/webpage without opening browser, scrape page text. Don't use for: search web (use web.search), interact with page (use browser.open). Example: user says 'read this webpage content' → fetch web page.",
+        summary: "Fetch and read text content from a web page URL. Use for: read an article/webpage without opening browser, scrape page text. Don't use for: search web (use web.search), interact with page (use haxbrowser). Example: user says 'read this webpage content' → fetch web page.",
         parameters: ["url": "Web page URL to read", "maxChars": "Max characters to return (default 4000)"], verified: true, category: "browser")
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let urlString = params["url"] as? String, let url = URL(string: urlString) else {
@@ -449,17 +450,17 @@ final class WebFetchTool: MCPTool {
         // v3.1.21: web.fetch failed自动 fallback 到内置浏览器
         // AI 根本不需要知道这个逻辑，直接调用 web.fetch 就能得到结果
         if html == nil {
-            AuditLog.shared.log("web.fetch", detail: "直接 fetch failed，fallback 到内置浏览器: \(urlString)")
+            AuditLog.shared.log("web.fetch", detail: "直接 fetch failed，fallback 到 Hax 浏览器: \(urlString)")
             do {
-                // 1. 用内置浏览器打开网页
-                if let navTool = ToolRegistry.shared.tool(named: "browser.navigate") {
-                    _ = try navTool.invoke(["url": urlString])
+                // 1. 用 Hax 浏览器打开网页（v7.0.0：旧 browser.navigate 已删除）
+                if let navTool = ToolRegistry.shared.tool(named: "haxbrowser") {
+                    _ = try navTool.invoke(["command": "open", "url": urlString])
                 }
                 // 2. 等 2 秒加载
                 Thread.sleep(forTimeInterval: 2.0)
                 // 3. 读取网页内容
-                if let textTool = ToolRegistry.shared.tool(named: "browser.text") {
-                    let result = try textTool.invoke([:])
+                if let textTool = ToolRegistry.shared.tool(named: "haxbrowser") {
+                    let result = try textTool.invoke(["command": "text", "chars": maxChars])
                     if let text = result["text"] as? String, !text.isEmpty {
                         AuditLog.shared.log("web.fetch", detail: "fallback OK: \(urlString) → \(text.count) chars")
                         return [
@@ -467,7 +468,7 @@ final class WebFetchTool: MCPTool {
                             "title": result["title"] as? String ?? "",
                             "text": String(text.prefix(maxChars)),
                             "fallback_used": true,
-                            "note": "Direct fetch failed, used built-in browser as fallback"
+                            "note": "Direct fetch failed, used Hax browser as fallback"
                         ]
                     }
                 }
@@ -477,7 +478,7 @@ final class WebFetchTool: MCPTool {
         }
         
         guard let raw = html else {
-            throw MCPError.failed("fetch failed: \(urlString) (direct fetch and browser fallback both failed)")
+            throw MCPError.failed("fetch failed: \(urlString) (direct fetch and Hax browser fallback both failed)")
         }
         // 提取标题 + 正文纯文本（v4.3.65：article/main 优先抽取、去噪块，不再整页倾倒）
         let title = raw.firstCapture(pattern: "<title[^>]*>(.*?)</title>")?.stripHTMLTags() ?? ""

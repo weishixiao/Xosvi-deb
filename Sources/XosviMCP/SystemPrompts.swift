@@ -62,8 +62,10 @@ final class SystemPrompts {
             - Tool selection (simple op → dedicated tool; batch/complex → shell):
               * read single file → artifact read; write → artifact write; list dir → artifact list; find → shell.exec("find ...");
                 batch(10+)/complex script → shell.exec
-              * browser: open/navigate → browser navigate; read text → browser text; HTML/structure → browser snapshot;
-                type/fill → browser fill_form; click → browser submit
+              * web (v7.0: Hax 浏览器 haxbrowser，默认百度): 查资料/看渲染页面 → haxbrowser {command:'search', query, engine};
+                open URL → command:'open'; 读正文+元素编号 → command:'snapshot'; 只要文字 → command:'text';
+                点/填 → command:'click' (idx 或 selector) / command:'type' (idx + text);
+                只想要结果列表(快) → web.search; 只要静态页正文 → web.fetch
               * UI (needs ControlAgent): tap text → control tap_text (preferred, no coords); tap coords → control tap
                 (screenshot first to read exact coords, don't assume a fixed resolution); type → control type_text; swipe → control swipe;
                 screenshot → control screenshot
@@ -75,7 +77,7 @@ final class SystemPrompts {
                 - 装包/解包/编译/复杂脚本 → runtime="alpine"（完整Linux工具链，只能访问绑定目录）
                 - 不确定就 runtime="auto"（默认），结果里看 `runtime_actual` 字段确认实际环境
                 - 结果返回空/0字节时先检查：是不是走了Alpine但路径不在绑定范围？换 runtime="ios" 重试
-              * combos: screenshot+OCR → control screenshot → multimodal vision; web+content → browser navigate → browser text;
+              * combos: screenshot+OCR → control screenshot → multimodal vision; web+content → haxbrowser search → haxbrowser text;
                 inject → inject list(find bundle_id) → inject → app launch(verify); tap button → control screenshot
                 (read coords) → control tap
 
@@ -421,7 +423,7 @@ final class SystemPrompts {
       parallel, results auto-deduped) plus single `query`; multi-engine fallback Bing→DuckDuckGo→Baidu; `sort:true` ranks
       official/third-party first; `save:true` auto-saves top results to the knowledge base (reuse via knowledge search).
       `web.fetch` extracts main content (article/main first, noise blocks removed); if direct fetch fails it falls back
-      to the built-in browser automatically.
+      to the Hax browser (haxbrowser) automatically.
 
     === SHELL & ENVIRONMENT (authoritative) ===
     - shell.exec has built-in iOS native commands on the REAL iOS FS (v4.4.x native toolchain, run directly on the
@@ -484,7 +486,7 @@ final class SystemPrompts {
       (receipt / validate / IAPReceipt / transactionReceipt) — the literal "StoreKit" rarely appears in the binary.
       Work on the binary via the auto-bound bundle (/ios_containers/.../xxx.app binary) or a bind_app'd data container
       (/ios_data_<app>); decrypt (cryptid=0) only the encrypted main binary when needed.
-    - Workspace = /var/mobile/Documents/Workspace (artifact list/read). Fetch web/GitHub via shell.exec curl; if blocked, browser navigate + browser text.
+    - Workspace = /var/mobile/Documents/Workspace (artifact list/read). Fetch web/GitHub via shell.exec curl; if blocked, haxbrowser open + haxbrowser text.
 
     === REVERSE / BINARY ANALYSIS METHODOLOGY (v4.3.31 knowledge base) ===
     执行方式(v4.3.66): 遇"分析二进制/插件安不安全/逆向"类问题——【先自己搜】1) `knowledge` command=search 查内置知识库(关键词: 逆向分析 / 插件安全, 已预置方法论+风险判定条目); 2) `web.search` + `web.fetch` 查资料与已知结论(如 "Mach-O 逆向 分析方法"、"iOS 二进制 后门 检测")。拿到方法后【组合基础工具自主分析】(inject binary_symbols / shell / package / app encrypt_info), 不依赖封装好的组合工具。

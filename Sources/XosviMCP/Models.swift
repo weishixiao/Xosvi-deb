@@ -918,6 +918,30 @@ final class ConversationStore: ObservableObject {
         sortAndSave()
     }
 
+    // MARK: - v6.9.12：对话列表（豆包式）配套操作
+
+    /// 单个会话的消息（列表页做搜索命中时用，避免碰 selected 语义）
+    func messages(in id: UUID) -> [ChatMessage] {
+        conversations.first(where: { $0.id == id })?.messages ?? []
+    }
+
+    /// 会话标题重命名（空标题忽略，最多 60 字）
+    func rename(_ id: UUID, to newTitle: String) {
+        let t = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty, let idx = conversations.firstIndex(where: { $0.id == id }) else { return }
+        conversations[idx].title = String(t.prefix(60))
+        sortAndSave()
+    }
+
+    /// 按 id 删除（列表页没有 IndexSet 上下文）
+    func deleteConversations(ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        conversations.removeAll { ids.contains($0.id) }
+        if let sel = selectedId, ids.contains(sel) { selectedId = nil }
+        if selectedId == nil { selectedId = conversations.first?.id }
+        sortAndSave()
+    }
+
     func send(_ text: String, using config: ModelConfig, imageDataURLs: [String]? = nil,
               reasoningLevel: Int = 0, smartSearch: Bool = true,
               appendUserMessage: Bool = true, in convId: UUID? = nil) {
@@ -979,16 +1003,9 @@ final class ConversationStore: ObservableObject {
 
         // v3.1.66：全量加载所有工具 (tool_search 已删除，不再渐进式披露）
         var baseTools = config.apiProtocol == "Anthropic Messages" ? nil : ToolRegistry.shared.enabledOpenAIToolSchema()
-        // v2.9.20：智能搜索开关真实生效——关闭时从工具集移除 web.search / knowledge.search / web.fetch
-        if !smartSearch {
-            let exclude = Set(["web.search", "knowledge.search", "web.fetch"])
-            baseTools = baseTools?.filter { t in
-                if let fn = t["function"] as? [String: Any], let n = fn["name"] as? String {
-                    return !exclude.contains(n)
-                }
-                return true
-            }
-        }
+        // v7.1.0：搜索不再由用户开关控制——联网工具默认全开，AI 判断需要时自行调用
+        // （web.search / haxbrowser / web.fetch 都在工具集里）。smartSearch 参数保留只为兼容旧调用。
+        _ = smartSearch
         // v3.1.66：全量加载，disclosed 机制已不再新增工具 (tool_search 已删），
         // 保留仅为兼容会话内已授权工具 schema 的持久注入。
         let preDisclosed = ToolRegistry.shared.approvedToolNames()
@@ -1648,9 +1665,18 @@ final class ConversationStore: ObservableObject {
             // v2.9.29：工具执行放后台线程，避免注入/文件操作等耗时调用阻塞主线程
             //  (授权恢复后Run injection导致一直转圈 + 聊天框/输入框无响应）。
             // dispatch 在后台执行，结果/授权/错误统一回主线程继续递归。
+            // v7.1.0：子代理每轮进度 → 状态栏（"子代理第 N 轮：tool …"），用户能看见它在忙什么
+            if call.name == "subagent" {
+                SubagentTool.progressHandler = { round, note in
+                    DispatchQueue.main.async {
+                        ConversationStore.shared.statusText = "子代理 第 \(round) 轮 · \(note)"
+                    }
+                }
+            }
             DispatchQueue.global().async {
                 let result: Result<[String: Any], Error>
                 do { result = .success(try ToolRegistry.shared.dispatch(name: call.name, params: params)) }
+                if call.name == "subagent" { SubagentTool.progressHandler = nil }
                 catch { result = .failure(error) }
                 let toolDuration = CFAbsoluteTimeGetCurrent() - toolStart
                 DispatchQueue.main.async {
@@ -1676,7 +1702,7 @@ final class ConversationStore: ObservableObject {
         switch result {
         case .success(let r):
             let rawContent = Self.jsonString(r)
-            // v2.9.49：工具结果截断 (>8000字符），防止单条工具结果 (如 browser.snapshot / injection.list）
+            // v2.9.49：工具结果截断 (>8000字符），防止单条工具结果 (如 haxbrowser snapshot / injection.list）
             // 撑爆上下文导致后续请求巨慢。截断后加提示，模型可调用带分页/过滤参数的工具获取完整数据。
             let content: String
             if rawContent.count > 8000 {

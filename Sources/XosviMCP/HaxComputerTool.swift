@@ -28,7 +28,9 @@ final class HaxComputerTool: MCPTool {
             "path": "For read/write: absolute path (iOS path or Alpine path)",
             "content": "For write: file content (utf8)",
             "pkg": "For install: package name (auto: apk add or pip install)",
-            "timeout": "Seconds (default 60, max 600)"
+            "timeout": "Seconds (default 60, max 600)",
+            "render": "For search: true = 用 Hax 浏览器实际打开结果页（JS 页面/要读渲染正文时用，慢但准）",
+            "engine": "For search+render: baidu(默认)/bing/sogou/google"
         ],
         verified: true,
         category: "terminal",
@@ -149,6 +151,12 @@ final class HaxComputerTool: MCPTool {
     private func search(_ params: [String: Any]) throws -> [String: Any] {
         guard let q = params["query"] as? String, !q.isEmpty else {
             throw MCPError.invalidParams("query required")
+        }
+        // v7.0.0：render=true 时走 Hax 浏览器（真实渲染，默认百度），否则走快速的结构化搜索
+        if params["render"] as? Bool == true {
+            var p: [String: Any] = ["command": "search", "query": q]
+            if let e = params["engine"] as? String { p["engine"] = e }
+            return try HaxBrowserTool().invoke(p)
         }
         var p: [String: Any] = ["query": q]
         if let limit = params["limit"] as? Int { p["limit"] = limit }

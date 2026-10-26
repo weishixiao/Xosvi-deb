@@ -260,8 +260,8 @@ public final class ToolRegistry: ObservableObject {
     // 典型场景：浏览器页面已变化但 text/snapshot 因参数没变一直喂旧缓存）。
     private var cacheHitCounts: [String: Int] = [:]
     // v4.3.26：缓存绕过工具——有状态工具（浏览器页面内容随时可变）绝不能喂缓存。
-    // browser.* 全部绕过：URL 变了 params 不变，旧缓存必错 (BUG-1/BUG-2 根因)。
-    private var cacheBypassPrefixes: [String] = ["browser", "control", "device.fake", "injection.mem"]
+    // haxbrowser / browser.* 全部绕过：URL 变了 params 不变，旧缓存必错 (BUG-1/BUG-2 根因)。
+    private var cacheBypassPrefixes: [String] = ["haxbrowser", "browser", "control", "device.fake", "injection.mem"]
     private let defaultCacheWindow: TimeInterval = 300.0  // 默认 5 分钟缓存窗口
     private let longCacheWindow: TimeInterval = 1800.0  // 30 分钟缓存窗口 (静态数据）
 
@@ -461,7 +461,7 @@ public final class ToolRegistry: ObservableObject {
         // v3.1.66：全量注册工具默认启用
         "artifact", "device", "memory", "assistant_memory", "verify", "container",
         "ssh", "diagnose", "knowledge", "location", "macro", "app", "control",
-        "inject", "automation", "network.capture", "server", "project", "browser",
+        "inject", "automation", "network.capture", "server", "project", "haxbrowser", "subagent",
         "shell.exec", "reminder", "rescue",
         // v4.3.65：统一工具安装闭环
         "tool.install", "env.setup_re",
@@ -693,9 +693,9 @@ public final class ToolRegistry: ObservableObject {
             "请求清单": ["network.capture", "network", "http"],
             "截屏": ["screenshot", "screen"],
             "屏幕": ["screenshot", "screen", "ui"],
-            "网页": ["browser", "web", "url"],
-            "浏览器": ["browser", "web"],
-            "网页内容": ["browser.text", "browser.snapshot"],
+            "网页": ["haxbrowser", "web", "url"],
+            "浏览器": ["haxbrowser", "web"],
+            "网页内容": ["haxbrowser", "web.fetch"],
             "文本": ["text", "content"],
             "识别": ["ocr", "recognize", "extract"],
             "文字": ["ocr", "text"],
@@ -759,7 +759,7 @@ public final class ToolRegistry: ObservableObject {
             let sumL = def.summary.lowercased()
             var score: Double = 0
             if !q.isEmpty {
-                // v3.1.0: 类别前缀匹配——搜 "browser" 就返回所有 browser.* 工具
+                // v3.1.0: 类别前缀匹配——搜 "browser" 就返回同前缀的工具
                 if nameL.hasPrefix(q + ".") || nameL.hasPrefix(q + "_") {
                     score += 10  // 类别匹配权重最高
                 }
@@ -786,7 +786,7 @@ public final class ToolRegistry: ObservableObject {
                     "抓包": ["network.capture", "debug.dump_network_log"],
                     "注入": ["injection", "injection.enable", "control.inject"],
                     "文件": ["fs.", "bridge.", "artifact."],
-                    "浏览器": ["browser."],
+                    "浏览器": ["haxbrowser", "web."],
                     "自动化": ["automation.", "macro.", "task.run"],
                     "清理": ["cleanup.", "workspace.cleanup", "rescue."],
                     "编译": ["build.", "github."],
@@ -886,7 +886,7 @@ public final class ToolRegistry: ObservableObject {
                 WorkflowManager.shared.addStep(name: originalName, tool: originalName)
 
                 // v3.0.90：结果缓存——5 分钟内同样的调用直接返回缓存
-                // v4.3.26：有状态工具 (browser./control./device.fake/injection.mem）绕过缓存；
+                // v4.3.26：有状态工具 (haxbrowser/browser./control./device.fake/injection.mem）绕过缓存；
                 // 其余工具连续第 2 次命中缓存也强制重取 (命中计数归零后真实执行)。
                 let cacheKey = callKey(name: originalName, params: params)
                 let bypassCache = cacheBypassPrefixes.contains { originalName.hasPrefix($0) }
@@ -1370,9 +1370,11 @@ public final class ToolRegistry: ObservableObject {
         // v3.1.33: 删 ProcessListTool (用 shell ps 代替）
         register(ShellExecTool())   // v3.0.28：内置终端，执行 shell 命令
 
-        // M5.5 内置浏览器 (v2.9.37：AI 可控，蓝框高亮元素；v2.9.88：+wait/text/scroll/submit）
-        // v3.1.47: browser 大工具 + 子命令 (合并 13 个 browser.* 工具）
-        register(BrowserExecTool())
+        // v7.0.0：旧的 browser 大工具 / 13 个 browser.* 工具 / FloatingBrowser 已整体删除，
+        // 换成 Hax 浏览器（真实渲染 + 百度优先搜索），挂在 Hax 电脑里。
+        register(HaxBrowserTool())
+        // v7.1.0：通用子代理——多轮探索任务甩给它，只回结论
+        register(SubagentTool())
         // v3.1.47: 删旧的 13 个 browser.* 工具 (已合并到 browser 大工具）
         // v2.9.131：AI 安装/卸载 App (trollstorehelper 优先）——补全下载→安装→注入→控制链路
         // v3.1.59: 删 AppInstallTool / AppUninstallTool / AppDuplicateTool (已合并到 app 大工具）

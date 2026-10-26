@@ -82,8 +82,6 @@ struct SettingsView: View {
         }
         .navigationViewStyle(.stack)
         .onAppear {
-            // v2.9.242：进设置页彻底隐藏悬浮浏览器（不只是收成胶囊），杜绝任何遮挡
-            FloatingBrowser.shared.hide()
             triggerProbe()   // v2.9.18：进入设置页自动探测一次，更新环境状态色
         }
         .onAppear {
@@ -206,25 +204,13 @@ struct SettingsView: View {
                              subtitle: "SSH 连接远程服务器 · 远程终端被控制",
                              icon: "terminal.fill", color: .teal,
                              destination: AnyView(RemoteAccessView())),
-                // v6.6.9：本地终端（移植自 OpenMinis，iSH 引擎交互式 shell）
-                SettingsItem(title: "终端",
-                             subtitle: "Alpine Linux 交互式 shell · 完整 ANSI 终端",
-                             icon: "apple.terminal", color: .black,
-                             destination: AnyView(ISHTerminalView(showCloseButton: false))),
+                // v7.0.0：本地终端入口从设置里移走——已并入「Hax 电脑」（Hax 电脑 → 打开终端）
                 // v6.6.9：Minis 电脑（rootfs 管理 + Alpine 文件浏览）
                 SettingsItem(title: "Hax 电脑",
-                             subtitle: "Linux 环境状态 · 文件浏览 · 重置 rootfs",
+                             subtitle: "终端 · Hax 浏览器 · 环境与文件",
                              icon: "desktopcomputer", color: .indigo,
                              destination: AnyView(HaxComputerView())),
-                SettingsItem(title: L10n.t("row_browser"),
-                             subtitle: "悬浮窗 · AI 可控制 · 蓝框高亮",
-                             icon: "globe.asia.australia.fill", color: .cyan,
-                             action: {
-                                 presentationMode.wrappedValue.dismiss()
-                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                                     FloatingBrowser.shared.show()
-                                 }
-                             }),
+                // v7.0.0：旧「内置浏览器」设置项已删除——浏览器并入 Hax 电脑页
                 SettingsItem(title: L10n.t("row_agents"),
                              subtitle: "隔离指令 · 工作流",
                              icon: "person.3.fill", color: .indigo,
@@ -376,7 +362,7 @@ struct SettingsView: View {
             let toggle = Toggle(isOn: Binding(get: isOn, set: onToggle)) {
                 SettingRowContent(item: item)
             }
-            .accentColor(.tmCyan)
+            .accentColor(.primary)   // v7.1.1：开关也走黑白，不再用青色
             if let dest = item.destination {
                 NavigationLink(destination: dest) { toggle }
             } else {
@@ -533,19 +519,24 @@ struct SettingsView: View {
 struct SettingRowContent: View {
     let item: SettingsItem
 
+    /// v7.1.1：DeepSeek 的设置项是纯线条图标、没有底板；原来的 xxx.fill 在这里会变成一坨黑块，
+    /// 所以统一去掉 .fill 落到同名线条版。
+    private var lineIcon: String {
+        let raw = item.icon
+        guard raw.hasSuffix(".fill") else { return raw }
+        return String(raw.dropLast(5))
+    }
+
     var body: some View {
+        // v7.1.1（DeepSeek 风格）：彩色方块 + 白色重图标 → 黑白简洁版（裸线条图标）
         HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(item.color)
-                    .frame(width: 34, height: 34)
-                Image(systemName: item.icon)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundColor(.white)
-            }
+            Image(systemName: lineIcon)
+                .font(.system(size: 17, weight: .regular))
+                .foregroundColor(.primary)
+                .frame(width: 26, alignment: .center)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)
-                    .font(.body)
+                    .font(.system(size: 16))
                     .foregroundColor(.primary)
                 if !item.subtitle.isEmpty {
                     Text(item.subtitle)

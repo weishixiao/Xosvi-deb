@@ -15,6 +15,8 @@ final class AppUIState: ObservableObject {
     @Published var quickToolsPresented = false
     @Published var quickSkillsPresented = false
     @Published var quickFilesPresented = false
+    /// v7.0.0：Hax 浏览器（全屏弹出；旧 FloatingBrowser 已删除）
+    @Published var quickHaxBrowserPresented = false
 }
 
 struct RootView: View {
@@ -40,7 +42,7 @@ struct RootView: View {
 
     var body: some View {
         ZStack {
-            ChatView()
+            ChatRootView()
                 .disabled(ui.drawerOpen)
 
             if ui.drawerOpen {
@@ -62,9 +64,17 @@ struct RootView: View {
                 }
             }
         }
-        // v2.9.39：内置浏览器悬浮窗（所有界面之上，可缩小到右侧边缘，AI 操作自动浮现）
-        // 注意：trailing-closure 版 overlay 仅 iOS15+，项目部署目标 iOS14，用 view 参数版
-        .overlay(FloatingBrowserOverlay())
+        // v7.0.0：旧悬浮浏览器（FloatingBrowserOverlay）已删除，改为 Hax 浏览器全屏页
+        .fullScreenCover(isPresented: Binding(
+            get: { ui.quickHaxBrowserPresented },
+            set: { ui.quickHaxBrowserPresented = $0 }
+        )) {
+            CompatNav {
+                HaxBrowserView(embedded: false, onClose: { ui.quickHaxBrowserPresented = false })
+                    .navigationTitle("Hax 浏览器")
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+        }
         // v2.9.76：设置改全屏（去掉 sheet 半屏 + 顶部 grabber），子页面头部对齐
         .fullScreenCover(isPresented: Binding(
             get: { ui.settingsPresented },
@@ -191,22 +201,16 @@ struct ConversationDrawerView: View {
     }
 
     private var header: some View {
+        // v6.9.18：左上角的功能键图标 +「对话」标题用户要求删除（新建 / 关闭仍留在右侧）
         HStack(spacing: 10) {
-            Image(systemName: "text.bubble.fill")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundColor(.white)
-                .frame(width: 32, height: 32)
-                .background(LinearGradient(colors: [.blue, .tmCyan], startPoint: .topLeading, endPoint: .bottomTrailing))
-                .cornerRadius(9)
-            Text(L10n.t("drawer_title"))
-                .font(.title3)
-                .fontWeight(.bold)
             Spacer()
             // v6.2.7：抽屉头部新建会话入口（配合 ChatView 边缘侧滑手势，
             // 侧滑开抽屉即可一键新建，解决"侧滑无法打开添加新对话页"）
+            // v6.9.12：新建后发通知，ChatRootView 会切到聊天页
             Button(action: {
                 withAnimation { ui.drawerOpen = false }
                 store.newConversation()
+                NotificationCenter.default.post(name: .tmNewConversation, object: nil)
             }) {
                 Image(systemName: "plus.square.fill")
                     .font(.system(size: 20, weight: .semibold))

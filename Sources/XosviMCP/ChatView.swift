@@ -12,7 +12,7 @@ struct ChatView: View {
     @State private var inputHeight: CGFloat = 36
     // v2.9.234：推理强度/智能搜索持久化(@AppStorage)——之前纯@State,关app重开必丢
     @AppStorage("chat_reasoning") private var reasoning = 0   // 0=低 1=中 2=高 3=最高(xhigh) 4=极限(max)
-    @AppStorage("chat_smart_search") private var smartSearch = true
+    // v7.1.0：搜索不再有开关——联网检索默认全开，由 AI 自己判断何时搜（见 SearchAlwaysOn.apply()）。
     // v3.1.25：思考模型总开关——关闭时完全不思考，直接回复（reasoning_effort=none）
     @AppStorage("chat_think_enabled") private var thinkEnabled = true
     @State private var keyboardHeight: CGFloat = 0   // v2.9.234：键盘高度(消息列表跟随上移)
@@ -41,6 +41,31 @@ struct ChatView: View {
     var body: some View {
         CompatNav {
             VStack(spacing: 0) {
+                // v6.9.16（DeepSeek 风格）：会话页顶部栏自绘——任务名居中 + 下方一行快速切换模型；
+                // 两侧是悬浮圆形功能键（左「≡」抽屉、右「＋」终端 / Hax 电脑）。
+                if #available(iOS 16.0, *) {
+                    DeepSeekTopBar(
+                        centerTitle: selectionMode ? "已选 \(selectedIds.count) 条" : store.currentTitle,
+                        showModelChip: !selectionMode,
+                        onLeft: {
+                            if selectionMode { exitSelection() }
+                            else { withAnimation { uiState.drawerOpen = true } }
+                        },
+                        leftIcon: selectionMode ? nil : "line.3.horizontal",
+                        trailing: selectionMode ? nil : AnyView(
+                            Menu {
+                                Button { showTerminal = true } label: {
+                                    Label("终端（自动进入 /root）", systemImage: "apple.terminal")
+                                }
+                                Button { showHaxComputer = true } label: {
+                                    Label("Hax 电脑", systemImage: "desktopcomputer")
+                                }
+                            } label: {
+                                FloatingCircleButton(icon: "plus")
+                            }
+                        )
+                    )
+                }
                 if modelStore.configs.isEmpty {
                     emptyState
                 } else if store.currentMessages.isEmpty {
@@ -55,6 +80,8 @@ struct ChatView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 inputBar
             }
+            // v6.9.16：iOS16+ 顶部栏自绘，系统导航栏整条隐藏（iOS15 仍走系统导航栏）
+            .navigationBarHidden(#available(iOS 16.0, *))
             .navigationTitle(selectionMode ? "已选 \(selectedIds.count) 条" : store.currentTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -224,8 +251,9 @@ struct ChatView: View {
                         // v3.1.67：文件入口不再用 .fileImporter（真机有 bug），改记 pendingFilePick，
                         // 由 sheet onDismiss 在面板完全关闭后触发 UIKit 文档选择器
                         if pick == .browser {
+                            // v7.0.0：旧悬浮浏览器已删除——网页入口直接开 Hax 电脑里的 Hax 浏览器
                             self.attachmentSheet = nil
-                            FloatingBrowser.shared.show()
+                            AppUIState.shared.quickHaxBrowserPresented = true
                         } else if pick == .documentPicker {
                             self.pendingFilePick = true
                             self.attachmentSheet = nil
@@ -237,8 +265,9 @@ struct ChatView: View {
                 } else {
                     AttachmentPanelView(onPick: { pick in
                         if pick == .browser {
+                            // v7.0.0：旧悬浮浏览器已删除——网页入口直接开 Hax 电脑里的 Hax 浏览器
                             self.attachmentSheet = nil
-                            FloatingBrowser.shared.show()
+                            AppUIState.shared.quickHaxBrowserPresented = true
                         } else if pick == .documentPicker {
                             self.pendingFilePick = true
                             self.attachmentSheet = nil
@@ -380,11 +409,20 @@ struct ChatView: View {
     }
 
     private var homeState: some View {
-        // v6.6.14：按用户要求——新会话页只保留空白。
-        // 原先的 App 图标 / 欢迎语 / 2 张主卡 / 10 张快捷卡片全部移除。
-        // 恢复方法：从 git 历史取回此方法（提交 8d59de6 之前的版本）。
-        Color.clear
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        // v6.6.14：按用户要求——新会话页只保留空白（欢迎语 / 主卡 / 快捷卡片都在 git 历史里，提交 8d59de6）。
+        // v6.9.15：「技能」从输入框挪出后，首页右上角留一个入口（v6.9.16 起是悬浮圆钮），功能不丢。
+        // v6.9.19：左下角设置圆钮用户要求删除——设置入口只保留在抽屉底部。
+        ZStack(alignment: .topTrailing) {
+            Color.clear
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // v6.9.16：右上角也改成悬浮圆形功能键（与左上角同款），去掉「技能」两个字
+            Button(action: { AppUIState.shared.quickSkillsPresented = true }) {
+                FloatingCircleButton(icon: "bolt")
+            }
+            .buttonStyle(PlainButtonStyle())
+            .padding(.top, 8)
+            .padding(.trailing, 16)
+        }
     }
 
     /// v2.9.78：首页能力小卡片（两列网格）
@@ -436,7 +474,7 @@ struct ChatView: View {
         guard let cfg = modelStore.defaultConfig else { return }
         if store.selectedId == nil { store.newConversation() }
         inputText = ""
-        store.send(text, using: cfg, reasoningLevel: thinkEnabled ? reasoning : 5, smartSearch: smartSearch, in: store.selectedId)
+        store.send(text, using: cfg, reasoningLevel: thinkEnabled ? reasoning : 5, smartSearch: true, in: store.selectedId)
     }
 
     private var messageList: some View {
@@ -554,144 +592,120 @@ struct ChatView: View {
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
-    /// v3.4.3：模型名已移入导航栏 principal（与标题、右侧图标同一平行线），此处不再占用正文顶部
-    private var chatModeBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                // v3.4.5：六个胶囊统一同宽同高（76×32），比例完全一致、长度略长
-                // v3.4.7：推理用"大脑"图标、思考用"灯泡"图标（用户指定，勿对调）
-                ChatChip(label: "推理·\(reasoningLabel())", action: {
-                    reasoning = (reasoning + 1) % 5
-                }, accent: true, icon: "brain").frame(height: 36)
-                ChatChip(label: "思考·\(thinkEnabled ? "开" : "关")", action: {
-                    thinkEnabled.toggle()
-                }, accent: thinkEnabled, icon: "lightbulb").frame(height: 36)
-                ChatChip(label: "搜索·\(smartSearch ? "开" : "关")", action: {
-                    smartSearch.toggle()
-                }, accent: smartSearch, icon: "magnifyingglass").frame(height: 36)
-                QuickTabButton(icon: "bolt", label: "技能") {
-                    AppUIState.shared.quickSkillsPresented = true
-                }.frame(height: 36)
-                // v6.9.10：删除"指令"胶囊入口——模式已由 AI 自动路由，无需手动选择。
-                // 仅移除入口，SystemPromptsView / 7 个模式的提示词内容全部保留。
-                // 恢复方法：从 git 历史取回本段（提交 c4787e5 之前的版本）。
-                QuickTabButton(icon: "folder", label: "工作区") {
-                    AppUIState.shared.quickFilesPresented = true
-                }.frame(height: 36)
-            }
-        }
-    }
+    // v6.9.14：底部功能胶囊行（推理/思考/搜索/技能/工作区）已整行删除——
+    // 推理与思考合并为「思考」，思考/搜索挪到输入框下方，技能并入输入框工具行。
 
     private var inputBar: some View {
+        // v6.9.14（DeepSeek 风格）：整块输入区重排——
+        //   ① 删除底部那一排功能胶囊（推理·高 / 思考·开 / 搜索·开 / 技能）；"推理"与"思考"合并成「思考」；
+        //   ② 输入框变成大圆角方框：首行多行输入，次行左「+ 附件 / 思考 / 搜索」，右「发送」；
+        //   ③ v6.9.15：思考 / 搜索两个开关放进输入框的工具行（替换原来的「技能」），下方不再单独一行；
+        //   ④ 删除输入框左边的远程终端入口（终端 / Hax 电脑仍可从右上角 + 号菜单进入）。
         VStack(spacing: 0) {
             // v2.9.10：待发送附件预览（图片缩略图 / 应用图标 / 文件）
             AttachmentPreviewStrip(attachments: pendingAttachments) { att in
                 withAnimation { pendingAttachments.removeAll { $0.id == att.id } }
             }
-            // v3.4.5：功能行（推理/思考/搜索/系统指令/技能/工作区）——胶囊与输入框、与上方都留
-            // 等距 16pt 间隙（上下对称，间距比之前加大）
-            chatModeBar
-                // v4.4.11：左边距 12→16（用户反馈推理贴左无空格）
-                .padding(.horizontal, 16)
-                // v3.4.7：顶部间距减半(16→8)，用户反馈上方空太多；底部 16 保留(胶囊到输入框的加大间距)
-                .padding(.top, 8)
-                .padding(.bottom, 16)
 
-            // v3.0.83：输入栏 —— 终端键 + 输入框 + +号 + 发送键 统一放进同一个大圆角框
-            HStack(spacing: 6) {
-                Button(action: {
-                    AppUIState.shared.quickTerminalPresented = true
-                }) {
-                    Image(systemName: "terminal")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundColor(.secondary)
-                        .frame(width: 32, height: 32)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(PlainButtonStyle())
-
+            VStack(spacing: 6) {
                 ChatInputTextView(text: $inputText, onSend: { send() }, height: $inputHeight)
                     .frame(maxWidth: .infinity)
                     .frame(height: inputHeight)
+                    .padding(.horizontal, 6)
+                    .padding(.top, 6)
 
-                // v3.3.4：+ 号 → 展开"应用/相册/文件/浏览器"快捷行；再点变 x 收起
-                Button(action: {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                        attachExpanded.toggle()
+                HStack(spacing: 10) {
+                    // + 号 → 展开"应用/相册/文件/浏览器"快捷行；再点变 x 收起
+                    Button(action: {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                            attachExpanded.toggle()
+                        }
+                    }) {
+                        Image(systemName: attachExpanded ? "xmark" : "plus")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundColor(DoubaoTheme.subText)
+                            .frame(width: 30, height: 30)
+                            .background(Circle().fill(Color(UIColor.secondarySystemBackground)))
+                            .contentShape(Circle())
                     }
-                }) {
-                    Image(systemName: attachExpanded ? "xmark" : "plus")
-                        .font(.system(size: 16, weight: .semibold))
-                        // v6.3.0（对齐 OpenMinis）：+ 号改 secondarySystemBackground 底 + label 图标
-                        // （浅色无边框/深色 white 0.35 描边），替代原蓝色实心圆
-                        .foregroundColor(.primary)
-                        .frame(width: 32, height: 32)
-                        .background(attachExpanded ? Color(UIColor.tertiarySystemFill) : Color(UIColor.secondarySystemBackground))
-                        .clipShape(Circle())
-                        .overlay(
-                            Circle().stroke(
-                                Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.35, alpha: 1) : .clear }),
-                                lineWidth: 1)
-                        )
-                }
-                // v2.9.35：+号 → 半屏"添加内容"面板（对齐老 MCP 设计），不再用 actionSheet
-                // （iOS16 actionSheet 偶发点击无响应 + 无"已选 N"徽标）
-                // v2.9.36：移除麦克风按钮（语音无实际作用）
+                    .buttonStyle(PlainButtonStyle())
 
-                // v2.9.13：请求中时按钮变为"停止"，点击取消当前请求 (v4.5.8：仅当前选中会话在请求时显示，
-                // 切到别的会话不误显示停止）
-                if store.selectedIsRequesting {
-                    Button(action: { store.cancelCurrent() }) {
-                        Image(systemName: "stop.fill")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(.white)
-                            .frame(width: 32, height: 32)
-                            .background(Color.red)
-                            .clipShape(Circle())
+                    // v6.9.15：原来的「技能」换成「思考 + 搜索」——两个开关就待在输入框里的工具行上。
+                    // 思考 = 原「推理·高」+「思考·开」合并：点一下开关，长按弹菜单调强度。
+                    DeepSeekPillButton(
+                        icon: dsSymbol("brain", fallback: "lightbulb"),
+                        title: thinkEnabled ? "思考·\(reasoningLabel())" : "思考·关",
+                        isOn: thinkEnabled
+                    ) {
+                        thinkEnabled.toggle()
                     }
-                    .buttonStyle(.plain)
-                } else {
-                    Button(action: send) {
-                        Image(systemName: "paperplane.fill")
-                            .font(.system(size: 15, weight: .semibold))
-                            // v6.3.0（对齐 OpenMinis）：发送键用 label 色（浅色黑/深色白），
-                            // 禁用态 quaternaryLabel；图标反色。替代原蓝色系统键。
-                            .foregroundColor(Color(UIColor.systemBackground))
-                            .frame(width: 32, height: 32)
-                            .background(inputText.isEmpty ? Color(UIColor.quaternaryLabel) : Color(UIColor.label))
-                            .clipShape(Circle())
+                    .contextMenu {
+                        ForEach(0..<5, id: \.self) { i in
+                            Button(String(repeating: "●", count: i + 1) + " " + reasoningNames[i]) {
+                                reasoning = i
+                                thinkEnabled = true
+                            }
+                        }
+                        Divider()
+                        Button(thinkEnabled ? "关闭思考" : "开启思考") { thinkEnabled.toggle() }
                     }
-                    .buttonStyle(.plain)
-                    .disabled(inputText.isEmpty)
+
+                    // v7.1.0：搜索开关已删除——联网检索默认全开，由 AI 自己决定何时搜
+                    Spacer(minLength: 0)
+
+                    if store.selectedIsRequesting {
+                        Button(action: { store.cancelCurrent() }) {
+                            Image(systemName: "stop.fill")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(.white)
+                                .frame(width: 32, height: 32)
+                                .background(Color.red)
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Button(action: send) {
+                            Image(systemName: "paperplane.fill")
+                                .font(.system(size: 14, weight: .semibold))
+                                // 对齐 OpenMinis / DeepSeek：label 色实心圆，图标反色；空输入时低对比禁用
+                                .foregroundColor(Color(UIColor.systemBackground))
+                                .frame(width: 32, height: 32)
+                                .background(inputText.isEmpty ? Color(UIColor.quaternaryLabel) : Color(UIColor.label))
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(inputText.isEmpty)
+                    }
                 }
+                .padding(.horizontal, 6)
+                .padding(.bottom, 8)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            // v3.3.4：整行放进一个大圆角框（终端键/输入框/+号/发送键 一体）
-            // v6.3.0（对齐 OpenMinis）：底色 = 浅色纯白 / 深色 white 0.12，加 separator 细描边
-            .background(Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.12, alpha: 1) : .white }))
-            .cornerRadius(20)
+            // DeepSeek 式输入卡：大圆角（22）+ 白色底 + 细描边，阴影收敛
+            .background(DoubaoTheme.card)
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: 20, style: .continuous)
-                    .stroke(Color(UIColor.separator), lineWidth: 0.5)
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(Color(UIColor.separator).opacity(0.6), lineWidth: 0.6)
             )
-            // v3.4.5：输入框外阴影渐变，往外扩散越来越淡（多层 shadow 叠加模拟渐变发光）
-            // v3.4.7：改为灰色扩散、且收敛——用户反馈蓝色扩散太多，应偏灰
-            .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 2)
-            .shadow(color: Color.black.opacity(0.06), radius: 10, x: 0, y: 4)
+            .shadow(color: Color.black.opacity(0.06), radius: 8, x: 0, y: 2)
             .padding(.horizontal, 12)
+            .padding(.top, 8)
 
-            // v3.4.2：点 + 底部弹出 应用/相册/文件/浏览器，把聊天框顶起来（位于输入框下方）
+            // 点 + 底部弹出 应用/相册/文件/浏览器（位于输入框下方）
             if attachExpanded {
                 attachQuickRow
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         .padding(.bottom, 8)
-        .background(Color(.systemBackground))
+        // v6.9.13（豆包风格）：输入区底色跟对话列表统一成 #F5F5F7（深色模式自动跟随）
+        .background(DoubaoTheme.bg)
         // v2.9.30：授权弹窗已移出到 NavigationView 外层（见 body 链），
         // 此处不再挂 actionSheet，避免与上方 +号 的 actionSheet 同 view 覆盖。
     }
+
+    /// v6.9.15：推理档位名（思考胶囊长按菜单用）
+    private var reasoningNames: [String] { ["低", "中", "高", "最高", "极限"] }
 
     private func reasoningLabel() -> String {
         // v4.3.40：档位扩为 低/中/高/最高/极限——最高档=xhigh, 极限档=max (破甲站 gpt-6.1-sol 实测支持 low/medium/high/xhigh/max)
@@ -724,7 +738,8 @@ struct ChatView: View {
             attachQuickButton("globe", "浏览器") {
                 withAnimation { attachExpanded = false }
                 attachmentSheet = nil
-                FloatingBrowser.shared.show()
+                // v7.0.0：改用 Hax 电脑里的 Hax 浏览器
+                AppUIState.shared.quickHaxBrowserPresented = true
             }
             .frame(maxWidth: .infinity)
         }
@@ -827,7 +842,7 @@ struct ChatView: View {
         pendingAttachments = []
         let finalImgs = attImgs.isEmpty ? imagesToSend : attImgs
         // v3.4.1：思考总开关接入主发送路径（此前漏传，思考·开/关在输入框无效）
-        store.send(text, using: cfg, imageDataURLs: finalImgs, reasoningLevel: thinkEnabled ? reasoning : 3, smartSearch: smartSearch, in: store.selectedId)
+        store.send(text, using: cfg, imageDataURLs: finalImgs, reasoningLevel: thinkEnabled ? reasoning : 3, smartSearch: true, in: store.selectedId)
         AuditLog.shared.log("chat", detail: "发送消息")
     }
 
@@ -1046,6 +1061,135 @@ struct ChatView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
             withAnimation { showToast = false }
         }
+    }
+}
+
+/// v6.9.16（DeepSeek 风格）：悬浮圆形功能键——白/深灰底 + 细描边 + 轻阴影，浮在内容上，没有文字按钮的框感
+struct FloatingCircleButton: View {
+    let icon: String
+    var size: CGFloat = 34
+
+    var body: some View {
+        Image(systemName: icon)
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundColor(.primary)
+            .frame(width: size, height: size)
+            .background(
+                Circle().fill(Color(UIColor { $0.userInterfaceStyle == .dark
+                    ? UIColor(white: 0.16, alpha: 1)
+                    : .white }))
+            )
+            .overlay(
+                Circle().stroke(Color(UIColor.separator).opacity(0.45), lineWidth: 0.8)
+            )
+            .shadow(color: Color.black.opacity(0.10), radius: 6, x: 0, y: 2)
+            .contentShape(Circle())
+    }
+}
+
+/// v6.9.16（DeepSeek 风格）：会话页顶部栏——任务名居中，快速切换模型放在任务名下面一行；
+/// 左上角悬浮圆形「≡」进抽屉，右上角悬浮圆形「＋」进终端 / Hax 电脑。
+struct DeepSeekTopBar: View {
+    @ObservedObject private var modelStore = ModelStore.shared
+    @State private var showPicker = false
+
+    var centerTitle: String
+    var showModelChip: Bool
+    var onLeft: () -> Void
+    /// nil 表示左侧不用圆形图标、改显示文字（多选模式的「取消」）
+    var leftIcon: String? = "line.3.horizontal"
+    var trailing: AnyView? = nil
+
+    var body: some View {
+        ZStack {
+            VStack(spacing: 2) {
+                Text(centerTitle.isEmpty ? "新对话" : centerTitle)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                    .frame(maxWidth: 200)
+
+                if showModelChip {
+                    Button(action: { showPicker = true }) {
+                        HStack(spacing: 3) {
+                            Image(systemName: "circle.fill")
+                                .font(.system(size: 5))
+                                .foregroundColor(.green)
+                            Text(modelStore.defaultConfig?.name ?? "未选择模型")
+                                .font(.system(size: 11))
+                                .foregroundColor(DoubaoTheme.subText)
+                                .lineLimit(1)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundColor(DoubaoTheme.subText)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+            }
+            .frame(maxWidth: .infinity)
+
+            HStack {
+                if let icon = leftIcon {
+                    Button(action: onLeft) { FloatingCircleButton(icon: icon) }
+                        .buttonStyle(PlainButtonStyle())
+                } else {
+                    Button(action: onLeft) {
+                        Text("取消")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundColor(DoubaoTheme.accent)
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+                Spacer(minLength: 0)
+                if let trailing = trailing { trailing }
+            }
+            .padding(.horizontal, 14)
+        }
+        .frame(height: 46)
+        .padding(.top, 2)
+        .padding(.bottom, 4)
+        .sheet(isPresented: $showPicker) { ChatModelPickerSheet() }
+    }
+}
+
+/// v6.9.14：iOS16+ 才有的 SF Symbol 做版本兜底（DeepSeek 输入框下方那两个按钮要用）
+private func dsSymbol(_ name: String, fallback: String) -> String {
+    if #available(iOS 16.0, *) { return name }
+    return fallback
+}
+
+/// v6.9.14：DeepSeek 式输入框下方按钮（思考 / 搜索）——细线轮廓胶囊，关闭=灰底灰字，开启=蓝底浅蓝字
+struct DeepSeekPillButton: View {
+    let icon: String
+    let title: String
+    let isOn: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .medium))
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 28)
+            .foregroundColor(isOn ? DoubaoTheme.accent : DoubaoTheme.subText)
+            .background(
+                Capsule().fill(isOn ? DoubaoTheme.accent.opacity(0.12) : DoubaoTheme.card)
+            )
+            .overlay(
+                Capsule().stroke(
+                    isOn ? DoubaoTheme.accent.opacity(0.45) : Color(UIColor.separator).opacity(0.35),
+                    lineWidth: 0.8)
+            )
+            .contentShape(Capsule())
+        }
+        .buttonStyle(PlainButtonStyle())
     }
 }
 

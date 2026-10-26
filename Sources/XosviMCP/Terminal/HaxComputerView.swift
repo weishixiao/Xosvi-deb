@@ -112,7 +112,7 @@ struct HaxComputerView: View {
                 Text("引擎")
             }
 
-            // MARK: 快捷入口
+            // MARK: 快捷入口（终端入口从设置里移过来了）
             Section {
                 Button {
                     if !engineEnabled {
@@ -137,11 +137,69 @@ struct HaxComputerView: View {
                 } label: {
                     Label("浏览 iOS 工作区", systemImage: "internaldrive")
                 }
+
+                NavigationLink {
+                    RootfsManagementView()
+                } label: {
+                    Label("Rootfs 管理（镜像源 / DNS / 重置）", systemImage: "shippingbox")
+                }
             } header: {
-                Text("文件")
+                Text("终端与文件")
             }
 
-            // MARK: 镜像源（v6.6.14：从 Rootfs 管理合并过来；v6.9.13 起 Rootfs 页已删除，这里是唯一入口）
+            // MARK: v7.0.0 Hax 浏览器（AI 思考/查问题时调用的真实渲染浏览器，默认百度）
+            Section {
+                HStack {
+                    Label("默认引擎", systemImage: "magnifyingglass")
+                    Spacer()
+                    Picker("", selection: Binding(
+                        get: { HaxBrowser.shared.engine },
+                        set: { HaxBrowser.shared.engine = $0 }
+                    )) {
+                        ForEach(HaxSearchEngine.fallbackOrder) { e in
+                            Text(e.displayName).tag(e)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                }
+                Toggle(isOn: Binding(
+                    get: { HaxBrowser.shared.desktopMode },
+                    set: { HaxBrowser.shared.desktopMode = $0 }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("请求桌面版页面")
+                        Text("搜索结果页移动版结构常变，桌面版更稳")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                }
+                NavigationLink {
+                    HaxBrowserFullView()
+                } label: {
+                    Label("打开 Hax 浏览器（全屏）", systemImage: "globe")
+                }
+                Button(role: .destructive) {
+                    HaxBrowser.shared.clearCookies()
+                    toast = "已清除浏览数据"
+                } label: {
+                    Label("清除浏览数据（Cookie / 缓存）", systemImage: "trash")
+                }
+                // 内嵌浏览器：AI 调 haxbrowser 工具时就在这块里跑，用户全程可见
+                HaxBrowserView(embedded: true)
+                    .frame(height: 420)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(Color(UIColor.separator).opacity(0.5), lineWidth: 0.6)
+                    )
+                    .listRowInsets(EdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8))
+            } header: {
+                Text("Hax 浏览器")
+            } footer: {
+                Text("AI 思考、查资料时会自己用这个浏览器搜索（百度优先，结果差自动换必应/搜狗/360/Google）。页面是真实渲染的，你能看到它每一步在做什么。")
+                    .font(.caption2)
+            }
+
+            // MARK: 镜像源（v6.6.14：从 Rootfs 管理合并过来，两页能力对齐）
             Section {
                 Menu {
                     ForEach(["USTC", "Aliyun", "Tsinghua", "Official"], id: \.self) { m in
@@ -210,6 +268,19 @@ struct HaxComputerView: View {
             } footer: {
                 Text("写 Alpine 的 /etc/resolv.conf。用代理/VPN 时建议保持「自动」。")
                     .font(.caption2)
+            }
+
+            // MARK: 性能（AOJIT 说明）
+            Section {
+                HStack {
+                    Label("AOJIT 编译加速", systemImage: "bolt.circle")
+                    Spacer()
+                    Text("不可用").foregroundColor(.secondary).font(.caption)
+                }
+                Text("OpenMinis 的 AOJIT 依赖 iSH 内核的预编译镜像子系统（镜像录制 + AOT 覆盖率），Xosvi 链接的 libish.a 未启用该特性。需要重编引擎才能支持。")
+                    .font(.caption2).foregroundColor(.secondary)
+            } header: {
+                Text("性能")
             }
 
             // MARK: 危险操作
