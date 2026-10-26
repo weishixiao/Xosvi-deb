@@ -1,3 +1,8 @@
+import SwiftUI
+import UIKit
+import RSKGrowingTextView
+import UniformTypeIdentifiers
+
 /// v6.9.12：App 首页 = 历史对话列表；点「新对话」或某条历史进入聊天页。
 /// `chatHome` 表示已进入聊天页（false 时展示列表）。
 struct ChatRootView: View {
@@ -33,11 +38,6 @@ extension Notification.Name {
     /// 请求新建对话并进入聊天页
     static let tmNewConversation = Notification.Name("xosvi.newConversation")
 }
-
-﻿import SwiftUI
-import UIKit
-import RSKGrowingTextView
-import UniformTypeIdentifiers
 
 struct ChatView: View {
     @ObservedObject private var store = ConversationStore.shared
