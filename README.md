@@ -1,9 +1,3 @@
-
->
-> 本仓库（xosvi-ios）**已停用**，不再接收提交、不再构建。最新代码、Release 与 CI 均在
-> **[Xosvi](https://github.com/weishixiao/Xosvi)** 仓库。
-> 下载最新安装包：[Xosvi.tipa](https://github.com/weishixiao/Xosvi/releases/download/latest/Xosvi.tipa)
-
 # Xosvi
 
 **AI 驱动的 iOS 越狱 / TrollStore 实验与 QA 工作台。**
@@ -14,9 +8,6 @@ Swift + SwiftUI + SwiftPM，iOS 15+，内置 **50 个工具、200+ 子命令**�
 AI  ：解包 → 解析 Mach-O → 提符号 → 定位关键逻辑 → 给结论
 ```
 
-当前版本 **6.6.19** · Bundle ID `com.xosvi.app` · 部署目标 iOS 15.0
-
----
 
 ## 1. 它解决什么问题
 
