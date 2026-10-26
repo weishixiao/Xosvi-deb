@@ -68,13 +68,13 @@ struct SettingsView: View {
                         if #available(iOS 16.0, *) {
                             EmptyView()
                         } else {
-                            NavigationLink(destination: ModelsView(), isActive: $jumpToModels) { EmptyView() }.hidden()
+                            NavigationLink(destination: LiteLLMGatewayView(), isActive: $jumpToModels) { EmptyView() }.hidden()
                             NavigationLink(destination: SystemPromptsView(), isActive: $jumpToSystemPrompts) { EmptyView() }.hidden()
                         }
                     }
                 )
             if #available(iOS 16.0, *) {
-                Color.clear.navigationDestination(isPresented: $jumpToModels) { ModelsView() }
+                Color.clear.navigationDestination(isPresented: $jumpToModels) { LiteLLMGatewayView() }
                 Color.clear.navigationDestination(isPresented: $jumpToSystemPrompts) { SystemPromptsView() }
             }
         }
@@ -108,10 +108,11 @@ struct SettingsView: View {
 
         // 模型
         groups.append(SettingsGroup(header: L10n.t("sec_models"), items: [
+            // v7.6.3：模型入口换成 LiteLLM 风格网关（模型组 / 路由策略 / 虚拟密钥）
             SettingsItem(title: L10n.t("row_model_api"),
-                         subtitle: "\(ModelStore.shared.configs.count) 个 · \(modelProviderName())",
+                         subtitle: "\(LiteLLMStore.shared.groups.count) 组 · \(LiteLLMStore.shared.entries.count) 部署",
                          icon: "rectangle.stack.badge.person.crop", color: .blue,
-                         destination: AnyView(ModelsView())),
+                         destination: AnyView(LiteLLMGatewayView())),
             // v6.9.10：删除"系统指令"设置入口——模式已由 AI 自动路由（见 SystemPrompts.routerPrompt）。
             // 仅移除入口，SystemPromptsView / 7 个模式的提示词内容全部保留，
             // 需要恢复时把本段加回即可。

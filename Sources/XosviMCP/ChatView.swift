@@ -1603,6 +1603,8 @@ struct MessageBubble: View {
     // v6.0.28：工具结果默认折叠，用户手动点才展开
     @State private var expanded = false
     @State private var expandedToolIds: Set<String> = []
+    /// v7.6.0：工具结果半屏面板是否打开
+    @State private var showToolResult = false
     // v3.4.5：打字机效果——已显示字符数 + 定时器（显示与网络解耦，逐字稳定刷出）
     // v3.4.7：降速到 25 字/秒(0.04s/字)让打字感清晰可见；且不依赖 isStreaming——
     // 只要内容在增长就持续打字到完整，兼容"整段一次性到达"的中转
@@ -1703,7 +1705,10 @@ struct MessageBubble: View {
             isTool: isTool,
             selectionMode: selectionMode,
             onToggleSelect: onToggleSelect,
-            onToolToggle: { withAnimation { expanded.toggle() } }
+            onToolToggle: {
+                // v7.6.0：点工具卡弹半屏结果
+                if !message.isRunning { showToolResult = true }
+            }
         ))
         // v6.2.7：长按气泡菜单（复制/分享/删除）——用户要求"长按会话框弹出删除功能"。
         // 历史 v4.4.13 曾移除 contextMenu 保文字选择；现按用户新要求恢复长按菜单，
@@ -2009,16 +2014,34 @@ struct MessageBubble: View {
                 duration: message.toolDuration,
                 isRunning: message.isRunning,
                 isError: message.isError,
-                expanded: expanded,
-                onTap: { if !message.isRunning { withAnimation { expanded.toggle() } } }
+                expanded: false,
+                // v7.6.0：点工具卡直接弹半屏结果面板（用户要求，取消气泡内折叠）
+                onTap: { if !message.isRunning { showToolResult = true } }
             )
 
-            if expanded {
-                toolResultMiniBubble
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+            // 结果首行摘要（常显，方便在长对话里快速扫）
+            if !message.isRunning, !message.content.isEmpty {
+                Text(Self.toolSummaryLine(message.content))
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .padding(.leading, 27)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .sheet(isPresented: $showToolResult) {
+            ToolResultSheet(message: message)
+        }
+    }
+
+    /// v7.6.0：工具结果首行摘要（跳过空行，最多 120 字）
+    static func toolSummaryLine(_ text: String) -> String {
+        for line in text.components(separatedBy: .newlines) {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if !t.isEmpty { return String(t.prefix(120)) }
+        }
+        return ""
     }
 
     // 📝 思考过程迷你气泡
@@ -2027,80 +2050,7 @@ struct MessageBubble: View {
         ReasoningBlock(text: text, isStreaming: isStreaming, expanded: thinkingExpandedBinding)
     }
 
-    private var toolResultMiniBubble: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Button(action: { withAnimation { if !message.isRunning { expanded.toggle() } } }) {
-                HStack(spacing: 6) {
-                    if message.isRunning {
-                        // v4.3.75：有活动安装任务 → 迷你气泡显示实时进度（阶段+包数+最近行）
-                        if let prog = installRegistry.active, prog.ok == nil {
-                            VStack(alignment: .leading, spacing: 2) {
-                                ProgressView(value: prog.fraction)
-                                    .progressViewStyle(.linear)
-                                    .frame(width: 130)
-                                Text(prog.progressText)
-                                    .font(.subheadline)
-                                    .fontWeight(.medium)
-                                    .foregroundColor(.primary)
-                                if !prog.lastLine.isEmpty {
-                                    Text(prog.lastLine)
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                        .lineLimit(1)
-                                        .frame(width: 160, alignment: .leading)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        } else {
-                            HStack(spacing: 6) {
-                                ProgressView().scaleEffect(0.8)
-                                Text("工具执行中…")
-                                    .font(.subheadline)
-                                    .fontWeight(.medium)
-                                    .foregroundColor(.secondary)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    } else {
-                        Image(systemName: message.isError ? "exclamationmark.circle" : "checkmark.circle")
-                            .font(.system(size: 14))
-                            .foregroundColor(message.isError ? .red : .secondary)
-                        Text(expanded ? "工具结果 ▴" : "工具结果 ▾")
-                            .font(.subheadline)
-                            .fontWeight(.medium)
-                            .foregroundColor(message.isError ? .red : .secondary)
-                    }
-                    Spacer()
-                }
-            }
-            .buttonStyle(.plain)
-            // v3.5.10：执行中不展示结果区（content 为空）
-            if !message.isRunning && expanded {
-                Text(message.content)
-                    .font(.system(.caption, design: .monospaced))
-                    // v3.1.74：工具结果背景日/夜都改纯黑（用户要求），文字改白色保证黑底可读
-                    .foregroundColor(.white)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.black)
-                    .cornerRadius(8)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(Color(.separator), lineWidth: 0.5)
-                    )
 
-                // v3.1.6: 工具结果里的文件 → 可点击卡片
-                let files = FilePathExtractor.extractFiles(from: message.content)
-                if !files.isEmpty {
-                    VStack(spacing: 6) {
-                        ForEach(files, id: \.self) { url in
-                            FileCardRow(url: url)
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 // v3.1.6: 聊天里的文件卡片 —— 点了直接 QuickLook 预览

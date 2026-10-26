@@ -17,6 +17,13 @@ final class AppUIState: ObservableObject {
     @Published var quickFilesPresented = false
 }
 
+/// v7.6.2：会话列表按日期分组的容器
+struct DateGroup: Identifiable {
+    let key: String
+    var items: [ChatConversation]
+    var id: String { key }
+}
+
 struct RootView: View {
     @ObservedObject private var ui = AppUIState.shared
     @ObservedObject private var lang = LanguageManager.shared   // v2.9.76：语言切换全局刷新
@@ -146,7 +153,8 @@ struct RootView: View {
     }
 
     private func drawerWidth(for geo: GeometryProxy) -> CGFloat {
-        min(geo.size.width * 0.78, 320)
+        // v7.6.0（DeepSeek）：抽屉加宽，对齐参考截图（左侧留出窄条主界面）
+        min(geo.size.width * 0.86, 380)
     }
 }
 
@@ -178,9 +186,8 @@ struct ConversationDrawerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // v7.6.1：搜索框并入 header 同一行
             header
-            searchBar
-            // v7.2.1：去掉"N 个本机对话"计数条（DeepSeek 抽屉里没这行）
             conversationList
             bottomWorkbench
         }
@@ -188,41 +195,38 @@ struct ConversationDrawerView: View {
         .onAppear(perform: refreshReadiness)
     }
 
+    /// v7.6.1：头部只保留「搜索框 + 编辑键」同一水平线（用户要求）。
+    /// 右上角圆圈 X 关闭键已删除；抽屉用点遮罩/侧滑关闭。
     private var header: some View {
-        // v6.9.18：左上角的功能键图标 +「对话」标题用户要求删除（新建 / 关闭仍留在右侧）
         HStack(spacing: 10) {
-            Spacer()
-            // v6.2.7：抽屉头部新建会话入口（配合 ChatView 边缘侧滑手势，
-            // 侧滑开抽屉即可一键新建，解决"侧滑无法打开添加新对话页"）
-            // v6.9.12：新建后发通知，ChatRootView 会切到聊天页
+            searchBar
+            // 编辑（新建会话）——移到最右侧，与搜索框同一条水平线
             Button(action: {
                 withAnimation { ui.drawerOpen = false }
                 store.newConversation()
                 NotificationCenter.default.post(name: .tmNewConversation, object: nil)
             }) {
-                // v7.2.1（DeepSeek）：蓝色实心方块 → 黑色细线图标，与整体黑白一致
                 Image(systemName: "square.and.pencil")
-                    .font(.system(size: 18, weight: .medium))
+                    .font(.system(size: 19, weight: .medium))
                     .foregroundColor(.primary)
+                    .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
             }
-            // v6.6.8：抽屉头部设置齿轮用户要求删除（改为会话页侧滑直达抽屉）
-            Button(action: { withAnimation { ui.drawerOpen = false } }) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(.secondary)
-                    .frame(width: 28, height: 28)
-                    .background(Color(.secondarySystemBackground))
-                    .clipShape(Circle())
-            }
+            .buttonStyle(PlainButtonStyle())
         }
         .padding(.horizontal, 16)
-        .padding(.top, topSafeArea + 8)
-        .padding(.bottom, 12)
+        .padding(.top, topSafeArea + 6)
+        .padding(.bottom, 10)
     }
 
     /// v2.9.12：状态栏安全区高度（抽屉 ignoredSafeArea 后需手动避让系统时间）
     private var topSafeArea: CGFloat {
         UIApplication.shared.windows.first?.safeAreaInsets.top ?? 0
+    }
+
+    /// v7.6.0：底部安全区（底栏不再写死 24pt，避免刘海机型被 Home 条压住）
+    private var bottomSafeArea: CGFloat {
+        UIApplication.shared.windows.first?.safeAreaInsets.bottom ?? 0
     }
 
     private var searchBar: some View {
@@ -239,12 +243,11 @@ struct ConversationDrawerView: View {
                 }
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        // v7.2.1（DeepSeek）：灰底圆角矩形，不再用蓝色描边提示聚焦
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .padding(.horizontal, 14)
+        .frame(height: 44)
+        // v7.6.0（DeepSeek）：改为胶囊形（对齐参考截图）
+        .background(Capsule(style: .continuous)
             .fill(Color(.secondarySystemBackground)))
-        .padding(.horizontal, 16)
     }
 
     private var countLabel: some View {
@@ -260,17 +263,52 @@ struct ConversationDrawerView: View {
     }
 
     private var conversationList: some View {
-        // 用 ScrollView + LazyVStack 替代 List，去掉行间分隔线（v2.9.9）
-        // v2.9.10：选中行加渐变圆角卡片
+        // v7.6.2：按日期分组，每组上方一条灰色分组标题（今天 / 昨天 / 30 天内 / 2026 年 9 月 …）
         ScrollView {
-            LazyVStack(spacing: 6) {
-                ForEach(filtered) { conv in
-                    // v6.9.11：侧滑删除（自行实现——会话列表是 ScrollView+LazyVStack，非 List）
-                    swipableRow(conv)
+            LazyVStack(alignment: .leading, spacing: 2) {
+                ForEach(groupedConversations, id: \.key) { group in
+                    Text(group.key)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 22)
+                        .padding(.top, 14)
+                        .padding(.bottom, 4)
+
+                    ForEach(group.items) { conv in
+                        swipableRow(conv)
+                    }
                 }
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, 8)
+            .padding(.bottom, 8)
         }
+    }
+
+    /// 日期分组键（按 updatedAt 倒序，组内同样倒序）
+    private var groupedConversations: [DateGroup] {
+        var groups: [DateGroup] = []
+        for conv in filtered {
+            let key = Self.groupKey(conv.updatedAt)
+            if let i = groups.firstIndex(where: { $0.key == key }) {
+                groups[i].items.append(conv)
+            } else {
+                groups.append(DateGroup(key: key, items: [conv]))
+            }
+        }
+        return groups
+    }
+
+    /// 分组规则：今天 / 昨天 / 30 天内 / 「yyyy 年 M 月」
+    static func groupKey(_ d: Date) -> String {
+        let cal = Calendar.current
+        if cal.isDateInToday(d) { return "今天" }
+        if cal.isDateInYesterday(d) { return "昨天" }
+        if let days = cal.dateComponents([.day], from: d, to: Date()).day, days < 30 {
+            return "30 天内"
+        }
+        let f = DateFormatter()
+        f.dateFormat = "yyyy 年 M 月"
+        return f.string(from: d)
     }
 
     private func deleteSingle(_ id: UUID) {
@@ -328,16 +366,16 @@ struct ConversationDrawerView: View {
                     .background(
                         Group {
                             if store.selectedId == conv.id {
-                                // v7.2.1（DeepSeek）：选中行是浅灰底，不再是蓝色渐变
+                                // v7.6.0（DeepSeek）：选中行改浅蓝底（对齐参考截图）
                                 Color(UIColor { $0.userInterfaceStyle == .dark
-                                    ? UIColor(white: 0.18, alpha: 1)
-                                    : UIColor(white: 0.96, alpha: 1) })
+                                    ? UIColor(red: 0.13, green: 0.20, blue: 0.38, alpha: 1)
+                                    : UIColor(red: 0.88, green: 0.92, blue: 1.0, alpha: 1) })
                             } else {
                                 Color(.systemBackground)
                             }
                         }
                     )
-                    .cornerRadius(10)
+                    .cornerRadius(16)
             }
             .buttonStyle(PlainButtonStyle())
             .offset(x: offset)
@@ -380,33 +418,36 @@ struct ConversationDrawerView: View {
         .clipped()
     }
 
-    /// v7.2.1（DeepSeek 风格）：去掉蓝色方形气泡图标和"日期时间"副标题，
-    /// 改成 标题 + 最后一条消息摘要 + 右侧相对时间，与对话列表页保持一致。
+    /// v7.6.1：会话行只显示标题 + 右侧时间/•••
     private func conversationRow(_ conv: ChatConversation) -> some View {
         let isSel = store.selectedId == conv.id
-        let last = conv.messages.last { !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        let preview = (last?.content ?? "")
-            .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
         return HStack(alignment: .center, spacing: 8) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(conv.title)
-                    .font(.system(size: 15, weight: isSel ? .semibold : .regular))
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                Text(preview.isEmpty ? "空对话" : preview)
-                    .font(.system(size: 12))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-            }
+            // v7.6.1：只显示标题（用户要求去掉消息内容预览）
+            Text(conv.title)
+                .font(.system(size: 16, weight: isSel ? .semibold : .regular))
+                // v7.6.0（DeepSeek）：选中标题变蓝
+                .foregroundColor(isSel ? Color(red: 0.13, green: 0.40, blue: 0.93) : .primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
             Spacer(minLength: 6)
-            Text(ConversationRow.shortTime(conv.updatedAt))
-                .font(.system(size: 11))
-                .foregroundColor(.secondary.opacity(0.85))
-                .fixedSize()
+            // v7.6.2：标题右侧不再显示时间（分组标题已表明日期）；选中行保留 ••• 菜单
+            if isSel {
+                Menu {
+                    Button(action: { deleteSingle(conv.id) }) {
+                        Label("删除对话", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .frame(width: 26, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PlainButtonStyle())
+            }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 13)
     }
 
     private func delete(at offsets: IndexSet) {
@@ -463,12 +504,12 @@ struct ConversationDrawerView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(
-            RoundedRectangle(cornerRadius: 16)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .fill(Color(.systemBackground))
-                .shadow(color: .black.opacity(0.06), radius: 6, x: 0, y: 2)
+                .shadow(color: .black.opacity(0.07), radius: 8, x: 0, y: 2)
         )
-        .padding(.horizontal, 10)
-        .padding(.bottom, 24)
+        .padding(.horizontal, 8)
+        .padding(.bottom, max(bottomSafeArea, 12))
     }
 
     static let formatter: DateFormatter = {
