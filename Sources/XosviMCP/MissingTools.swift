@@ -480,3 +480,39 @@ final class SkillsSetEnabledTool: MCPTool {
         return ["name": name, "enabled": enabled]
     }
 }
+
+// MARK: - WebFetchService 依赖的正则 / HTML 清洗
+// 7fe3132 移植 Kelivo 搜索服务时，这两个扩展随旧代码一起被删，
+// 但新 WebFetchService.swift 改为跨文件调用 → 这里重建为 internal。
+
+extension String {
+    /// 返回所有捕获组（不含整串）
+    func firstMatch(pattern: String) -> [String]? {
+        guard let re = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]),
+              let m = re.firstMatch(in: self, range: NSRange(location: 0, length: (self as NSString).length)) else { return nil }
+        var groups: [String] = []
+        for i in 1..<m.numberOfRanges {
+            groups.append((self as NSString).substring(with: m.range(at: i)))
+        }
+        return groups
+    }
+
+    /// 返回第一个捕获组
+    func firstCapture(pattern: String) -> String? {
+        firstMatch(pattern: pattern)?.first
+    }
+
+    /// 去除 HTML 标签与常见实体
+    func stripHTMLTags() -> String {
+        var s = self
+        s = s.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+        s = s.replacingOccurrences(of: "&nbsp;", with: " ")
+        s = s.replacingOccurrences(of: "&amp;", with: "&")
+        s = s.replacingOccurrences(of: "&quot;", with: "\"")
+        s = s.replacingOccurrences(of: "&#39;", with: "'")
+        s = s.replacingOccurrences(of: "&lt;", with: "<")
+        s = s.replacingOccurrences(of: "&gt;", with: ">")
+        s = s.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
