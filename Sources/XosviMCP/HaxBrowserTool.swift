@@ -49,7 +49,7 @@ final class HaxBrowserTool: MCPTool {
 
         switch command {
         case "search":   return try search(params)
-        case "open":     return try open(params)
+        case "open":     return try openURL(params)
         case "snapshot": return try snapshot(params)
         case "text":     return text(params)
         case "click":    return try click(params)
@@ -57,11 +57,11 @@ final class HaxBrowserTool: MCPTool {
         case "eval":     return try eval(params)
         case "wait":     return wait(params)
         case "back":
-            HaxBrowser.sync { HaxBrowser.shared.goBack() }
+            _ = HaxBrowser.sync { HaxBrowser.shared.goBack() }
             _ = HaxBrowser.waitUntilLoaded(maxSeconds: 8)
             return ["ok": true, "url": currentURL()]
         case "reload":
-            HaxBrowser.sync { HaxBrowser.shared.reload() }
+            _ = HaxBrowser.sync { HaxBrowser.shared.reload() }
             _ = HaxBrowser.waitUntilLoaded(maxSeconds: 10)
             return ["ok": true, "url": currentURL()]
         case "status":
@@ -98,14 +98,16 @@ final class HaxBrowserTool: MCPTool {
         return out
     }
 
-    private func open(_ params: [String: Any]) throws -> [String: Any] {
+    /// v7.1.2：方法名不叫 open——会与 SwiftUI/UIApplication 的 open(_:) 重载产生歧义（CI 报 ambiguous use of open）
+    private func openURL(_ params: [String: Any]) throws -> [String: Any] {
         guard let u = params["url"] as? String, !u.isEmpty else {
             throw MCPError.invalidParams("url required")
         }
         HaxBrowser.performLoad(u)
         let loaded = HaxBrowser.waitUntilLoaded(maxSeconds: 15)
         var out: [String: Any] = ["ok": loaded, "url": currentURL(), "title": currentTitle()]
-        if let err = HaxBrowser.sync({ HaxBrowser.shared.lastError }, timeout: 5), let e = err {
+        let lastErr: String? = HaxBrowser.sync(timeout: 5) { HaxBrowser.shared.lastError } ?? nil
+        if let e: String = lastErr {
             out["error"] = e
         }
         out["text"] = String(HaxBrowser.readPageText(maxChars: 3000))

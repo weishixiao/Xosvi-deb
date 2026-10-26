@@ -246,7 +246,7 @@ final class HaxBrowser: NSObject, ObservableObject {
     // MARK: 同步封装（给后台线程的 MCP 工具用）
 
     /// 主线程执行并同步等待结果（超时返回 nil，避免工具挂死）
-    static func sync<T>(timeout: TimeInterval = 20, _ work: @escaping @MainActor () -> T) -> T? {
+    nonisolated static func sync<T>(timeout: TimeInterval = 20, _ work: @escaping @MainActor () -> T) -> T? {
         if Thread.isMainThread {
             // 主线程上不能同步等待自己 → 直接执行
             return MainActor.assumeIsolated { work() } as T?
@@ -262,7 +262,7 @@ final class HaxBrowser: NSObject, ObservableObject {
     }
 
     /// 等待页面加载完成（loading 变 false）
-    static func waitUntilLoaded(maxSeconds: Double) -> Bool {
+    nonisolated static func waitUntilLoaded(maxSeconds: Double) -> Bool {
         let deadline = Date().addingTimeInterval(maxSeconds)
         while Date() < deadline {
             let loading = HaxBrowser.sync { HaxBrowser.shared.webView.isLoading } ?? false
@@ -274,7 +274,7 @@ final class HaxBrowser: NSObject, ObservableObject {
     }
 
     /// 执行 JS 并同步取回 JSON 结果
-    static func evalSync(_ js: String, timeout: TimeInterval = 15) -> Any? {
+    nonisolated static func evalSync(_ js: String, timeout: TimeInterval = 15) -> Any? {
         let sem = DispatchSemaphore(value: 0)
         var out: Any?
         DispatchQueue.main.async {
@@ -291,7 +291,7 @@ final class HaxBrowser: NSObject, ObservableObject {
     }
 
     /// 执行 JS 字符串结果
-    static func evalStringSync(_ js: String, timeout: TimeInterval = 15) -> String {
+    nonisolated static func evalStringSync(_ js: String, timeout: TimeInterval = 15) -> String {
         guard let v = evalSync(js, timeout: timeout) else { return "" }
         if let s = v as? String { return s }
         if let n = v as? NSNumber { return n.stringValue }
@@ -299,6 +299,22 @@ final class HaxBrowser: NSObject, ObservableObject {
     }
 
     // MARK: 线程安全快照（给后台线程的 MCP 工具用，跨 actor 读不到属性）
+
+    /// 主线程上 `DispatchQueue.main.sync` 会死锁（不能等自己）。
+    /// 本方法的调用方都是 MCP 工具（后台线程），所以正常情况走 sync；
+    /// 极端情况（有人从主线程调）退化成异步执行并返回 nil 兜底值，绝不卡死 UI。
+    private static func onMainSync<T>(_ work: @escaping @MainActor () -> T) -> T? {
+        if Thread.isMainThread {
+            // 不在主线程上等待自身：异步执行，返回 nil 表示"本次没取到"
+            DispatchQueue.main.async { _ = work() }
+            return nil
+        }
+        let box = Box<T?>(nil)
+        DispatchQueue.main.sync {
+            box.value = work()
+        }
+        return box.value
+    }
 
     /// 只读状态快照——工具在后台线程安全取用
     struct PublicState {
@@ -309,30 +325,26 @@ final class HaxBrowser: NSObject, ObservableObject {
     }
 
     nonisolated static func state() -> PublicState {
-        let box = Box<PublicState>(PublicState(url: "", title: "", isLoading: false, engineName: "百度"))
-        DispatchQueue.main.sync {
+        return onMainSync {
             let b = HaxBrowser.shared
-            box.value = PublicState(url: b.webView.url?.absoluteString ?? b.currentURL,
-                                    title: b.webView.title ?? b.pageTitle,
-                                    isLoading: b.webView.isLoading,
-                                    engineName: b.engine.displayName)
-        }
-        return box.value
+            return PublicState(url: b.webView.url?.absoluteString ?? b.currentURL,
+                               title: b.webView.title ?? b.pageTitle,
+                               isLoading: b.webView.isLoading,
+                               engineName: b.engine.displayName)
+        } ?? PublicState(url: "", title: "", isLoading: false, engineName: "百度")
     }
 
     /// 后台线程入口：切到主线程执行搜索并同步等结果
     nonisolated static func performSearch(_ query: String, engine preferred: HaxSearchEngine?,
                                           waitSeconds: Double) -> (engine: HaxSearchEngine, ok: Bool) {
-        let box = Box<(engine: HaxSearchEngine, ok: Bool)>((preferred ?? .baidu, false))
-        DispatchQueue.main.sync {
-            box.value = HaxBrowser.shared.search(query, engine: preferred, waitSeconds: waitSeconds)
-        }
-        return box.value
+        return onMainSync {
+            HaxBrowser.shared.search(query, engine: preferred, waitSeconds: waitSeconds)
+        } ?? (preferred ?? HaxSearchEngine.baidu, false)
     }
 
     /// 后台线程入口：打开网址
     nonisolated static func performLoad(_ url: String) {
-        DispatchQueue.main.sync { HaxBrowser.shared.load(url) }
+        onMainSync { HaxBrowser.shared.load(url) }
     }
 
     /// 后台线程入口：标记 AI 正在浏览
@@ -343,7 +355,7 @@ final class HaxBrowser: NSObject, ObservableObject {
     // MARK: 页面读取
 
     /// 读取渲染后的正文（去脚本/样式/导航栏）
-    static func readPageText(maxChars: Int = 12000) -> String {
+    nonisolated static func readPageText(maxChars: Int = 12000) -> String {
         let js = """
         (function(){
           var junk = 'script,style,noscript,nav,footer,header,aside,iframe,svg,form[style*="display:none"]';
@@ -359,7 +371,7 @@ final class HaxBrowser: NSObject, ObservableObject {
     }
 
     /// 可交互元素编号表（链接 / 按钮 / 输入框），AI 用 idx 点击或填字
-    static func interactiveElements(limit: Int = 60) -> [HaxPageSnapshot.HaxPageElement] {
+    nonisolated static func interactiveElements(limit: Int = 60) -> [HaxPageSnapshot.HaxPageElement] {
         let js = """
         (function(){
           var out = [];
@@ -402,7 +414,7 @@ final class HaxBrowser: NSObject, ObservableObject {
         }
     }
 
-    static func snapshot() -> HaxPageSnapshot {
+    nonisolated static func snapshot() -> HaxPageSnapshot {
         let title = sync { HaxBrowser.shared.webView.title ?? "" } ?? ""
         let url = sync { HaxBrowser.shared.webView.url?.absoluteString ?? "" } ?? ""
         let elements = interactiveElements()
@@ -423,7 +435,7 @@ final class HaxBrowser: NSObject, ObservableObject {
     }
 
     /// 点击编号元素
-    static func click(idx: Int) -> String {
+    nonisolated static func click(idx: Int) -> String {
         let js = """
         (function(){
           var n = document.querySelector('[data-haxb-idx="\(idx)"]');
@@ -438,7 +450,7 @@ final class HaxBrowser: NSObject, ObservableObject {
     }
 
     /// 往编号元素填字（输入框 / textarea / 搜索框）
-    static func type(idx: Int, text: String) -> String {
+    nonisolated static func type(idx: Int, text: String) -> String {
         let escaped = jsonEscape(text)
         let js = """
         (function(){
@@ -459,7 +471,7 @@ final class HaxBrowser: NSObject, ObservableObject {
     }
 
     /// 在页面上按 CSS 选择器点击（比编号更稳，适合固定站点）
-    static func clickSelector(_ selector: String) -> String {
+    nonisolated static func clickSelector(_ selector: String) -> String {
         let js = """
         (function(){
           var n = document.querySelector("\(jsonEscape(selector))");
@@ -474,7 +486,7 @@ final class HaxBrowser: NSObject, ObservableObject {
     }
 
     /// JSON 字符串转义（防止把引号/换行塞进 JS 字面量）
-    static func jsonEscape(_ s: String) -> String {
+    nonisolated static func jsonEscape(_ s: String) -> String {
         var out = ""
         for ch in s.unicodeScalars {
             switch ch {

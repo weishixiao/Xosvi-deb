@@ -1,3 +1,39 @@
+/// v6.9.12：App 首页 = 历史对话列表；点「新对话」或某条历史进入聊天页。
+/// `chatHome` 表示已进入聊天页（false 时展示列表）。
+struct ChatRootView: View {
+    @ObservedObject private var store = ConversationStore.shared
+    @State private var chatHome = false
+
+    var body: some View {
+        Group {
+            if chatHome {
+                ChatView()
+            } else {
+                ConversationListView(
+                    onOpen: { id in
+                        store.select(id)
+                        chatHome = true
+                    },
+                    onClose: { chatHome = true }
+                )
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .tmOpenConversationList)) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) { chatHome = false }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .tmNewConversation)) { _ in
+            withAnimation(.easeInOut(duration: 0.2)) { chatHome = true }
+        }
+    }
+}
+
+extension Notification.Name {
+    /// 请求回到对话列表页（聊天页左上角按钮 / 抽屉关闭后用）
+    static let tmOpenConversationList = Notification.Name("xosvi.openConversationList")
+    /// 请求新建对话并进入聊天页
+    static let tmNewConversation = Notification.Name("xosvi.newConversation")
+}
+
 ﻿import SwiftUI
 import UIKit
 import RSKGrowingTextView
@@ -7,6 +43,7 @@ struct ChatView: View {
     @ObservedObject private var store = ConversationStore.shared
     @ObservedObject private var modelStore = ModelStore.shared
     @ObservedObject private var tts = TTSService.shared
+    @ObservedObject private var uiState = AppUIState.shared   // v7.1.2：抽屉开关（顶部栏 ≡ 键要用）
 
     @State private var inputText = ""
     @State private var inputHeight: CGFloat = 36
@@ -38,6 +75,14 @@ struct ChatView: View {
     @State private var selectedIds = Set<UUID>()
     @State private var showToast = false
     @State private var toastText = "已复制"
+
+    /// v7.1.2：iOS16+ 顶部栏自绘 → 隐藏系统导航栏。`#available` 不能直接当值用，
+    /// 必须放进 if 表达式里（CI 报 "may only be used as condition of an 'if'"）。
+    private var isNavBarHidden: Bool {
+        if #available(iOS 16.0, *) { return true }
+        return false
+    }
+
     var body: some View {
         CompatNav {
             VStack(spacing: 0) {
@@ -81,7 +126,8 @@ struct ChatView: View {
                 inputBar
             }
             // v6.9.16：iOS16+ 顶部栏自绘，系统导航栏整条隐藏（iOS15 仍走系统导航栏）
-            .navigationBarHidden(#available(iOS 16.0, *))
+            .navigationBarHidden(isNavBarHidden)
+
             .navigationTitle(selectionMode ? "已选 \(selectedIds.count) 条" : store.currentTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -1150,7 +1196,15 @@ struct DeepSeekTopBar: View {
         .frame(height: 46)
         .padding(.top, 2)
         .padding(.bottom, 4)
-        .sheet(isPresented: $showPicker) { ChatModelPickerSheet() }
+        .sheet(isPresented: $showPicker) {
+            // v7.1.2：ChatModelPickerSheet 需要 onSelect（漏传会报 missing argument）
+            ChatModelPickerSheet { cfg in
+                var c = cfg
+                c.isDefault = true
+                ModelStore.shared.update(c)   // 点选即切换默认模型（与导航栏那份保持一致）
+                showPicker = false
+            }
+        }
     }
 }
 

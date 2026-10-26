@@ -1675,9 +1675,12 @@ final class ConversationStore: ObservableObject {
             }
             DispatchQueue.global().async {
                 let result: Result<[String: Any], Error>
-                do { result = .success(try ToolRegistry.shared.dispatch(name: call.name, params: params)) }
+                do {
+                    result = .success(try ToolRegistry.shared.dispatch(name: call.name, params: params))
+                } catch {
+                    result = .failure(error)
+                }
                 if call.name == "subagent" { SubagentTool.progressHandler = nil }
-                catch { result = .failure(error) }
                 let toolDuration = CFAbsoluteTimeGetCurrent() - toolStart
                 DispatchQueue.main.async {
                     self.runningTool = nil

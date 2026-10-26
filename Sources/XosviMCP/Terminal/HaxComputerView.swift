@@ -138,11 +138,7 @@ struct HaxComputerView: View {
                     Label("浏览 iOS 工作区", systemImage: "internaldrive")
                 }
 
-                NavigationLink {
-                    RootfsManagementView()
-                } label: {
-                    Label("Rootfs 管理（镜像源 / DNS / 重置）", systemImage: "shippingbox")
-                }
+                // v7.1.2：RootfsManagementView 已在主仓库删除（v6.6.27），镜像源/DNS/重置都已在上面各 Section 里
             } header: {
                 Text("终端与文件")
             }

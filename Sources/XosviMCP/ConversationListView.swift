@@ -185,6 +185,8 @@ private struct IdentifiedUUID: Identifiable {
 
 /// 列表主体（抽屉里复用：不带返回按钮，只留搜索 + 列表）
 struct ConversationListBody: View {
+    // v7.1.2：原先这里直接用 `store`，但本结构没有该属性（CI 报 cannot find 'store'）
+    @ObservedObject private var store = ConversationStore.shared
     var conversations: [ChatConversation]
     var selectedId: UUID?
     @Binding var searchText: String

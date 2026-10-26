@@ -3734,7 +3734,7 @@ final class ShellExecTool: MCPTool {
                                   .trimmingCharacters(in: .whitespacesAndNewlines)
                 if scriptCount >= 3 && visible.count < 100 {
                     out["needs_render"] = true
-                    out["hint"] = "该页面由 JS 动态渲染，curl 只能拿到原始 HTML，拿不到渲染后正文。请改用 Hax 浏览器：haxbrowser {command:"open"} 打开 + {command:"text"} 读渲染后的正文。"
+                    out["hint"] = "该页面由 JS 动态渲染，curl 只能拿到原始 HTML，拿不到渲染后正文。请改用 Hax 浏览器：haxbrowser open 打开 + haxbrowser text 读渲染后的正文。"
                 }
             }
             if body.count > 200_000 {
