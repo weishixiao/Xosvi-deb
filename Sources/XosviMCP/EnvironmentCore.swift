@@ -343,7 +343,7 @@ final class EnvironmentInstaller: ObservableObject {
         }
     }
 
-        /// 解析流式输出：拆行→推阶段→累计 (n/m) 进度。
+    /// 解析流式输出：拆行→推阶段→累计 (n/m) 进度。
     /// 在后台队列被调用，UI 更新一律抛回主线程。
     private func consume(_ text: String) {
         for raw in text.components(separatedBy: "\n") {
@@ -388,9 +388,9 @@ final class EnvironmentInstaller: ObservableObject {
             case .idle: return "准备中"
             case .writingMirror: return "写入镜像源"
             case .checkingIndex: return "检查包索引"
-            case .updatingIndex(let d): return "拉取包索引  d "
-            case .downloading(let d): return "下载安装包  d "
-            case .installing(let d): return "安装中  d "
+            case .updatingIndex(let d): return d.isEmpty ? "拉取包索引…" : "拉取包索引  \(d)"
+            case .downloading(let d): return d.isEmpty ? "下载安装包…" : "下载安装包  \(d)"
+            case .installing(let d): return d.isEmpty ? "安装中…" : "安装中  \(d)"
             case .verifying: return "校验安装结果"
             case .done: return "完成"
             case .failed: return "失败"

@@ -517,7 +517,8 @@ struct EnvironmentPresetsView: View {
 
 struct DependencyDetailView: View {
     let dependency: EnvDependency
-    @ObservedObject private var installer = EnvironmentInstaller.shared
+    // v7.14.12：进度卡要读这里的 installer，不能是 private
+    @ObservedObject var installer = EnvironmentInstaller.shared
     @State private var speedBusy = false
     @State private var showLog = false
 
