@@ -62,7 +62,7 @@ struct JBPlotSettingsView: View {
     private var binarySection: some View {
         Section(header: Text("宿主程序"),
                 footer: Text(binaryState == "missing"
-                             ? "Xosvi 需要一个 jb-p1lot 宿主程序来驱动已配对的越狱设备。点「安装」会从 GitHub Release 下载 darwin-arm64 并自动重签（jb-p1lot 为 GPL-3.0，不随 App 分发）。"
+                             ? "Xosvi 需要一个 iOS 版 jb-p1lot 可执行来驱动已配对的越狱设备（上游的 darwin 版是 macOS 的，装到手机上跑不起来）。点「安装」会从 GitHub Release 取 iphoneos-arm64.deb、解出 iOS 版 jb-p1lot 并重签（jb-p1lot 为 GPL-3.0，不随 App 分发）。"
                              : "「更新」总是拉最新 Release；下载版放在本 App 沙盒，删除 App 即清除。")) {
             HStack {
                 Text("状态")

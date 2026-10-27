@@ -11,7 +11,7 @@ import Darwin
 //
 // 原来的用法是"电脑上跑 CLI，AI(Claude/Cursor) 通过 MCP 连它"。
 // 在 Xosvi 里我们把这层搬进 App 自己：
-//   1) 宿主二进制按需从上游 GitHub Release（darwin-arm64）下载并 ad-hoc 重签，
+//   1) iOS 版可执行按需从上游 GitHub Release（iphoneos-arm64.deb）取出并重签，
 //      落 App 沙盒。GPL-3.0 的产物不随本 App 捆绑分发（见 JBPlotSettingsView 说明）。
 //   2) 身份/配对状态放 App 沙盒（hosts.json、identity/），首次 setup 时生成。
 //   3) 工具层（JBTool）负责子命令分发 → 进程调 CLI → 解析 JSON。
@@ -256,47 +256,148 @@ public enum JBPlot {
 
     // MARK: - 安装 / 下载
 
-    /// 从 GitHub Release 下载 darwin-arm64 宿主二进制到沙盒，并 ad-hoc 重签。
-    /// iOS 上子进程必须是已签名 Mach-O，所以下载后必须 ldid/hash 签名——
-    /// App 内自带 ldid 时就地签名，没有则尝试系统 `codesign`（越狱环境常见可用）。
+    /// 安装宿主程序。
+    ///
+    /// v7.13.3：原来下载 `jb-p1lot-darwin-arm64` 是错的——那个二进制
+    /// `platform = macOS`，在 iOS 上 dyld 直接拒绝，重签也没用；而且资产名里没有
+    /// `jb-p1lot`，用 `releases/latest/download/jb-p1lot` 只会拿到 404 HTML。
+    ///
+    /// 正确做法：下 **iphoneos-arm64.deb**，从里面取出 iOS 版 `jb-p1lot`
+    /// （实测 `platform = iOS`，fat arm64/arm64e），再落到沙盒并重签。
     static func downloadBinary(version: String? = nil, progress: ((String) -> Void)? = nil) -> (ok: Bool, message: String) {
         ensureDirs()
-        let tag = version ?? "latest"
-        // 上游 Release 只出 Darwin 主机二进制（arm64 与 iPhone 同 ABI，越狱设备可直接执行）
-        let names = ["jb-p1lot-darwin-arm64", "jb-p1lot"]
-        let mirrors = UpdateManager.shared.mirrors
-        var lastError = ""
+        progress?("查询上游 Release…")
+        guard let asset = resolveDebAsset(tag: version) else {
+            return (false, "查不到 iphoneos-arm64.deb（上游资产改名了？）")
+        }
 
-        for name in names {
-            let base = "https://github.com/\(repo)/releases/\(tag == "latest" ? "latest/download" : "download/\(tag)")/\(name)"
-            var urls = [base]
-            for m in mirrors { urls.append(m + base) }
-            for urlStr in urls {
-                guard let url = URL(string: urlStr) else { continue }
-                progress?("下载 \(urlStr)")
-                if let data = httpGet(url), data.count > 1_000_000,
-                   data.starts(with: [0xCF, 0xFA, 0xED, 0xFE]) || data.starts(with: [0xCA, 0xFE, 0xBA, 0xBE]) {
-                    // universal / thin Mach-O magic
-                    let dest = binaryURL
-                    do {
-                        try data.write(to: dest)
-                        try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dest.path)
-                        let signed = signBinary(dest.path)
-                        let probe = exec(["--version"], timeout: 15)
-                        if probe.isOK {
-                            return (true, "已安装 \(name)（\(data.count / 1024) KB）v\(probe.stdout.trimmingCharacters(in: .whitespacesAndNewlines))\(signed ? "" : "（未签名，可能被系统拒绝执行）")")
-                        }
-                        lastError = "下载成功但执行失败: \(probe.stderr.prefix(200))"
-                        try? FileManager.default.removeItem(at: dest)
-                    } catch {
-                        lastError = "写入失败: \(error.localizedDescription)"
-                    }
-                } else {
-                    lastError = "下载失败或不是 Mach-O: \(urlStr)"
-                }
+        // ① 下载 deb（直连 + 镜像前缀）
+        var urls = ["https://github.com/\(repo)/releases/download/\(asset.tag)/\(asset.name)"]
+        for m in UpdateManager.shared.mirrors { urls.append(m + urls[0]) }
+        var debData: Data?
+        var lastError = ""
+        for urlStr in urls {
+            guard let url = URL(string: urlStr) else { continue }
+            progress?("下载 \(asset.name)")
+            if let d = httpGet(url), d.count > 200_000, d.starts(with: Array("!<arch>\n".utf8)) {
+                debData = d
+                break
+            }
+            lastError = "下载失败：\(urlStr)"
+        }
+        guard let deb = debData else {
+            return (false, lastError.isEmpty ? "deb 下载失败" : lastError)
+        }
+
+        // ② 解包（复用内置 package 工具，它已经能处理 ar + data.tar.lzma/xz/gz）
+        let workRoot = binaryURL.deletingLastPathComponent()
+            .appendingPathComponent("jb-unpack-\(UUID().uuidString.prefix(8))")
+        try? FileManager.default.createDirectory(at: workRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workRoot) }
+
+        let debPath = workRoot.appendingPathComponent(asset.name)
+        do { try deb.write(to: debPath) } catch {
+            return (false, "写入 deb 失败：\(error.localizedDescription)")
+        }
+        progress?("解包 deb…")
+        if let tool = ToolRegistry.shared.tool(named: "package") {
+            _ = try? tool.invoke(["command": "unpack", "path": debPath.path, "dest": workRoot.path])
+        }
+
+        // ③ 找 CLI 可执行（优先 Applications 里的 jb-p1lot，其次 libexec 的 daemon）
+        let candidates = [
+            workRoot.appendingPathComponent("var/jb/Applications/jb-p1lot.app/jb-p1lot").path,
+            workRoot.appendingPathComponent("var/jb/usr/bin/jb-p1lot").path,
+            workRoot.appendingPathComponent("var/jb/usr/libexec/jb-p1lot-daemon").path,
+        ]
+        guard let src = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+            return (false, "deb 里没找到 jb-p1lot 可执行（解包失败或结构变化）")
+        }
+        guard let data = FileManager.default.contents(atPath: src) else {
+            return (false, "读取解出的二进制失败")
+        }
+        // 拒绝 macOS 二进制（就摆在平台里，省得以后又装错）
+        if !isIOSMachO(data) {
+            return (false, "解出的二进制不是 iOS Mach-O（platform ≠ iOS），拒绝安装")
+        }
+
+        // ④ 落到沙盒 + 重签 + 自检
+        let dest = binaryURL
+        do {
+            try? FileManager.default.removeItem(at: dest)
+            try data.write(to: dest)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dest.path)
+        } catch {
+            return (false, "写入失败：\(error.localizedDescription)")
+        }
+        let signed = signBinary(dest.path)
+        let probe = exec(["--version"], timeout: 15)
+        if probe.isOK {
+            let v = probe.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (true, "已安装 iOS 版 jb-p1lot（\(data.count / 1024) KB）\(v.isEmpty ? "" : "v\(v)")\(signed ? "" : "（未签名，可能被系统拒绝执行）")")
+        }
+        return (false, "已解出但执行失败：\(probe.stderr.prefix(200))")
+    }
+
+    /// 查上游最新（或指定 tag）Release 里的 iphoneos-arm64.deb
+    private static func resolveDebAsset(tag: String?) -> (tag: String, name: String)? {
+        let api = tag == nil || tag == "latest"
+            ? "https://api.github.com/repos/\(repo)/releases/latest"
+            : "https://api.github.com/repos/\(repo)/releases/tags/\(tag!)"
+        guard let url = URL(string: api), let data = httpGet(url),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tagName = obj["tag_name"] as? String,
+              let assets = obj["assets"] as? [[String: Any]] else { return nil }
+        // 优先 iphoneos-arm64.deb；名字里带版本号，不能硬编码
+        for a in assets {
+            guard let n = a["name"] as? String else { continue }
+            if n.hasSuffix(".deb") && n.contains("iphoneos-arm64") {
+                return (tagName, n)
             }
         }
-        return (false, lastError.isEmpty ? "没有可用的下载源" : lastError)
+        return nil
+    }
+
+    /// 判断是否为 iOS 平台的 Mach-O（fat 或 thin 都看一遍）
+    private static func isIOSMachO(_ data: Data) -> Bool {
+        func platform(of slice: Data) -> UInt32? {
+            guard slice.count > 32 else { return nil }
+            let magic = slice.withUnsafeBytes { $0.load(as: UInt32.self) }
+            guard magic == 0xfeedfacf else { return nil }
+            let ncmds: UInt32 = slice.withUnsafeBytes { $0.load(fromByteOffset: 16, as: UInt32.self) }
+            var off = 32
+            var i: UInt32 = 0
+            while i < ncmds, off + 8 <= slice.count {
+                let cmd: UInt32 = slice.withUnsafeBytes { $0.load(fromByteOffset: off, as: UInt32.self) }
+                let size: UInt32 = slice.withUnsafeBytes { $0.load(fromByteOffset: off + 4, as: UInt32.self) }
+                if cmd == 0x32, off + 24 <= slice.count {   // LC_BUILD_VERSION
+                    return slice.withUnsafeBytes { $0.load(fromByteOffset: off + 8, as: UInt32.self) }
+                }
+                if size == 0 { break }
+                off += Int(size)
+                i += 1
+            }
+            return nil
+        }
+
+        let magicBE = data.withUnsafeBytes { $0.load(as: UInt32.self).bigEndian }
+        if magicBE == 0xcafebabe {                 // fat：任一 slice 是 iOS 就算
+            let n: UInt32 = data.withUnsafeBytes { UInt32(bigEndian: $0.load(fromByteOffset: 4, as: UInt32.self)) }
+            var i = 0
+            while i < Int(n) {
+                let base = 8 + i * 20
+                guard base + 20 <= data.count else { break }
+                let off: UInt32 = data.withUnsafeBytes { UInt32(bigEndian: $0.load(fromByteOffset: base + 8, as: UInt32.self)) }
+                let size: UInt32 = data.withUnsafeBytes { UInt32(bigEndian: $0.load(fromByteOffset: base + 12, as: UInt32.self)) }
+                if Int(off) + Int(size) <= data.count {
+                    let slice = data.subdata(in: Int(off)..<(Int(off) + Int(size)))
+                    if platform(of: slice) == 2 { return true }
+                }
+                i += 1
+            }
+            return false
+        }
+        return platform(of: data) == 2
     }
 
     /// Relaxin 适配：把沙盒里的宿主二进制复制到越狱可写区（App 内越狱视图可能只读，

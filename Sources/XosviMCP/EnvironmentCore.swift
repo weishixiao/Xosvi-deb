@@ -276,10 +276,23 @@ final class EnvironmentInstaller: ObservableObject {
 
             var upd = ISH.RunResult(output: "", exitCode: 0, timedOut: false)
             if !hasIndex {
+                // v7.14.14：先花 ≤12s 探测镜像是否可达。
+                // 不可达就直接换源，不把 300 秒耗在一个连不上的 host 上。
+                Self.setPhase(.updatingIndex("探测镜像连通性"), notify: self)
+                let reach = ISH.run(
+                    "wget -q -O /dev/null --timeout=8 --tries=1 '\(repoMain)/aarch64/APKINDEX.tar.gz' && echo REACHABLE || echo UNREACHABLE",
+                    timeout: 15)
+                let reachable = reach.output.contains("REACHABLE")
+                logLines.append("[env] 镜像可达性: \(reachable ? "通" : "不通")")
+
                 Self.setPhase(.updatingIndex(""), notify: self)
                 let t0 = Date()
-                upd = ISH.runStreaming("apk --wait 60 update", timeout: 300,   // 慢镜像留足时间
+                // 单个源最多 90 秒（本地实测 2~4 秒；卡住时早失败早换源）
+                upd = ISH.runStreaming("apk --wait 30 update", timeout: 90,
                                        onChunk: { text in self.consume(text) })
+                if !reachable && upd.timedOut {
+                    logLines.append("[env] 镜像不可达且 update 超时，直接进入换源")
+                }
                 let tUpdate = Int(Date().timeIntervalSince(t0))
                 logLines.append("[env] update: exit=\(upd.exitCode) timedOut=\(upd.timedOut) \(tUpdate)s")
                 logLines.append(upd.output)
@@ -293,14 +306,15 @@ final class EnvironmentInstaller: ObservableObject {
                     sources.sort { a, b in a.id == mirror.id && b.id != mirror.id }
                     for alt in sources where !tried.contains(alt.id) {
                         tried.insert(alt.id)
-                        Self.setPhase(.updatingIndex("换源 \(alt.name)"), notify: self)
+                        Self.setPhase(.updatingIndex("换源 \(alt.name)（已试 \(tried.count-1) 个）"), notify: self)
                         let main = alt.base + "v3.21/main"
                         let comm = alt.base + "v3.21/community"
                         _ = ISH.run("printf '%s\\n%s\\n' '\(main)' '\(comm)' > /etc/apk/repositories && rm -f /var/cache/apk/APKINDEX.*.tar.gz", timeout: 20)
                         let t2 = Date()
-                        let altResult = ISH.run("apk --wait 30 update", timeout: 150)
+                        let altResult = ISH.run("apk --wait 30 update", timeout: 90)
                         let cost = Int(Date().timeIntervalSince(t2))
                         logLines.append("[env] 换源 \(alt.name): exit=\(altResult.exitCode) timedOut=\(altResult.timedOut) \(cost)s")
+                        DispatchQueue.main.async { self.log = logLines.joined(separator: "\n") }
                         logLines.append(altResult.output)
                         if altResult.exitCode == 0 && !altResult.timedOut {
                             // 换源成功：记住它，下次不用再试
