@@ -28,7 +28,7 @@ final class JBPlotTool: MCPTool {
             "command": "Local action: install / update / devices / status / pair / run / commands / skill — OR any upstream subcommand name directly (shell_exec, tweak_build, tweak_deploy, tweak_cycle, ui_snapshot, ui_action, screen_capture, file_read, log_query, ...)",
             "subcommand": "Upstream subcommand when command:run",
             "device": "Paired UDID / bridge address (required when several devices are paired)",
-            "params": "JSON object of upstream params, e.g. {\"command\":\"ps -ax | head\",\"timeoutMs\":20000}. Alternatively pass them as top-level keys.",
+            "params": "JSON object of upstream params, e.g. {\"command\":\"ps -o pid,args | head\",\"timeoutMs\":20000}. Alternatively pass them as top-level keys. Note: the device runs BusyBox ps — use \"ps -o pid,args\", not \"ps aux\" / \"ps -ax\".",
             "project": "Tweak project path for tweak_build / tweak_cycle",
             "ssh_host": "For command:pair — device SSH host (WiFi IP or USB)",
             "ssh_port": "For command:pair — SSH port (default 22)",

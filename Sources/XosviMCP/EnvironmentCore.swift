@@ -227,6 +227,19 @@ final class EnvironmentInstaller: ObservableObject {
             printf '%s\\n%s\\n' '\(repoMain)' '\(repoComm)' > /etc/apk/repositories
             """, timeout: 20)
 
+            // v7.14.7：先清残锁。iSH 内核里的 apk 进程被强杀/沙盒重启后，
+            // /lib/apk/db/lock 可能留下"无人持有但 apk 认为被占"的状态，
+            // 表现为一直卡在 "Waiting for repository lock"。
+            // 用 flock -n 判定：能拿到 = 确实没人持有 → 删除锁文件重来。
+            _ = ISH.run("""
+            if command -v flock >/dev/null 2>&1; then
+              if flock -n /lib/apk/db/lock true 2>/dev/null; then
+                rm -f /lib/apk/db/lock
+                echo "[env] 清理残留 apk 锁"
+              fi
+            fi
+            """, timeout: 20)
+
             // 与 Kelivo 一致：先 update 再 add，--wait 等锁
             let script = "set -e\napk --wait 60 update\napk --wait 60 add \(d.packages)\n"
             let r = ISH.run(script, timeout: 300)
@@ -255,8 +268,13 @@ final class EnvironmentInstaller: ObservableObject {
         if l.contains("no space") { return "沙盒空间不足" }
         if l.contains("network") || l.contains("unable to select") || l.contains("temporary failure")
             || l.contains("could not connect") { return "拉不到软件源，换一个镜像再试" }
-        if l.contains("unable to lock") { return "有别的安装正在进行，稍后再试" }
-        if l.isEmpty { return "安装失败，没拿到输出" }
+        if l.contains("unable to lock") || l.contains("waiting for repository lock") {
+            return "apk 锁被占用或残留：点「重新安装」会自动清一次残留锁；仍不行就重启 iSH 沙盒后再试"
+        }
+        if l.contains("apk: not found") || l.contains("/sbin/apk") && l.contains("no such file") {
+            return "沙盒里没有 apk，说明 rootfs 不完整：到 设置 → 环境 页重装 rootfs"
+        }
+        if l.isEmpty { return "安装失败，没拿到输出（沙盒可能未启动，见 设置 → 环境 → 沙盒状态）" }
         return String(log.suffix(300))
     }
 }
