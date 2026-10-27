@@ -222,6 +222,14 @@ final class EnvironmentInstaller: ObservableObject {
 
     func install(_ d: EnvDependency) {
         guard installing == nil else { return }
+        // v7.14.18：照 Kelivo 的守卫——沙盒没 ready 就别进安装流程
+        // （Kelivo: `if (busy || !supportsPackages || env.state.phase != ready) return;`）
+        if ISH.boot() != 0 {
+            failure = .install
+            log = "沙盒未就绪：\(ISH.lastError ?? "boot 失败")。请到 设置 → 环境 先启动/修复沙盒。"
+            phase = .failed
+            return
+        }
         installing = d
         failure = nil
         log = ""
