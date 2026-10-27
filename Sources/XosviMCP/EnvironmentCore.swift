@@ -241,8 +241,29 @@ final class EnvironmentInstaller: ObservableObject {
             """, timeout: 20)
 
             // 与 Kelivo 一致：先 update 再 add，--wait 等锁
-            let script = "set -e\napk --wait 60 update\napk --wait 60 add \(d.packages)\n"
-            let r = ISH.run(script, timeout: 300)
+            // v7.14.9：分步执行并把每一步的耗时/退出码写进日志。
+            // 之前一条 script 跑完只见两行 fetch 就"取消"，无法判断是 update 卡住、
+            // apk 被信号打断，还是沙盒中途重启——现在日志里能直接看出是哪一步。
+            var logLines: [String] = []
+            let t0 = Date()
+            let upd = ISH.run("apk --wait 60 update", timeout: 120)
+            let tUpdate = Int(Date().timeIntervalSince(t0))
+            logLines.append("[env] update: exit=\(upd.exitCode) timedOut=\(upd.timedOut) \(tUpdate)s")
+            logLines.append(upd.output)
+
+            var r = upd
+            if upd.exitCode == 0 && !upd.timedOut {
+                let t1 = Date()
+                let add = ISH.run("apk --wait 60 add \(d.packages)", timeout: 420)
+                let tAdd = Int(Date().timeIntervalSince(t1))
+                logLines.append("[env] add: exit=\(add.exitCode) timedOut=\(add.timedOut) \(tAdd)s")
+                logLines.append(add.output)
+                r = ISH.RunResult(output: logLines.joined(separator: "\n"),
+                                  exitCode: add.exitCode, timedOut: add.timedOut)
+            } else {
+                r = ISH.RunResult(output: logLines.joined(separator: "\n"),
+                                  exitCode: upd.exitCode, timedOut: upd.timedOut)
+            }
 
             // 装完立刻复查这一项（不靠返回值猜）
             let verify = ISH.run("if ( \(d.probe) ) >/dev/null 2>&1; then echo 1; else echo 0; fi", timeout: 60)
@@ -256,7 +277,18 @@ final class EnvironmentInstaller: ObservableObject {
                     self.lastInstalled = d
                 } else {
                     self.statuses[d] = .missing
-                    self.failure = r.output.lowercased().contains("cancel") ? .cancelled : .install
+                    // v7.14.9：原来靠 `output.contains("cancel")` 猜状态——apk 在某些失败/中断的
+                    // 输出里也带 "cancel"，于是任何失败都会被说成"安装已取消"，误导排查。
+                    // 现在按**真实结果**判定：超时 / 非零退出 / 探测仍未通过。
+                    if r.timedOut {
+                        self.failure = .cancelled
+                        self.log = r.output + "\n[env] 安装超时（apk 等待锁或网络过慢），已中止"
+                    } else if r.exitCode != 0 {
+                        self.failure = .install
+                    } else {
+                        self.failure = .install
+                        self.log = r.output + "\n[env] apk 返回成功但探测未通过（包可能已装，命令名不一致）"
+                    }
                 }
             }
         }

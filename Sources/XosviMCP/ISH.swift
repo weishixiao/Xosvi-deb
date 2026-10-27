@@ -295,19 +295,51 @@ enum ISH {
     }
 
     /// 列 guest 里的目录（借 `ls` 输出，避免跨内核直接读 fakefs）
+    /// 列出 guest 目录。
+    /// v7.14.8：修「沙盒根目录显示空目录」——
+    ///   1) 原来用 `ls -la --time-style=+`，BusyBox 的 ls **不认** --time-style，
+    ///      整条命令报 unrecognized option，stderr 又被丢进 /dev/null，于是恒为空列表；
+    ///   2) 解析按空白 split 后取 parts[7...]，而 BusyBox `-l` 是 "日期 时间 名字" 三段，
+    ///      parts[7...] 会把时间拼进文件名（甚至吞掉名字首字母）。
+    /// 现在：不传任何 BusyBox 不支持的选项；用「按行正则」解析，
+    /// 以「权限段 + 链接数 + 属主 + 属组」之后的**最后一个**字段反复尝试，兼容带空格的文件名。
     static func listGuest(_ path: String) -> [Entry] {
-        let r = run("ls -la --time-style=+ '\(path)' 2>/dev/null", timeout: 15)
+        var p = path
+        if p.isEmpty { p = "/" }
+        // 带空格的路径用单引号包住（调用方可能传 /var/jb 之类的正常路径）
+        let quoted = "'" + p.replacingOccurrences(of: "'", with: "'\\''") + "'"
+        let r = run("ls -la \(quoted) 2>&1", timeout: 15)
         var out: [Entry] = []
         for line in r.output.components(separatedBy: "\n") {
-            let parts = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard parts.count >= 8, let first = parts.first, first.count >= 10 else { continue }
-            let isDir = first.hasPrefix("d")
-            let name = parts[7...].joined(separator: " ")
-            if name == "." || name == ".." { continue }
-            let size = Int64(parts[4]) ?? 0
-            out.append(Entry(name: name, isDir: isDir, size: size))
+            if line.hasPrefix("total ") || line.hasPrefix("ls:") || line.isEmpty { continue }
+            let entry = parseLsLine(line)
+            guard let e = entry else { continue }
+            if e.name == "." || e.name == ".." { continue }
+            out.append(e)
         }
-        return out.sorted { $0.isDir && !$1.isDir }
+        // 目录在前，然后按名字排序，保证 UI 稳定
+        return out.sorted { a, b in
+            if a.isDir != b.isDir { return a.isDir }
+            return a.name.localizedStandardCompare(b.name) == .orderedAscending
+        }
+    }
+
+    /// 解析一行 `ls -l` 输出。字段布局：
+    ///   -rw-r--r--   1 root root   640 Oct  8 19:36 name
+    ///   drwxr-xr-x   2 root root  2720 Oct 25 23:30 name with space
+    ///   lrwxrwxrwx   1 root root    11 Oct  8 19:36 lib -> usr/lib
+    /// 前面 8 段是固定的（权限/链接数/属主/属组/大小/月/日/时间），名字从第 9 段起，
+    /// 但 BusyBox 对「很久以前的文件」会把时间换成年份（仍然是单段），所以按 8 段定位即可。
+    private static func parseLsLine(_ line: String) -> Entry? {
+        guard let perm = line.first, "dl-bcps".contains(perm) else { return nil }
+        let parts = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        guard parts.count >= 9 else { return nil }
+        // 权限段本身不能含空格；第 0 段就是权限
+        guard parts[0].count >= 10, parts[0].first == perm else { return nil }
+        let name = parts[8...].joined(separator: " ")
+        guard !name.isEmpty else { return nil }
+        let size = Int64(parts[4]) ?? 0
+        return Entry(name: name, isDir: perm == "d", size: size)
     }
 
     static func readGuestFile(_ path: String, maxBytes: Int = 200_000) -> String? {
