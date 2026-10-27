@@ -245,14 +245,33 @@ final class EnvironmentInstaller: ObservableObject {
             // 之前一条 script 跑完只见两行 fetch 就"取消"，无法判断是 update 卡住、
             // apk 被信号打断，还是沙盒中途重启——现在日志里能直接看出是哪一步。
             var logLines: [String] = []
-            let t0 = Date()
-            let upd = ISH.run("apk --wait 60 update", timeout: 120)
-            let tUpdate = Int(Date().timeIntervalSince(t0))
-            logLines.append("[env] update: exit=\(upd.exitCode) timedOut=\(upd.timedOut) \(tUpdate)s")
-            logLines.append(upd.output)
+
+            // v7.14.10：App 内的沙盒进程有时**拉索引会挂住**（实测：同样命令在 shell 里 6s，
+            // 在 App 启动的沙盒进程里 128s 拿不到第一行回复）。索引其实常常已经存在，
+            // 所以先探测：索引可用就跳过 update，直接用缓存装；只有确实没有才去拉。
+            let probe = ISH.run("if [ -s /var/cache/apk/APKINDEX*.tar.gz ] || apk --no-network info >/dev/null 2>&1; then echo IDX_OK; else echo IDX_MISSING; fi", timeout: 30)
+            let hasIndex = probe.output.contains("IDX_OK")
+            logLines.append("[env] 索引: \(hasIndex ? "已有，跳过 update" : "缺失，需要 update")")
+
+            var upd = ISH.RunResult(output: "", exitCode: 0, timedOut: false)
+            if !hasIndex {
+                let t0 = Date()
+                upd = ISH.run("apk --wait 60 update", timeout: 120)
+                let tUpdate = Int(Date().timeIntervalSince(t0))
+                logLines.append("[env] update: exit=\(upd.exitCode) timedOut=\(upd.timedOut) \(tUpdate)s")
+                logLines.append(upd.output)
+                // 拉索引超时：再给一次机会（第一次往往是沙盒进程刚起，DNS/网络栈还没热）
+                if upd.timedOut {
+                    logLines.append("[env] update 超时，重试一次（沙盒网络栈预热）")
+                    let t2 = Date()
+                    upd = ISH.run("apk --wait 30 update", timeout: 90)
+                    logLines.append("[env] update 重试: exit=\(upd.exitCode) timedOut=\(upd.timedOut) \(Int(Date().timeIntervalSince(t2)))s")
+                    logLines.append(upd.output)
+                }
+            }
 
             var r = upd
-            if upd.exitCode == 0 && !upd.timedOut {
+            if (upd.exitCode == 0 && !upd.timedOut) || hasIndex {
                 let t1 = Date()
                 let add = ISH.run("apk --wait 60 add \(d.packages)", timeout: 420)
                 let tAdd = Int(Date().timeIntervalSince(t1))
