@@ -267,8 +267,21 @@ public enum JBPlot {
     static func downloadBinary(version: String? = nil, progress: ((String) -> Void)? = nil) -> (ok: Bool, message: String) {
         ensureDirs()
         progress?("查询上游 Release…")
-        guard let asset = resolveDebAsset(tag: version) else {
-            return (false, "查不到 iphoneos-arm64.deb（上游资产改名了？）")
+        // v7.14.15：GitHub API 匿名访问会被限流（实测 HTTP 403 rate limit exceeded），
+        // 而 Release 的**下载直链**不受此限制（实测 200 / 1.4MB / 2.5s）。
+        // 所以先试 API；失败则走"已知版本 + 直链"探测，实在不行再从 tags 页面抓版本号。
+        var asset: (tag: String, name: String)?
+        if let a = resolveDebAsset(tag: version) {
+            asset = a
+        } else {
+            progress?("API 不可用（可能被限流），改用直链探测…")
+            asset = probeDebAsset()
+        }
+        guard let asset = asset else {
+            return (false, "取不到 jb-p1lot 的 iOS 版 deb（API 被限流且直链探测失败）。\n"
+                 + "可临时方案：在自己的电脑上下载 "
+                 + "https://github.com/\(repo)/releases/latest/download/ 里的 *iphoneos-arm64.deb，"
+                 + "用 SSHTools 传到本机后手动放到 Application Support/jb-p1lot/bin/。")
         }
 
         // ① 下载 deb（直连 + 镜像前缀）
@@ -340,6 +353,56 @@ public enum JBPlot {
     }
 
     /// 查上游最新（或指定 tag）Release 里的 iphoneos-arm64.deb
+    /// 不依赖 GitHub API 的资产探测：
+    ///   ① 逐个试已知版本号（vX.Y.Z）+ 该版本的标准资产名；
+    ///   ② 版本号从 Release 页面 HTML 里抓（不受 API 限流）；
+    ///   ③ 都失败返回 nil，由调用方给出可操作的兜底说明。
+    /// 资产名规则（上游稳定）：dev.adrian.jb-p1lot_<ver>_iphoneos-arm64.deb
+    private static func probeDebAsset() -> (tag: String, name: String)? {
+        func assetName(_ ver: String) -> String {
+            "dev.adrian.jb-p1lot_\(ver)_iphoneos-arm64.deb"
+        }
+        func urlFor(_ ver: String) -> String {
+            "https://github.com/\(repo)/releases/download/v\(ver)/\(assetName(ver))"
+        }
+        func headOK(_ ver: String) -> Bool {
+            guard let u = URL(string: urlFor(ver)) else { return false }
+            var req = URLRequest(url: u)
+            req.httpMethod = "HEAD"
+            req.timeoutInterval = 12
+            let sem = DispatchSemaphore(value: 0)
+            var code = 0
+            URLSession.shared.dataTask(with: req) { _, resp, _ in
+                code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                sem.signal()
+            }.resume()
+            _ = sem.wait(timeout: .now() + 15)
+            return code == 200
+        }
+
+        // ① 已知版本（新版本发布后这里可追加；不命中就走 ②）
+        for v in ["0.1.6", "0.1.5", "0.1.4"] where headOK(v) {
+            return ("v\(v)", assetName(v))
+        }
+
+        // ② 从 API 的镜像前缀重试（镜像通常不转发限流状态，但可能直接透传正文）
+        //    再兜底：从 releases 页面 HTML 抓 /releases/tag/vX.Y.Z
+        var pageURLs = ["https://github.com/\(repo)/releases"]
+        for m in UpdateManager.shared.mirrors { pageURLs.append(m + pageURLs[0]) }
+        for pu in pageURLs {
+            guard let u = URL(string: pu), let d = httpGet(u),
+                  let html = String(data: d, encoding: .utf8) else { continue }
+            let pattern = "/releases/tag/v([0-9]+\\.[0-9]+\\.[0-9]+)"
+            guard let re = try? NSRegularExpression(pattern: pattern) else { continue }
+            let ns = html as NSString
+            for m in re.matches(in: html, range: NSRange(location: 0, length: ns.length)) {
+                let ver = ns.substring(with: m.range(at: 1))
+                if headOK(ver) { return ("v\(ver)", assetName(ver)) }
+            }
+        }
+        return nil
+    }
+
     private static func resolveDebAsset(tag: String?) -> (tag: String, name: String)? {
         let api = tag == nil || tag == "latest"
             ? "https://api.github.com/repos/\(repo)/releases/latest"
