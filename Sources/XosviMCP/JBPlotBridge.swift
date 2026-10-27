@@ -313,8 +313,21 @@ public enum JBPlot {
             return (false, "写入 deb 失败：\(error.localizedDescription)")
         }
         progress?("解包 deb…")
-        if let tool = ToolRegistry.shared.tool(named: "package") {
-            _ = try? tool.invoke(["command": "unpack", "path": debPath.path, "dest": workRoot.path])
+        // v7.14.17：不再借道 package 工具（`try?` 会吞掉解包错误，只留下"没找到可执行"），
+        // 这里直接解析 ar 成员，把 data.tar.* 交给 package 的同一套解压实现，
+        // 并把每个成员的错误原样带出来。
+        var unpackErrors: [String] = []
+        do {
+            let members = try arMembers(deb)
+            guard !members.isEmpty else { throw MCPError.failed("deb 不是合法的 ar 归档") }
+            for m in members where m.name.hasPrefix("data.tar") {
+                _ = try unpackTarMember(m.data, into: workRoot, label: m.name)
+            }
+            if !members.contains(where: { $0.name.hasPrefix("data.tar") }) {
+                unpackErrors.append("deb 里没有 data.tar.* 成员（内容: \(members.map { $0.name }.joined(separator: ", "))）")
+            }
+        } catch {
+            unpackErrors.append("\(error)")
         }
 
         // ③ 找 CLI 可执行（优先 Applications 里的 jb-p1lot，其次 libexec 的 daemon）
@@ -324,7 +337,10 @@ public enum JBPlot {
             workRoot.appendingPathComponent("var/jb/usr/libexec/jb-p1lot-daemon").path,
         ]
         guard let src = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
-            return (false, "deb 里没找到 jb-p1lot 可执行（解包失败或结构变化）")
+            // 把工作区里实际解出的内容列出来，别再只给一句"没找到"
+            let found = (try? FileManager.default.contentsOfDirectory(atPath: workRoot.path))?.joined(separator: ", ") ?? "（空）"
+            return (false, "deb 里没找到 jb-p1lot 可执行。解出的顶层: \(found)"
+                 + (unpackErrors.isEmpty ? "" : "；解包错误: \(unpackErrors.joined(separator: " | "))"))
         }
         guard let data = FileManager.default.contents(atPath: src) else {
             return (false, "读取解出的二进制失败")
@@ -419,6 +435,38 @@ public enum JBPlot {
             }
         }
         return nil
+    }
+
+    /// 解析 ar 归档成员（deb：debian-binary / control.tar.* / data.tar.*）
+    private static func arMembers(_ data: Data) throws -> [(name: String, data: Data)] {
+        guard data.count > 8, data.prefix(8).elementsEqual(Array("!<arch>\n".utf8)) else {
+            throw MCPError.failed("不是 ar 归档")
+        }
+        var out: [(String, Data)] = []
+        var off = 8
+        while off + 60 <= data.count {
+            let hdr = data.subdata(in: off..<(off + 60))
+            let rawName = String(data: hdr.subdata(in: 0..<16), encoding: .utf8) ?? ""
+            let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let sizeStr = String(data: hdr.subdata(in: 48..<58), encoding: .utf8) ?? ""
+            guard let size = Int(sizeStr.trimmingCharacters(in: .whitespaces)),
+                  size >= 0, size <= data.count - off - 60 else { break }
+            let body = data.subdata(in: (off + 60)..<(off + 60 + size))
+            if !name.isEmpty, name != "/", name != "//" { out.append((name, body)) }
+            off += 60 + size + (size & 1)
+        }
+        return out
+    }
+
+    /// 把 data.tar.* 解到 dest。复用 PackageTool.extractTar——
+    /// 那条路径已处理 gz / lzma-alone / xz / bz2 / 裸 tar 的判定与落盘。
+    private static func unpackTarMember(_ raw: Data, into dest: URL, label: String) throws -> Int {
+        do {
+            return try PackageTool().extractTar(raw, into: dest, label: label)
+        } catch {
+            throw MCPError.failed("\(label) 解包失败: \(error)")
+        }
     }
 
     /// 判断是否为 iOS 平台的 Mach-O（fat 或 thin 都看一遍）

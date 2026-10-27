@@ -503,7 +503,9 @@ final class PackageTool: MCPTool {
     }
 
     /// Extract a (possibly compressed) tar into dest, path-traversal safe. Returns file count.
-    private func extractTar(_ raw: Data, into destURL: URL, label: String = "data.tar") throws -> Int {
+    // v7.14.17：改为 internal——jb 工具解 deb 时复用同一条已验证的解码/落盘路径，
+    // 避免另写一份压缩判定（gz/lzma/xz/bz2 各有坑）。
+    func extractTar(_ raw: Data, into destURL: URL, label: String = "data.tar") throws -> Int {
         let fm = FileManager.default
         try fm.createDirectory(at: destURL, withIntermediateDirectories: true)
 
