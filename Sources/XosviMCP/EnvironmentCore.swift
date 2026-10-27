@@ -262,87 +262,34 @@ final class EnvironmentInstaller: ObservableObject {
             // v7.14.9：分步执行并把每一步的耗时/退出码写进日志。
             // 之前一条 script 跑完只见两行 fetch 就"取消"，无法判断是 update 卡住、
             // apk 被信号打断，还是沙盒中途重启——现在日志里能直接看出是哪一步。
+            // v7.14.16：完全照 Kelivo 的做法（environment_dependencies.dart:96）
+            //   installScript = 'set -e\napk --wait 60 update\napk --wait 60 add $packages\n'
+            //   cwd = '/'，timeout = 30 分钟，**一条脚本跑完**，不拆步、不预探、不跳过 update。
+            // 之前我加了"索引探测/跳过 update/分阶段"，反而引入了 430s 卡死与换源逻辑混乱。
+            // 先回到 Kelivo 的原样实现，把可靠性交给 apk 自己的 --wait 与 30 分钟上限。
             var logLines: [String] = []
 
-            // v7.14.10：App 内的沙盒进程有时**拉索引会挂住**（实测：同样命令在 shell 里 6s，
-            // 在 App 启动的沙盒进程里 128s 拿不到第一行回复）。索引其实常常已经存在，
-            // 所以先探测：索引可用就跳过 update，直接用缓存装；只有确实没有才去拉。
-            // 关键：apk 的索引缓存文件名是**按仓库 URL 哈希**的（APKINDEX.<hash>.tar.gz），
-            // 换镜像后旧缓存对不上，apk 会去网络重新拉。所以不能"有任何索引文件就算有"。
-            // 这里带 --no-network 让 apk 只读缓存：能列出包 = 当前仓库的索引确实在本地。
-            let probe = ISH.run("apk --no-network info >/dev/null 2>&1 && echo IDX_OK || echo IDX_MISSING", timeout: 45)
-            let hasIndex = probe.output.contains("IDX_OK")
-            logLines.append("[env] 索引: \(hasIndex ? "已有，跳过 update" : "缺失，需要 update")")
+            // v7.14.16：先做 15 秒网络自检，把实际情况写进日志。
+            // 之前在 App 里表现为"fetch 发出后无响应直到超时"，但同一台机器 shell 里 2~3s 就成功，
+            // 需要先拿到 DNS / 直连 / 代理三个层面的证据，而不是继续猜。
+            Self.setPhase(.updatingIndex("网络自检"), notify: self)
+            // 用单行命令，避免多层转义；每项都单独带标记，便于从日志一眼看出是哪层断了
+            let diagCmd = [
+                "echo '[diag] resolv:'; cat /etc/resolv.conf 2>&1 | head -3",
+                "echo '[diag] dns:'; nslookup mirrors.aliyun.com 2>&1 | grep -i addr | head -3",
+                "echo '[diag] route:'; cat /proc/net/route 2>&1 | head -2",
+                "echo '[diag] wget:'; wget -q -O /dev/null --timeout=8 --tries=1 https://mirrors.aliyun.com/alpine/v3.21/main/aarch64/APKINDEX.tar.gz && echo OK || echo FAIL",
+            ].joined(separator: "; ")
+            let diag = ISH.run(diagCmd, timeout: 45, cwd: "/")
+            logLines.append(diag.output)
+            logLines.append("[env] 自检 exit=\(diag.exitCode) timedOut=\(diag.timedOut)")
 
-            var upd = ISH.RunResult(output: "", exitCode: 0, timedOut: false)
-            if !hasIndex {
-                // v7.14.14：先花 ≤12s 探测镜像是否可达。
-                // 不可达就直接换源，不把 300 秒耗在一个连不上的 host 上。
-                Self.setPhase(.updatingIndex("探测镜像连通性"), notify: self)
-                let reach = ISH.run(
-                    "wget -q -O /dev/null --timeout=8 --tries=1 '\(repoMain)/aarch64/APKINDEX.tar.gz' && echo REACHABLE || echo UNREACHABLE",
-                    timeout: 15)
-                let reachable = reach.output.contains("REACHABLE")
-                logLines.append("[env] 镜像可达性: \(reachable ? "通" : "不通")")
-
-                Self.setPhase(.updatingIndex(""), notify: self)
-                let t0 = Date()
-                // 单个源最多 90 秒（本地实测 2~4 秒；卡住时早失败早换源）
-                upd = ISH.runStreaming("apk --wait 30 update", timeout: 90,
-                                       onChunk: { text in self.consume(text) })
-                if !reachable && upd.timedOut {
-                    logLines.append("[env] 镜像不可达且 update 超时，直接进入换源")
-                }
-                let tUpdate = Int(Date().timeIntervalSince(t0))
-                logLines.append("[env] update: exit=\(upd.exitCode) timedOut=\(upd.timedOut) \(tUpdate)s")
-                logLines.append(upd.output)
-                // v7.14.13：拉索引失败/超时 → 自动换其它镜像源重试。
-                // 实测 iSH 的 DNS 代理（198.18.x.x）会偶尔整段握手失败，
-                // 此时换一个 host 往往立刻就好，比死等同一个源快得多。
-                if upd.timedOut || upd.exitCode != 0 {
-                    var tried: Set<String> = [mirror.id]
-                    var sources = MirrorCatalog.apk
-                    // 优先顺序：本次选中的放最前，其余按"延迟优先"的静态顺序
-                    sources.sort { a, b in a.id == mirror.id && b.id != mirror.id }
-                    for alt in sources where !tried.contains(alt.id) {
-                        tried.insert(alt.id)
-                        Self.setPhase(.updatingIndex("换源 \(alt.name)（已试 \(tried.count-1) 个）"), notify: self)
-                        let main = alt.base + "v3.21/main"
-                        let comm = alt.base + "v3.21/community"
-                        _ = ISH.run("printf '%s\\n%s\\n' '\(main)' '\(comm)' > /etc/apk/repositories && rm -f /var/cache/apk/APKINDEX.*.tar.gz", timeout: 20)
-                        let t2 = Date()
-                        let altResult = ISH.run("apk --wait 30 update", timeout: 90)
-                        let cost = Int(Date().timeIntervalSince(t2))
-                        logLines.append("[env] 换源 \(alt.name): exit=\(altResult.exitCode) timedOut=\(altResult.timedOut) \(cost)s")
-                        DispatchQueue.main.async { self.log = logLines.joined(separator: "\n") }
-                        logLines.append(altResult.output)
-                        if altResult.exitCode == 0 && !altResult.timedOut {
-                            // 换源成功：记住它，下次不用再试
-                            UserDefaults.standard.set(alt.id, forKey: "mirror.apk")
-                            logLines.append("[env] 已切到 \(alt.name)（后续安装沿用）")
-                            upd = altResult
-                            break
-                        }
-                    }
-                }
-            }
-
-            var r = upd
-            // 只有"索引确实对应当前仓库"才直接装；否则必须先 update 拉索引
-            if hasIndex || (upd.exitCode == 0 && !upd.timedOut) {
-                Self.setPhase(.downloading(""), notify: self)
-                let t1 = Date()
-                let add = ISH.runStreaming("apk --wait 60 add \(d.packages)", timeout: 1800,   // 对齐 Kelivo：30 分钟
-                                           onChunk: { text in self.consume(text) })
-                let tAdd = Int(Date().timeIntervalSince(t1))
-                logLines.append("[env] add: exit=\(add.exitCode) timedOut=\(add.timedOut) \(tAdd)s")
-                logLines.append(add.output)
-                r = ISH.RunResult(output: logLines.joined(separator: "\n"),
-                                  exitCode: add.exitCode, timedOut: add.timedOut)
-            } else {
-                r = ISH.RunResult(output: logLines.joined(separator: "\n"),
-                                  exitCode: upd.exitCode, timedOut: upd.timedOut)
-            }
+            Self.setPhase(.updatingIndex(""), notify: self)
+            let script = "set -e\napk --wait 60 update\napk --wait 60 add \(d.packages)\n"
+            let r = ISH.runStreaming(script, timeout: 1800, cwd: "/",
+                                     onChunk: { text in self.consume(text) })
+            logLines.append(r.output)
+            logLines.append("[env] exit=\(r.exitCode) timedOut=\(r.timedOut)")
 
             // 装完立刻复查这一项（不靠返回值猜）
             Self.setPhase(.verifying, notify: self)
