@@ -283,13 +283,33 @@ final class EnvironmentInstaller: ObservableObject {
                 let tUpdate = Int(Date().timeIntervalSince(t0))
                 logLines.append("[env] update: exit=\(upd.exitCode) timedOut=\(upd.timedOut) \(tUpdate)s")
                 logLines.append(upd.output)
-                // 拉索引超时：再给一次机会（第一次往往是沙盒进程刚起，DNS/网络栈还没热）
-                if upd.timedOut {
-                    logLines.append("[env] update 超时，重试一次（沙盒网络栈预热）")
-                    let t2 = Date()
-                    upd = ISH.run("apk --wait 30 update", timeout: 180)
-                    logLines.append("[env] update 重试: exit=\(upd.exitCode) timedOut=\(upd.timedOut) \(Int(Date().timeIntervalSince(t2)))s")
-                    logLines.append(upd.output)
+                // v7.14.13：拉索引失败/超时 → 自动换其它镜像源重试。
+                // 实测 iSH 的 DNS 代理（198.18.x.x）会偶尔整段握手失败，
+                // 此时换一个 host 往往立刻就好，比死等同一个源快得多。
+                if upd.timedOut || upd.exitCode != 0 {
+                    var tried: Set<String> = [mirror.id]
+                    var sources = MirrorCatalog.apk
+                    // 优先顺序：本次选中的放最前，其余按"延迟优先"的静态顺序
+                    sources.sort { a, b in a.id == mirror.id && b.id != mirror.id }
+                    for alt in sources where !tried.contains(alt.id) {
+                        tried.insert(alt.id)
+                        Self.setPhase(.updatingIndex("换源 \(alt.name)"), notify: self)
+                        let main = alt.base + "v3.21/main"
+                        let comm = alt.base + "v3.21/community"
+                        _ = ISH.run("printf '%s\\n%s\\n' '\(main)' '\(comm)' > /etc/apk/repositories && rm -f /var/cache/apk/APKINDEX.*.tar.gz", timeout: 20)
+                        let t2 = Date()
+                        let altResult = ISH.run("apk --wait 30 update", timeout: 150)
+                        let cost = Int(Date().timeIntervalSince(t2))
+                        logLines.append("[env] 换源 \(alt.name): exit=\(altResult.exitCode) timedOut=\(altResult.timedOut) \(cost)s")
+                        logLines.append(altResult.output)
+                        if altResult.exitCode == 0 && !altResult.timedOut {
+                            // 换源成功：记住它，下次不用再试
+                            UserDefaults.standard.set(alt.id, forKey: "mirror.apk")
+                            logLines.append("[env] 已切到 \(alt.name)（后续安装沿用）")
+                            upd = altResult
+                            break
+                        }
+                    }
                 }
             }
 
