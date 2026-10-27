@@ -596,11 +596,8 @@ struct DependencyDetailView: View {
 
             Section {
                 if installer.installing == dependency {
-                    HStack(spacing: 8) {
-                        ProgressView().scaleEffect(0.8)
-                        Text("正在安装 \(dependency.packages)…")
-                            .font(.system(size: 13)).foregroundColor(.secondary)
-                    }
+                    // v7.14.12：实时进度框——阶段文字 + 进度条 + (n/m) + 最后几行输出
+                    InstallProgressCard(installer: installer, dependency: dependency)
                 } else {
                     Button {
                         installer.install(dependency)
@@ -656,6 +653,69 @@ struct DependencyDetailView: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - v7.14.12：安装进度卡
+
+/// 显示「现在在干什么、下载到哪、装到第几个包」，并给出最后几行 apk 输出。
+/// 数据全部来自 EnvironmentInstaller 的流式回调（phase / pkgDone / pkgTotal / log）。
+struct InstallProgressCard: View {
+    @ObservedObject var installer: EnvironmentInstaller
+    let dependency: EnvDependency
+
+    private var tail: [String] {
+        installer.log
+            .components(separatedBy: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .suffix(4)
+            .map { String($0.prefix(120)) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                ProgressView().scaleEffect(0.8)
+                Text(installer.phase.text)
+                    .font(.system(size: 13, weight: .medium))
+                Spacer()
+                if installer.pkgTotal > 0 {
+                    Text("\(installer.pkgDone)/\(installer.pkgTotal)")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            if let frac = installer.progressFraction {
+                ProgressView(value: frac)
+                    .tint(.accentColor)
+            } else {
+                // 没有 (n/m) 时（例如正在拉索引）用不确定进度条
+                ProgressView()
+                    .progressViewStyle(.linear)
+            }
+
+            ForEach(Array(tail.enumerated()), id: \.offset) { _, line in
+                Text(line)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            HStack(spacing: 6) {
+                Text(dependency.packages)
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                Text("如长时间停在「拉取包索引」= 网络到镜像不通，换源后重试")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary.opacity(0.8))
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
 

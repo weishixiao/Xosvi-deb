@@ -196,11 +196,16 @@ enum WebSearchService {
         for p in [SearchProvider.bing, .duckduckgo] where !order.contains(p) { order.append(p) }
 
         var lastErr = ""
+        // v7.13.2：必应改版后经常只给 1 条，不该就此打住——少于 2 条继续问下一个引擎，
+        // 全程都弱时退回"最好的那条"，不至于空手而归。
+        var best: SearchResponse?
         for p in order {
             let r = callProvider(p, query: query, limit: limit)
-            if !r.hits.isEmpty || (r.answer?.isEmpty == false) { return r }
+            if r.hits.count >= 2 || (r.answer?.isEmpty == false) { return r }
+            if r.hits.count == 1, best == nil { best = r }
             lastErr = r.error ?? "无结果"
         }
+        if let b = best { return b }
         return SearchResponse(provider: preferred?.displayName ?? "本地", answer: nil, hits: [], error: lastErr)
     }
 

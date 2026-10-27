@@ -268,6 +268,59 @@ enum ISH {
         return result ?? RunResult(output: String(data: out, encoding: .utf8) ?? "", exitCode: -1, timedOut: false)
     }
 
+    /// v7.14.12：流式执行——每产生一块输出就回调（供环境安装的实时进度框用）。
+    /// 与 run() 的区别只有一点：把 chunk 里的数据随手转给调用方，其余语义完全一致。
+    static func runStreaming(_ command: String,
+                             timeout: Double = 30,
+                             cwd: String? = "/root",
+                             env: [String: String]? = nil,
+                             onChunk: @escaping (String) -> Void) -> RunResult {
+        if boot() != 0 {
+            let msg = "沙盒启动失败（rootfs 未就绪或内核出错）"
+            onChunk(msg)
+            return RunResult(output: msg, exitCode: -2, timedOut: false)
+        }
+        var out = Data()
+        let lock = NSLock()
+        let sem = DispatchSemaphore(value: 0)
+        var result: RunResult?
+
+        _ = KelivoISHExecutor.startCommand(
+            command,
+            runId: UUID().uuidString,
+            binds: [],
+            cwd: cwd,
+            env: env,
+            timeoutMs: Int(timeout * 1000),
+            keepStdinOpen: false,
+            started: {},
+            chunk: { _, _, data in
+                lock.lock()
+                out.append(data)
+                lock.unlock()
+                if let text = String(data: data, encoding: .utf8), !text.isEmpty {
+                    onChunk(text)
+                }
+            },
+            done: { dict in
+                let code = (dict["exitCode"] as? NSNumber)?.int32Value ?? -1
+                let timedOut = (dict["timedOut"] as? NSNumber)?.boolValue ?? false
+                lock.lock()
+                let text = String(data: out, encoding: .utf8) ?? ""
+                lock.unlock()
+                result = RunResult(output: text, exitCode: code, timedOut: timedOut)
+                sem.signal()
+            })
+
+        if sem.wait(timeout: .now() + timeout + 10) == .timedOut {
+            lock.lock()
+            let text = String(data: out, encoding: .utf8) ?? ""
+            lock.unlock()
+            return RunResult(output: text, exitCode: -1, timedOut: true)
+        }
+        return result ?? RunResult(output: "", exitCode: -1, timedOut: false)
+    }
+
     // MARK: 挂载外部文件夹
 
     /// 把 iOS 上的目录挂到 guest 的 /mounts/<name>

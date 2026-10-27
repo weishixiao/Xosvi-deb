@@ -7,7 +7,6 @@ struct ModelsView: View {
     @State private var editing: ModelConfig?
     @State private var isNewModel = false
     // v2.9.107：用量统计 / 导入导出
-    @State private var showingUsage = false
     @State private var showingImporter = false
     @State private var showingExporter = false
     @State private var exportDoc: ConfigDoc?
@@ -67,15 +66,7 @@ struct ModelsView: View {
         .navigationTitle("模型 API")
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
-                // v2.9.108：从剪贴板粘贴导入（借鉴 cc-switch ccswitch:// 一键导入思路，零 URL Scheme 风险）
-                Button(action: importFromClipboard) {
-                    Image(systemName: "doc.on.clipboard")
-                }
-                .help("从剪贴板导入")
-                Button(action: { showingUsage = true }) {
-                    Image(systemName: "chart.bar.fill")
-                }
-                .help("用量统计")
+                // v7.13.1：右上角只留「+」——剪贴板导入与用量统计入口删掉（用户要求）
                 Button(action: {
                     isNewModel = true
                     editing = ModelConfig(name: "", provider: "custom", apiProtocol: "OpenAI Chat Completions", baseURL: "", apiKey: "", model: "")
@@ -84,10 +75,7 @@ struct ModelsView: View {
                 }
             }
         }
-        // v2.9.180: 用量统计用 fullScreenCover，避免 iOS 14 多 sheet 冲突闪退
-        .fullScreenCover(isPresented: $showingUsage) {
-            UsageStatsView()
-        }
+        // v7.13.1：用量统计入口已按用户要求删除
         .sheet(item: $editing, onDismiss: { editing = nil }) { cfg in
             // v2.9.14：改用 .sheet(item:) 绑定。iOS14 的 .sheet(isPresented:)+闭包捕获
             // 存在时序竞争——sheet 内容首次构建可能读到旧 editing(nil)，先用默认预设渲染，
@@ -132,20 +120,6 @@ struct ModelsView: View {
         }
     }
 
-    /// v2.9.108：从剪贴板粘贴 JSON 导入（分享链接/文本一键导入）
-    private func importFromClipboard() {
-        guard let text = UIPasteboard.general.string, !text.isEmpty else {
-            importMessage = "剪贴板为空，请先复制模型配置 JSON"
-            showImportMessage = true
-            return
-        }
-        let r = store.importJSON(text)
-        importMessage = r.failed > 0
-            ? "导入完成：成功 \(r.ok) 个，失败 \(r.failed) 个"
-            : "导入完成：成功 \(r.ok) 个"
-        showImportMessage = true
-    }
-
     // MARK: v2.9.107 分组辅助
 
     private func groupedKeys() -> [String] {
@@ -185,100 +159,78 @@ struct ModelRow: View {
 
     var body: some View {
         let info = ModelStore.shared.breaker(for: config.id).stateInfo
-        return HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(iconColor(for: info.state))
-                    .frame(width: 34, height: 34)
-                Image(systemName: info.state == .open ? "bolt.slash" : "cpu")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundColor(.white)
-            }
-            VStack(alignment: .leading, spacing: 2) {
+        return HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(config.name)
-                        .font(.body)
+                        .font(.system(size: 15, weight: config.isDefault ? .medium : .regular))
                         .foregroundColor(.primary)
                         .lineLimit(1)
                     if config.isDefault {
-                        Text(L10n.t("ui_144"))
-                            .font(.caption2)
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(Color(UIColor.tertiarySystemFill))
+                        Text("默认")
+                            .font(.system(size: 10.5))
                             .foregroundColor(.secondary)
-                            .cornerRadius(4)
+                            .padding(.horizontal, 5).padding(.vertical, 1)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 4)
+                                    .stroke(Color(UIColor.separator).opacity(0.7), lineWidth: 0.6)
+                            )
                     }
                     if info.state != .closed {
                         Text(info.state.label)
-                            .font(.caption2)
-                            .padding(.horizontal, 6).padding(.vertical, 2)
-                            .background(iconColor(for: info.state).opacity(0.15))
-                            .foregroundColor(iconColor(for: info.state))
-                            .cornerRadius(4)
+                            .font(.system(size: 10.5))
+                            .foregroundColor(.red)
                     }
                 }
-                Text("\(config.provider.capitalized) · \(config.model)")
-                    .font(.caption)
+                Text("\(config.provider) · \(config.model)")
+                    .font(.system(size: 11.5))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
                 if !latencyText.isEmpty {
                     Text(latencyText)
-                        .font(.caption2)
+                        .font(.system(size: 10.5, design: .monospaced))
                         .foregroundColor(latencyColor)
                 }
             }
-            Spacer()
-            Button(action: speedTest) {
-                if testing {
-                    ProgressView()
-                } else {
-                    Image(systemName: "gauge")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundColor(.blue)
+
+            Spacer(minLength: 6)
+
+            if testing {
+                ProgressView().scaleEffect(0.7)
+            }
+
+            // 四个动作收进一个菜单，行里只剩文字（原来 4 个彩色图标太吵）
+            Menu {
+                Button {
+                    speedTest()
+                } label: { Label("测速", systemImage: "gauge") }
+                Button {
+                    duplicate()
+                } label: { Label("复制为副本", systemImage: "doc.on.doc") }
+                Button {
+                    ShareCenter.shared.presentShareMenuText(makeDeepLink())
+                } label: { Label("分享配置链接", systemImage: "link") }
+                if !config.isDefault {
+                    Divider()
+                    Button {
+                        activate()
+                    } label: { Label("设为当前模型", systemImage: "checkmark") }
                 }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 15))
+                    .foregroundColor(.secondary)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .disabled(testing)
-            // v2.9.108：复制为副本（借鉴 cc-switch provider duplicate）
-            Button(action: duplicate) {
-                Image(systemName: "doc.on.doc")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(.purple)
-            }
-            .buttonStyle(.plain)
-            // v2.9.126：分享深链——xosvi://import?...，对方点链接即可导入
-            // v4.3.48：ShareLink 在本设备侧载环境触发 ShareSheet → MobileIcons/CoreImage
-            // SIGSEGV（崩溃栈实证），统一改自建分享菜单（拷贝/存储到文件）
-            Button(action: {
-                ShareCenter.shared.presentShareMenuText(makeDeepLink())
-            }) {
-                Image(systemName: "link")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(.teal)
-            }
-            .buttonStyle(.plain)
-            if !config.isDefault {
-                Button(action: activate) {
-                    Image(systemName: "checkmark.circle")
-                        .font(.system(size: 17, weight: .medium))
-                        .foregroundColor(.green)
-                }
-                .buttonStyle(.plain)
-            }
+
             Image(systemName: "chevron.right")
-                .font(.caption)
-                .foregroundColor(.secondary)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(Color(UIColor.tertiaryLabel))
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 3)
     }
 
-    private func iconColor(for state: CircuitState) -> Color {
-        switch state {
-        case .closed: return Color.blue
-        case .halfOpen: return Color.orange
-        case .open: return Color.red
-        }
-    }
 
     /// v2.9.107：一键切换为当前使用模型
     private func activate() {

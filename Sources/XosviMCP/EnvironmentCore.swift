@@ -172,6 +172,15 @@ final class EnvironmentInstaller: ObservableObject {
     @Published private(set) var failure: DependencyFailure?
     @Published private(set) var log: String = ""
     @Published private(set) var busy = false
+    /// v7.14.12：实时进度（阶段 + 已安装包数/百分比）
+    @Published private(set) var phase: Phase = .idle
+    /// 已完成的包数 / 总数（从 apk 的 (n/m) 里拿）
+    @Published private(set) var pkgDone = 0
+    @Published private(set) var pkgTotal = 0
+    var progressFraction: Double? {
+        guard pkgTotal > 0 else { return nil }
+        return min(1.0, Double(pkgDone) / Double(pkgTotal))
+    }
 
     private var queue = DispatchQueue(label: "env.installer", qos: .userInitiated)
 
@@ -216,8 +225,12 @@ final class EnvironmentInstaller: ObservableObject {
         installing = d
         failure = nil
         log = ""
+        phase = .idle
+        pkgDone = 0
+        pkgTotal = 0
 
         queue.async {
+            Self.setPhase(.writingMirror, notify: self)
             // 先把当前选择的 APK 源写进去（Kelivo 也是先应用源再装）
             let mirror = MirrorCatalog.current("apk")
             let repoMain = mirror.base + "v3.21/main"
@@ -263,8 +276,10 @@ final class EnvironmentInstaller: ObservableObject {
 
             var upd = ISH.RunResult(output: "", exitCode: 0, timedOut: false)
             if !hasIndex {
+                Self.setPhase(.updatingIndex(""), notify: self)
                 let t0 = Date()
-                upd = ISH.run("apk --wait 60 update", timeout: 300)               // 慢镜像留足时间
+                upd = ISH.runStreaming("apk --wait 60 update", timeout: 300,   // 慢镜像留足时间
+                                       onChunk: { text in self.consume(text) })
                 let tUpdate = Int(Date().timeIntervalSince(t0))
                 logLines.append("[env] update: exit=\(upd.exitCode) timedOut=\(upd.timedOut) \(tUpdate)s")
                 logLines.append(upd.output)
@@ -281,8 +296,10 @@ final class EnvironmentInstaller: ObservableObject {
             var r = upd
             // 只有"索引确实对应当前仓库"才直接装；否则必须先 update 拉索引
             if hasIndex || (upd.exitCode == 0 && !upd.timedOut) {
+                Self.setPhase(.downloading(""), notify: self)
                 let t1 = Date()
-                let add = ISH.run("apk --wait 60 add \(d.packages)", timeout: 1800)   // 对齐 Kelivo：30 分钟
+                let add = ISH.runStreaming("apk --wait 60 add \(d.packages)", timeout: 1800,   // 对齐 Kelivo：30 分钟
+                                           onChunk: { text in self.consume(text) })
                 let tAdd = Int(Date().timeIntervalSince(t1))
                 logLines.append("[env] add: exit=\(add.exitCode) timedOut=\(add.timedOut) \(tAdd)s")
                 logLines.append(add.output)
@@ -294,6 +311,7 @@ final class EnvironmentInstaller: ObservableObject {
             }
 
             // 装完立刻复查这一项（不靠返回值猜）
+            Self.setPhase(.verifying, notify: self)
             let verify = ISH.run("if ( \(d.probe) ) >/dev/null 2>&1; then echo 1; else echo 0; fi", timeout: 60)
             let ok = verify.output.contains("1")
 
@@ -303,7 +321,10 @@ final class EnvironmentInstaller: ObservableObject {
                 if ok {
                     self.statuses[d] = .installed
                     self.lastInstalled = d
+                    self.phase = .done
+                    self.pkgDone = self.pkgTotal
                 } else {
+                    self.phase = .failed
                     self.statuses[d] = .missing
                     // v7.14.9：原来靠 `output.contains("cancel")` 猜状态——apk 在某些失败/中断的
                     // 输出里也带 "cancel"，于是任何失败都会被说成"安装已取消"，误导排查。
@@ -322,7 +343,87 @@ final class EnvironmentInstaller: ObservableObject {
         }
     }
 
-    /// 安装失败时给人看的解释
+        /// 解析流式输出：拆行→推阶段→累计 (n/m) 进度。
+    /// 在后台队列被调用，UI 更新一律抛回主线程。
+    private func consume(_ text: String) {
+        for raw in text.components(separatedBy: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty { continue }
+            if let p = Self.phase(from: line) {
+                DispatchQueue.main.async { self.phase = p }
+            }
+            // (3/12) 形式：更新 done/total
+            if let open = line.firstIndex(of: "("), let slash = line.firstIndex(of: "/") {
+                let doneStr = line[line.index(after: open)..<slash]
+                let rest = line[slash...].dropFirst()
+                if let close = rest.firstIndex(of: ")"),
+                   let done = Int(doneStr), let total = Int(rest[..<close]) {
+                    DispatchQueue.main.async {
+                        self.pkgDone = done
+                        self.pkgTotal = total
+                    }
+                }
+            }
+        }
+    }
+
+    private static func setPhase(_ p: Phase, notify: EnvironmentInstaller) {
+        DispatchQueue.main.async { notify.phase = p }
+    }
+
+    /// v7.14.12：安装进度（给 UI 的实时状态）
+    enum Phase: Equatable {
+        case idle
+        case writingMirror          // 写入镜像源
+        case checkingIndex          // 检查索引
+        case updatingIndex(String)  // 拉取索引（显示已下载字节）
+        case downloading(String)    // 下载包（显示包名/字节）
+        case installing(String)     // 安装/配置
+        case verifying              // 校验命令
+        case done
+        case failed
+
+        var text: String {
+            switch self {
+            case .idle: return "准备中"
+            case .writingMirror: return "写入镜像源"
+            case .checkingIndex: return "检查包索引"
+            case .updatingIndex(let d): return "拉取包索引  d "
+            case .downloading(let d): return "下载安装包  d "
+            case .installing(let d): return "安装中  d "
+            case .verifying: return "校验安装结果"
+            case .done: return "完成"
+            case .failed: return "失败"
+            }
+        }
+
+        var isTerminal: Bool { self == .done || self == .failed }
+    }
+
+    /// 从 apk 的输出行推断当前阶段（apk 的输出格式稳定：fetch / (n/m) Upgrading|Installing）
+    static func phase(from line: String) -> Phase? {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        if t.isEmpty { return nil }
+        if t.hasPrefix("fetch ") {
+            return .updatingIndex("")
+        }
+        if t.contains("Installing ") || t.contains("Upgrading ") || t.contains("Replacing ") {
+            // (3/12) Installing python3 (3.12.15-r0)
+            if let open = t.firstIndex(of: "("), let slash = t.firstIndex(of: "/") {
+                let done = t[t.index(after: open)..<slash]
+                let rest = t[slash...].dropFirst()
+                if let close = rest.firstIndex(of: ")") {
+                    return .installing("[\(done)/\(rest[..<close])]  \(t.split(separator: " ").dropFirst(2).first ?? "")")
+                }
+            }
+            return .installing("")
+        }
+        if t.hasPrefix("Executing busybox") || t.hasPrefix("OK:") { return .installing("") }
+        if t.contains("ERROR") || t.hasPrefix("WARNING") { return nil }
+        return nil
+    }
+
+/// 安装失败时给人看的解释
     func diagnose(_ d: EnvDependency) -> String {
         let l = log.lowercased()
         if l.contains("no space") { return "沙盒空间不足" }
