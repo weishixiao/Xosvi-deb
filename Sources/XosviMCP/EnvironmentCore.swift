@@ -224,8 +224,13 @@ final class EnvironmentInstaller: ObservableObject {
             let repoComm = mirror.base + "v3.21/community"
             _ = ISH.run("""
             mkdir -p /etc/apk
+            old=$(cat /etc/apk/repositories 2>/dev/null)
             printf '%s\\n%s\\n' '\(repoMain)' '\(repoComm)' > /etc/apk/repositories
-            """, timeout: 20)
+            if [ "$old" != "$(cat /etc/apk/repositories)" ]; then
+              rm -f /var/cache/apk/APKINDEX.*.tar.gz
+              echo "[env] 镜像源已切换，清空旧索引缓存"
+            fi
+            """, timeout: 25)
 
             // v7.14.7：先清残锁。iSH 内核里的 apk 进程被强杀/沙盒重启后，
             // /lib/apk/db/lock 可能留下"无人持有但 apk 认为被占"的状态，
@@ -249,14 +254,17 @@ final class EnvironmentInstaller: ObservableObject {
             // v7.14.10：App 内的沙盒进程有时**拉索引会挂住**（实测：同样命令在 shell 里 6s，
             // 在 App 启动的沙盒进程里 128s 拿不到第一行回复）。索引其实常常已经存在，
             // 所以先探测：索引可用就跳过 update，直接用缓存装；只有确实没有才去拉。
-            let probe = ISH.run("if [ -s /var/cache/apk/APKINDEX*.tar.gz ] || apk --no-network info >/dev/null 2>&1; then echo IDX_OK; else echo IDX_MISSING; fi", timeout: 30)
+            // 关键：apk 的索引缓存文件名是**按仓库 URL 哈希**的（APKINDEX.<hash>.tar.gz），
+            // 换镜像后旧缓存对不上，apk 会去网络重新拉。所以不能"有任何索引文件就算有"。
+            // 这里带 --no-network 让 apk 只读缓存：能列出包 = 当前仓库的索引确实在本地。
+            let probe = ISH.run("apk --no-network info >/dev/null 2>&1 && echo IDX_OK || echo IDX_MISSING", timeout: 45)
             let hasIndex = probe.output.contains("IDX_OK")
             logLines.append("[env] 索引: \(hasIndex ? "已有，跳过 update" : "缺失，需要 update")")
 
             var upd = ISH.RunResult(output: "", exitCode: 0, timedOut: false)
             if !hasIndex {
                 let t0 = Date()
-                upd = ISH.run("apk --wait 60 update", timeout: 120)
+                upd = ISH.run("apk --wait 60 update", timeout: 300)               // 慢镜像留足时间
                 let tUpdate = Int(Date().timeIntervalSince(t0))
                 logLines.append("[env] update: exit=\(upd.exitCode) timedOut=\(upd.timedOut) \(tUpdate)s")
                 logLines.append(upd.output)
@@ -264,16 +272,17 @@ final class EnvironmentInstaller: ObservableObject {
                 if upd.timedOut {
                     logLines.append("[env] update 超时，重试一次（沙盒网络栈预热）")
                     let t2 = Date()
-                    upd = ISH.run("apk --wait 30 update", timeout: 90)
+                    upd = ISH.run("apk --wait 30 update", timeout: 180)
                     logLines.append("[env] update 重试: exit=\(upd.exitCode) timedOut=\(upd.timedOut) \(Int(Date().timeIntervalSince(t2)))s")
                     logLines.append(upd.output)
                 }
             }
 
             var r = upd
-            if (upd.exitCode == 0 && !upd.timedOut) || hasIndex {
+            // 只有"索引确实对应当前仓库"才直接装；否则必须先 update 拉索引
+            if hasIndex || (upd.exitCode == 0 && !upd.timedOut) {
                 let t1 = Date()
-                let add = ISH.run("apk --wait 60 add \(d.packages)", timeout: 420)
+                let add = ISH.run("apk --wait 60 add \(d.packages)", timeout: 1800)   // 对齐 Kelivo：30 分钟
                 let tAdd = Int(Date().timeIntervalSince(t1))
                 logLines.append("[env] add: exit=\(add.exitCode) timedOut=\(add.timedOut) \(tAdd)s")
                 logLines.append(add.output)
