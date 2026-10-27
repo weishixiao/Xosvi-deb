@@ -694,11 +694,30 @@ private enum NativeTar {
     else:
         n = 0
         os.makedirs(dst, exist_ok=True)
+        root = os.path.realpath(dst)
         with opener(src) as f, tarfile.open(fileobj=f, mode='r|') as t:
             for m in t:
                 if not m.isfile():
                     continue
-                t.extract(m, dst, filter='data')
+                # v7.14.19：原来直接用 t.extract(m, dst) —— 单成员解包时
+                # tarfile 不会还原 m.name 里的目录层级，于是 var/jb/Applications/x.app/jb-p1lot
+                # 被平铺到 dst 根下（真机实测：解出的顶层全是 jb-p1lot / AppIcon.png ...，
+                # 丢失 var/jb 前缀，导致按 /var/jb/... 找不到可执行文件）。
+                # 这里显式拼出目标路径，并做 zip-slip 防护。
+                rel = m.name.lstrip('./').lstrip('/')
+                if not rel or '..' in rel.split('/'):
+                    continue
+                target = os.path.realpath(os.path.join(root, rel))
+                if not (target == root or target.startswith(root + os.sep)):
+                    continue
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with t.extractfile(m) as sf, open(target, 'wb') as out:
+                    if sf is not None:
+                        shutil.copyfileobj(sf, out, 1 << 20)
+                try:
+                    os.chmod(target, m.mode & 0o777)
+                except OSError:
+                    pass
                 n += 1
         print('OK', n)
     """
