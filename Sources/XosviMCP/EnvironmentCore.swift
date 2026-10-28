@@ -90,8 +90,8 @@ struct AlpineMirror: Identifiable, Equatable {
 
     var displayName: String { region.isEmpty ? name : "\(name) · \(region)" }
 
-    func apkIndexURL(alpineVersion: String = "v3.21") -> URL? {
-        URL(string: base + "\(alpineVersion)/main/aarch64/APKINDEX.tar.gz")
+    func apkIndexURL(alpineVersion: String? = nil) -> URL? {
+        URL(string: base + "\(alpineVersion ?? AlpineVersion.branch())/main/aarch64/APKINDEX.tar.gz")
     }
     func pipIndexURL() -> String {
         switch id {
@@ -104,6 +104,35 @@ struct AlpineMirror: Identifiable, Equatable {
     var npmRegistry: String {
         id == "npm.official" ? "https://registry.npmjs.org" : "https://registry.npmmirror.com"
     }
+}
+
+// MARK: - 动态读取 Alpine 分支（v7.14.20）
+//
+// 原来分支硬编码 "v3.21"，但每个用户的 rootfs 可能来自不同版本：
+// 分支对不上时，镜像上该目录不存在 → apk fetch 直接 404 → 安装中止。
+// 正确做法：从 rootfs 的 /etc/alpine-release（形如 "3.21.0"）取主次版本拼成 "v3.21"，
+// 读不到再保守回退。
+enum AlpineVersion {
+    /// 缓存：同一个 App 进程内只读一次，避免每次安装都起一个 shell
+    private static var cached: String?
+
+    static func branch() -> String {
+        if let c = cached { return c }
+        let out = ISH.run("cat /etc/alpine-release 2>/dev/null", timeout: 10).output
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var result = "v3.20"          // 保守回退（不要回退到具体小版本）
+        let parts = out.split(separator: ".")
+        if parts.count >= 2, !out.contains("\n") {
+            result = "v\(parts[0]).\(parts[1])"
+        } else if let major = parts.first, !major.isEmpty, !out.contains("\n") {
+            result = "v\(major)"     // 极老版本只有主版本
+        }
+        cached = result
+        return result
+    }
+
+    /// 供"重新探测"用（例如重装 rootfs 后版本变了）
+    static func reset() { cached = nil }
 }
 
 enum MirrorCatalog {
@@ -241,15 +270,19 @@ final class EnvironmentInstaller: ObservableObject {
             Self.setPhase(.writingMirror, notify: self)
             // 先把当前选择的 APK 源写进去（Kelivo 也是先应用源再装）
             let mirror = MirrorCatalog.current("apk")
-            let repoMain = mirror.base + "v3.21/main"
-            let repoComm = mirror.base + "v3.21/community"
+            // v7.14.20：分支从 rootfs 真实版本读（原来硬编码 v3.21，
+            // rootfs 不是 3.21 时整条源路径都不存在 → apk fetch 直接 404）
+            let branch = AlpineVersion.branch()
+            let repoMain = mirror.base + "\(branch)/main"
+            let repoComm = mirror.base + "\(branch)/community"
             _ = ISH.run("""
             mkdir -p /etc/apk
             old=$(cat /etc/apk/repositories 2>/dev/null)
-            printf '%s\\n%s\\n' '\(repoMain)' '\(repoComm)' > /etc/apk/repositories
+            printf '%s\n' '\(repoMain)' > /etc/apk/repositories
+            printf '%s\n' '\(repoComm)' >> /etc/apk/repositories
             if [ "$old" != "$(cat /etc/apk/repositories)" ]; then
               rm -f /var/cache/apk/APKINDEX.*.tar.gz
-              echo "[env] 镜像源已切换，清空旧索引缓存"
+              echo "[env] 镜像源已切换（\(branch)），清空旧索引缓存"
             fi
             """, timeout: 25)
 
@@ -286,14 +319,31 @@ final class EnvironmentInstaller: ObservableObject {
                 "echo '[diag] resolv:'; cat /etc/resolv.conf 2>&1 | head -3",
                 "echo '[diag] dns:'; nslookup mirrors.aliyun.com 2>&1 | grep -i addr | head -3",
                 "echo '[diag] route:'; cat /proc/net/route 2>&1 | head -2",
-                "echo '[diag] wget:'; wget -q -O /dev/null --timeout=8 --tries=1 https://mirrors.aliyun.com/alpine/v3.21/main/aarch64/APKINDEX.tar.gz && echo OK || echo FAIL",
+                "echo '[diag] branch:'; cat /etc/alpine-release 2>&1",
+                "echo '[diag] wget:'; wget -q -O /dev/null --timeout=8 --tries=1 '\(repoMain)/aarch64/APKINDEX.tar.gz' && echo OK || echo FAIL",
             ].joined(separator: "; ")
             let diag = ISH.run(diagCmd, timeout: 45, cwd: "/")
             logLines.append(diag.output)
             logLines.append("[env] 自检 exit=\(diag.exitCode) timedOut=\(diag.timedOut)")
 
             Self.setPhase(.updatingIndex(""), notify: self)
-            let script = "set -e\napk --wait 60 update\napk --wait 60 add \(d.packages)\n"
+            // v7.14.20：community 只存在于部分镜像/部分版本。它的 404 不应中止安装。
+            // 原来整条脚本在 `set -e` 下执行，community 一旦拉不到就整条退出，
+            // 表现正是"日志里 fetch 出两行后戛然而止"。
+            // 现在：main 是硬要求（set -e 只覆盖它），community 拉不到只记一行日志。
+            let script = """
+            set -e
+            printf '%s\n' '\(repoMain)' > /etc/apk/repositories
+            apk --wait 60 update
+            apk --wait 60 add \(d.packages)
+            set +e
+            if wget -q -O /dev/null --timeout=8 '\(repoComm)/aarch64/APKINDEX.tar.gz'; then
+              printf '%s\n' '\(repoComm)' >> /etc/apk/repositories
+              apk --wait 30 update || echo '[env] community 索引拉取失败（已忽略，不影响本次安装）'
+            else
+              echo '[env] community 源不可达（已跳过，不影响本次安装）'
+            fi
+            """
             let r = ISH.runStreaming(script, timeout: 1800, cwd: "/",
                                      onChunk: { text in self.consume(text) })
             logLines.append(r.output)
