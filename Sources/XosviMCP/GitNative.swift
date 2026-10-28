@@ -330,7 +330,7 @@ extension GitNative {
             req.setValue("Bearer \(tk)", forHTTPHeaderField: "Authorization")
             req.setValue("Xosvi-NativeGit", forHTTPHeaderField: "User-Agent")
             let r = perform(req, retryOn5xx: false)
-            return (r.status, r.data)
+            return (String(r.status), r.data)
         }
         var usedBranch = branch
         var result = fetchZip(usedBranch)
