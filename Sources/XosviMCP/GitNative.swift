@@ -76,7 +76,10 @@ enum GitNative {
         guard let data = try? Data(contentsOf: url) else {
             throw MCPError.failed("这里不是 GitNative 仓库（缺少 \(manifestDirName)/\(manifestFileName)）。先 git command:clone repo:owner/name")
         }
-        return try JSONDecoder().decode(Manifest.self, from: data)
+        // v7.16.1：编码用 iso8601、解码却用默认策略会直接抛错——必须成对
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .iso8601
+        return try dec.decode(Manifest.self, from: data)
     }
 
     static func saveManifest(_ m: Manifest, in root: URL) throws {

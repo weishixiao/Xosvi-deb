@@ -1,3 +1,4 @@
+import Foundation
 
 // MARK: - MCP 工具：git（原生实现）
 
