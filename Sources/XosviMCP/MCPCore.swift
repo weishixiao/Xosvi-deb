@@ -232,11 +232,73 @@ enum FailureKind {
     }
 }
 
+// MARK: - v7.15.2：按 run 作用域的熔断标志
+
+/// 熔断只应终止**触发它的那一轮 run**，不应波及其它会话/后台任务。
+/// token 由 ConversationStore 在每次 send 时生成，后台线程通过 RunScope.currentToken 携带。
+enum RunScope {
+    private static let threadKey = "xosvi.run.token"
+    private static let lock = NSLock()
+    private static var abortedTokens: Set<UUID> = []
+    /// 没绑 token 时的旧行为兜底（保证未迁移调用点仍能编译且语义不变）
+    private static var abortedWithoutToken = false
+
+    static var currentToken: UUID? {
+        get { Thread.current.threadDictionary[threadKey] as? UUID }
+        set {
+            if let v = newValue { Thread.current.threadDictionary[threadKey] = v }
+            else { Thread.current.threadDictionary.removeObject(forKey: threadKey) }
+        }
+    }
+
+    static func requestAbort() {
+        lock.lock(); defer { lock.unlock() }
+        if let t = currentToken { abortedTokens.insert(t) } else { abortedWithoutToken = true }
+    }
+
+    static func requestAbort(token: UUID?) {
+        lock.lock(); defer { lock.unlock() }
+        if let t = token { abortedTokens.insert(t) } else { abortedWithoutToken = true }
+    }
+
+    static func peekAbort() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if let t = currentToken, abortedTokens.contains(t) { return true }
+        return abortedWithoutToken
+    }
+
+    static func clearCurrentAbort() {
+        lock.lock(); defer { lock.unlock() }
+        if let t = currentToken { abortedTokens.remove(t) }
+        abortedWithoutToken = false
+    }
+
+    /// 消费式读取：必须传 runToken，主线程没绑 currentToken，读属性会落到兜底槽位。
+    static func consumeAbort(_ token: UUID?) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if let t = token, abortedTokens.remove(t) != nil { return true }
+        if abortedWithoutToken { abortedWithoutToken = false; return true }
+        return false
+    }
+
+    static func clear(_ token: UUID?) {
+        guard let t = token else { return }
+        lock.lock(); abortedTokens.remove(t); lock.unlock()
+    }
+}
+
 // MARK: - 注册表
 
 public final class ToolRegistry: ObservableObject {
     /// v6.6.21：熔断触发后置位，ConversationStore 消费后终止本次 run
-    static var abortRunRequested = false
+    /// v7.15.2：熔断标志改为 **run 作用域**（RunScope）。
+    /// 旧版是全局 static：A 会话后台跑着，B 会话熔断 → A 也被终止，
+    /// BackgroundRunManager 的会话隔离被一行代码破功。
+    /// 保留同名计算属性，未迁移的调用点行为不变（走兜底槽位）。
+    static var abortRunRequested: Bool {
+        get { RunScope.peekAbort() }
+        set { newValue ? RunScope.requestAbort() : RunScope.clearCurrentAbort() }
+    }
     public static let shared = ToolRegistry()
 
     private var tools: [String: MCPTool] = [:]
@@ -311,7 +373,7 @@ public final class ToolRegistry: ObservableObject {
         // 实测：只返回一段"已停止本次调用"的文案，模型会把它当成又一条工具结果，
         // 继续用同样参数重试（真机连续 13 次）。这里置一个一次性标志，
         // 由 ConversationStore 在错误分支消费并终止循环。
-        ToolRegistry.abortRunRequested = true
+        RunScope.requestAbort()   // v7.15.2：只终止当前 run
 
         var lines: [String] = []
         lines.append("🚫 已连续 \(count) 次用相同参数调用 \(tool)，错误都是同一类（\(signature)）。本次运行已终止。")

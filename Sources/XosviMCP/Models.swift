@@ -776,7 +776,10 @@ final class ConversationStore: ObservableObject {
     private var requestSessionId: UUID?
     /// v3.5.16：用户点了「停止」——设 true 后 runLoop 每轮开头检查，若已停止则不再继续递归
     /// (修复"点了暂停/停止还在继续发消息"：此前进度只取消当前 client，递归会新建 client 接着跑)。
-    private(set) var stopRequested = false  // v4.3.77：工具批量循环需读（停止后跳出，不再装剩余包）
+    private(set) var stopRequested = false
+    /// v4.3.77：工具批量循环需读（停止后跳出，不再装剩余包）
+    /// v7.15.2：同时用作熔断作用域——每次 send 换新，旧 run 的熔断标记不影响本轮。
+    private var runToken = UUID()
 
     private let key = "xosvi.conversations"
 
@@ -876,6 +879,7 @@ final class ConversationStore: ObservableObject {
     /// v2.9.13：取消当前进行中的请求 (ChatView 停止按钮）
     func cancelCurrent() {
         stopRequested = true          // v3.5.16：设停止标志，runLoop 递归到下一轮即停
+        RunScope.clear(runToken)      // v7.15.2：清掉本轮可能残留的熔断标记
         // v7.3.0：Alpine 已移除，不再有需要中断的引擎进程
         cancelNetworkRetry()
         currentClient?.cancel()
@@ -965,6 +969,8 @@ final class ConversationStore: ObservableObject {
         }
         // v2.9.97：记住最近使用的模型，顶栏/下次启动立即恢复
         ModelStore.shared.markUsed(config.id.uuidString)
+        // v7.15.2：换 run token——上一轮的熔断标记不能影响本轮
+        runToken = UUID()
         refineInFlight = false
         didRefineThisMessage = false
         // v6.6.4：请求发出即开后台保活（旧逻辑等首个 delta 才开，
@@ -1675,6 +1681,10 @@ final class ConversationStore: ObservableObject {
                 }
             }
             DispatchQueue.global().async {
+                // v7.15.2：把本轮 run token 带到工具执行的线程上——
+                // dispatch 里触发熔断（loopBlockedError）时才知道该终止哪一轮。
+                RunScope.currentToken = self.runToken
+                defer { RunScope.currentToken = nil }
                 let result: Result<[String: Any], Error>
                 do {
                     result = .success(try ToolRegistry.shared.dispatch(name: call.name, params: params))
@@ -1807,10 +1817,11 @@ final class ConversationStore: ObservableObject {
             let em = err.localizedDescription
             if em.contains("[NOT_LOGGED_IN]") || em.contains("[UNSUPPORTED_ON_IOS17]")
                 || em.contains("not logged in to GitHub") {
-                ToolRegistry.abortRunRequested = true
+                RunScope.requestAbort(token: self.runToken)
             }
-            if ToolRegistry.abortRunRequested {
-                ToolRegistry.abortRunRequested = false
+            // v7.15.2：必须用 consumeAbort(runToken)——主线程没绑 currentToken，
+            // 读属性会落到全局兜底槽位，退化成旧语义。
+            if RunScope.consumeAbort(self.runToken) {
                 self.isLoading = false
                 self.statusText = nil
                 self.runningTool = nil
