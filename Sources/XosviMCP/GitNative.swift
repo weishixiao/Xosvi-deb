@@ -314,6 +314,53 @@ extension GitNative {
         return def
     }
 
+    // MARK: - 构建护栏（仓库硬规则）
+
+    struct BuildRun {
+        var id: Int
+        var status: String
+        var conclusion: String
+        var htmlURL: String
+        var headSha: String
+        var name: String
+    }
+
+    /// 最近一次 workflow 运行（按分支过滤）。
+    static func latestRun(owner: String, repo: String, branch: String) -> BuildRun? {
+        let encoded = branch.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? branch
+        let r = api("GET", "/repos/\(owner)/\(repo)/actions/runs?per_page=1&branch=\(encoded)")
+        guard r.status == 200, let data = r.data,
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let runs = obj["workflow_runs"] as? [[String: Any]],
+            let first = runs.first
+        else { return nil }
+        return BuildRun(
+            id: first["id"] as? Int ?? 0,
+            status: first["status"] as? String ?? "",
+            conclusion: first["conclusion"] as? String ?? "",
+            htmlURL: first["html_url"] as? String ?? "",
+            headSha: first["head_sha"] as? String ?? "",
+            name: first["name"] as? String ?? ""
+        )
+    }
+
+    /// 仓库硬规则：最近一次构建红时，提交必须带失败 run id（证明看过日志再动手）。
+    static func requireBuildGreenOrAck(
+        owner: String, repo: String, branch: String, ack: String?
+    ) throws {
+        guard let run = latestRun(owner: owner, repo: repo, branch: branch) else { return }
+        let red = ["failure", "cancelled", "timed_out"].contains(run.conclusion)
+        guard red else { return }
+        let ackValue = (ack ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !ackValue.isEmpty, ackValue == String(run.id) { return }
+        throw MCPError.failed(
+            "最近一次构建是 \(run.conclusion)（run \(run.id)，"
+            + "\(run.headSha.prefix(8))，\(run.name)）。"
+            + "硬规则：构建红时不能叠加提交。先 git command:build 看失败信息，"
+            + "修好后提交时带 build_red_ack:\"\(run.id)\"。详情 \(run.htmlURL)"
+        )
+    }
+
     // MARK: clone
 
     static func clone(owner: String, repo: String, branch: String, into root: URL,
@@ -403,8 +450,12 @@ extension GitNative {
 
     static func commit(_ root: URL, message: String,
                        only paths: [String]? = nil,
+                       redAck: String? = nil,
                        progress: ((String) -> Void)? = nil) throws -> [String: Any] {
         var manifest = try loadManifest(root)
+        try requireBuildGreenOrAck(
+            owner: manifest.owner, repo: manifest.repo,
+            branch: manifest.branch, ack: redAck)
         let rules = IgnoreRules.load(root: root)
         let files = scan(root: root, ignoring: rules)
         var cs = diff(root, manifest: manifest)

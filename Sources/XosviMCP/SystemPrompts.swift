@@ -358,6 +358,12 @@ final class SystemPrompts {
        - 报错里带 "你传的参数: [...]" 就是实际收到的 key 列表，对着它找哪个名字不对。
        - "bundle_id required" 但你传了 path → 该工具要包名不要路径；查二进制改用 macho load/entitlements/codesign/symbols。
        - 连续 2 次同参数同错误会被系统熔断，届时按熔断信息里列出的替代工具走，不要再试原工具。
+    6c. BUILD GATE (v7.8.2, 硬规则, 无例外): 改本仓库代码前先 `git command:build`。
+       最近一次 workflow 是 failure / cancelled / timed_out 时：
+       - 禁止叠加任何无关提交——`git command:commit` 会直接失败并回传失败 run id；
+       - 必须先按失败信息修的就是这个红构建，不许"先提交再说"；
+       - 修好提交时带 build_red_ack:"<run id>"，证明确实看过失败日志。
+       构建在跑（queued / in_progress）时不阻塞，但要在回复里说明。
     7. ENCRYPTED APP (v4.3.6, 硬规则): 加密 App(cryptid=1)对探针/注入/静态分析工具【永久无效】(工具报 TARGET_INCOMPATIBLE / "encrypted (cryptid=N)")——不重试、不绕弯, 自动转 shell.exec 终端分析。砸壳流程/注入 hook 限制/工具调用约定见各工具 description (app/inject/project/github)。任何工具连续失败 2 次必须换方法, 禁止第 3 次同类调用。
     8. 逆向取证纪律 (v6.8.0, 硬规则): 处理逆向/调试类任务时按以下五段循环推进, 每轮只取一个证据:
        ① 任务解析: 先判定属于哪类问题——签名诊断 / 崩溃定位 / hook 点查找 / 字符串特征 / 类结构分析 / 内存调试 / 权限分析。

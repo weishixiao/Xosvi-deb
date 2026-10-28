@@ -7,19 +7,21 @@ final class GitNativeTool: MCPTool {
         name: "git",
         summary: "Git operations WITHOUT any subprocess — works on jailed/rootHide devices where real git and python3 are blocked (ENOSYS 85). "
             + "Talks to GitHub REST API over URLSession with a real Authorization header (the built-in curl drops -H, web.fetch goes through a proxy that strips auth). "
-            + "Commands: status / login / whoami / clone / pull / commit / log / branch / repos. "
+            + "Commands: status / login / whoami / clone / pull / commit / build / log / branch / repos. "
+            + "BUILD GATE (hard rule): if `build` shows the latest run failed, commit is REJECTED unless you pass build_red_ack=\"<run id>\" — i.e. you must fix that red build first, not stack unrelated changes. "
             + "Use for: read or write a GitHub repo from this device (clone source, review code, edit files, commit & push). "
             + "Don't use for: local-only git history (this keeps a lightweight manifest, not a .git directory). "
             + "Typical flow: git command:login token:ghp_xxx → git command:clone repo:owner/name → 用 artifact/shell 改文件 → git command:commit message:\"fix: ...\"。",
         parameters: [
-            "command": "status / login / whoami / clone / pull / commit / log / branch / repos",
+            "command": "status / login / whoami / clone / pull / commit / build / log / branch / repos",
             "token": "for login: GitHub PAT (fine-grained 需 Contents: Read and write；classic 需 repo)",
             "repo": "for clone/repos: owner/name，例如 weishixiao/Xosvi",
             "path": "本地目录（默认 Workspace/<repo 名>），可相对或绝对",
             "branch": "分支（默认 main）",
             "message": "for commit: 提交信息",
             "files": "for commit: 只提交这些相对路径（逗号分隔，留空=全部改动）",
-            "limit": "for log: 条数（默认 10）"
+            "limit": "for log: 条数（默认 10）",
+            "build_red_ack": "for commit: 最近一次构建失败时必须传它的 run id，否则拒绝提交"
         ],
         returns: [
             "ok": "是否成功",
@@ -135,7 +137,28 @@ final class GitNativeTool: MCPTool {
             if let f = params["files"] as? String, !f.isEmpty {
                 only = f.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
             }
-            return try GitNative.commit(root, message: msg, only: only, progress: { _ in })
+            return try GitNative.commit(
+                root, message: msg, only: only,
+                redAck: params["build_red_ack"] as? String,
+                progress: { _ in })
+
+        case "build":
+            let root = try resolveRoot(params)
+            let m = try GitNative.loadManifest(root)
+            guard let run = GitNative.latestRun(
+                owner: m.owner, repo: m.repo, branch: m.branch) else {
+                return ["ok": true, "run": NSNull(), "message": "这个仓库还没有 workflow 运行记录"]
+            }
+            return [
+                "ok": true,
+                "run_id": run.id,
+                "status": run.status,
+                "conclusion": run.conclusion,
+                "head_sha": String(run.headSha.prefix(8)),
+                "name": run.name,
+                "url": run.htmlURL,
+                "red": ["failure", "cancelled", "timed_out"].contains(run.conclusion),
+            ]
 
         case "log":
             let root = try resolveRoot(params)
