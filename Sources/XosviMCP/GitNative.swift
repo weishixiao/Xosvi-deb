@@ -295,23 +295,59 @@ extension GitNative {
         return cs
     }
 
+    /// 查询仓库默认分支（codeload 404 时用来纠偏 master/main 写错）。
+    static func resolveDefaultBranch(owner: String, repo: String) -> String? {
+        guard let url = URL(string: "https://api.github.com/repos/\(owner)/\(repo)") else {
+            return nil
+        }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 30
+        if let tk = token {
+            req.setValue("Bearer \(tk)", forHTTPHeaderField: "Authorization")
+        }
+        req.setValue("Xosvi-NativeGit", forHTTPHeaderField: "User-Agent")
+        let r = perform(req, retryOn5xx: true)
+        guard r.status == 200, let data = r.data,
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let def = obj["default_branch"] as? String, !def.isEmpty
+        else { return nil }
+        return def
+    }
+
     // MARK: clone
 
     static func clone(owner: String, repo: String, branch: String, into root: URL,
                       progress: ((String) -> Void)? = nil) throws -> [String: Any] {
         progress?("下载 \(owner)/\(repo)@\(branch) …")
         // codeload 直链：不经过 api.github.com 的 302，Authorization 不会被丢弃
-        let zipURL = "https://codeload.github.com/\(owner)/\(repo)/zip/refs/heads/\(branch)"
         guard let tk = token else {
             throw MCPError.failed("未配置 GitHub token：git command:login token:<PAT>")
         }
-        var req = URLRequest(url: URL(string: zipURL)!)
-        req.timeoutInterval = 180
-        req.setValue("Bearer \(tk)", forHTTPHeaderField: "Authorization")
-        req.setValue("Xosvi-NativeGit", forHTTPHeaderField: "User-Agent")
-        let r = perform(req, retryOn5xx: false)
-        guard r.status == 200, let zipData = r.data, zipData.count > 0 else {
-            throw MCPError.failed("下载失败：HTTP \(r.status) \(r.error ?? "")")
+        func fetchZip(_ ref: String) -> (status: String, data: Data?) {
+            let zipURL = "https://codeload.github.com/\(owner)/\(repo)/zip/refs/heads/\(ref)"
+            var req = URLRequest(url: URL(string: zipURL)!)
+            req.timeoutInterval = 180
+            req.setValue("Bearer \(tk)", forHTTPHeaderField: "Authorization")
+            req.setValue("Xosvi-NativeGit", forHTTPHeaderField: "User-Agent")
+            let r = perform(req, retryOn5xx: false)
+            return (r.status, r.data)
+        }
+        var usedBranch = branch
+        var result = fetchZip(usedBranch)
+        // 404 基本是分支名写错（master/main）：查默认分支再试一次
+        if result.status.contains("404"),
+            let def = Self.resolveDefaultBranch(owner: owner, repo: repo),
+            def != usedBranch
+        {
+            progress?("分支 \(usedBranch) 不存在，改用默认分支 \(def) …")
+            usedBranch = def
+            result = fetchZip(usedBranch)
+        }
+        guard result.status == "200", let zipData = result.data, zipData.count > 0 else {
+            let tried = usedBranch == branch ? usedBranch : "\(branch) / \(usedBranch)"
+            throw MCPError.failed(
+                "下载失败：HTTP \(result.status)（\(owner)/\(repo)，分支 \(tried)）"
+            )
         }
         progress?("解包 \(zipData.count / 1024) KB …")
 
@@ -343,7 +379,7 @@ extension GitNative {
 
         // 取远端 head
         progress?("读取远端 HEAD …")
-        let headResp = api("GET", "/repos/\(owner)/\(repo)/commits/\(branch)")
+        let headResp = api("GET", "/repos/\(owner)/\(repo)/commits/\(usedBranch)")
         let headSha = (headResp.json?["sha"] as? String) ?? ""
 
         let rules = IgnoreRules.load(root: root)
@@ -354,12 +390,12 @@ extension GitNative {
             let data = (try? Data(contentsOf: info.0, options: .mappedIfSafe)) ?? Data()
             map[rel] = sha256Hex(data)
         }
-        let m = Manifest(owner: owner, repo: repo, branch: branch,
+        let m = Manifest(owner: owner, repo: repo, branch: usedBranch,
                          head: headSha, files: map, updatedAt: Date())
         try saveManifest(m, in: root)
 
         return ["ok": true, "path": root.path, "files": written,
-                "head": String(headSha.prefix(7)), "branch": branch,
+                "head": String(headSha.prefix(7)), "branch": usedBranch,
                 "remote": "\(owner)/\(repo)"]
     }
 
