@@ -30,6 +30,20 @@ struct ReasoningSettingsView: View {
                     .font(.caption2)
             }
 
+            // v7.15.3：自我精炼改为显式开关（默认关）。开着等于每条长回答都多发一次
+            // 完整 LLM 请求并把第二次结果追加到同一条消息，成本翻倍且难以预期。
+            Section {
+                Toggle("回答后自动精炼", isOn: Binding(
+                    get: { UserDefaults.standard.bool(forKey: "chat_auto_refine") },
+                    set: { UserDefaults.standard.set($0, forKey: "chat_auto_refine") }
+                ))
+            } header: {
+                Text("回答质量")
+            } footer: {
+                Text("开启后，长回答（>120 字）且思考开启时，会再请求一次模型做「批判 → 改进」，把改进内容追加到同一条消息末尾。会增加约一倍 token 消耗。")
+                    .font(.caption2)
+            }
+
             if !selectedModel.isEmpty {
                 Section {
                     Picker("方言", selection: $spec.dialect) {

@@ -1251,10 +1251,13 @@ final class ConversationStore: ObservableObject {
             }
         }) { result in
             // v6.2.7：completion 入口同步 flush 节流缓冲尾部（必须在 finalize 改 streamingMessageId 之前）
+            // v7.15.3：改 main.async——originally 用 main.sync，若 completion 恰在主线程
+            // 同步等待某个后台队列（URLSession delegate / 自定义串行队列），就是经典死锁。
+            // 牺牲尾部几微秒的顺序性，换绝不卡死。
             if Thread.isMainThread {
                 self.flushStreamBuffers()
             } else {
-                DispatchQueue.main.sync { self.flushStreamBuffers() }
+                DispatchQueue.main.async { self.flushStreamBuffers() }
             }
             // v6.5.4：流式结束 → 停后台保活
             BackgroundKeepAlive.shared.stop()
@@ -1303,7 +1306,12 @@ final class ConversationStore: ObservableObject {
                         // v6.5.7：自我批判精炼——深度思考开、答案足够长、本轮未精炼过 → 追加一轮"批判→改进"
                         let thinkOn = UserDefaults.standard.object(forKey: "chat_think_enabled") == nil
                             ? true : UserDefaults.standard.bool(forKey: "chat_think_enabled")
-                        if thinkOn, !self.refineInFlight, !self.didRefineThisMessage,
+                        // v7.15.3：改为显式开关（默认关）。原来只要"思考开 + 答案 >120 字"就
+                        // 静默再发一次完整 LLM 请求并把结果 += 追加到同一条消息：
+                        // 用户看到两个答案、成本翻倍，且不可预期。
+                        // 需要时在 设置 → 深度思考 里打开 chat_auto_refine。
+                        let refineOn = UserDefaults.standard.bool(forKey: "chat_auto_refine")
+                        if refineOn, thinkOn, !self.refineInFlight, !self.didRefineThisMessage,
                            text.count > 120 {
                             self.didRefineThisMessage = true
                             self.refineInFlight = true
@@ -1382,6 +1390,15 @@ final class ConversationStore: ObservableObject {
                     // 都裁成第一个：assistant 消息与执行只带这一个，执行完回模型让它看到
                     // 结果再决定下一步（一个接一个）。依赖调用必须等前一个结果才能决定下一步，
                     // 合批执行会让模型猜结果(违规)；提示词不可靠，代码兜底强制一次一个。
+                    // v7.15.3：保持"一次一个"（v3.5.2 的设计：依赖调用必须看到前一个结果
+                    // 才能决定下一步），但把被裁掉的个数记下来——否则模型不知道自己发出的
+                    // 第 2..N 个调用被静默丢弃，会反复重发同一批，白白多跑数轮。
+                    // TODO(verify): 若要放开为整批执行，需同时改造：
+                    //   ① 一次写回 N 条 tool 消息（sanitizeToolSequence 已支持 1:N）
+                    //   ② 熔断计数口径（loopBlockedError 目前按单工具计）
+                    //   ③ 循环提示 _loop_hint 的批次语义
+                    //   ④ ToolDefinition.prerequisites 是否足以表达依赖顺序
+                    let truncatedCalls = calls.count > 1 ? calls.count - 1 : 0
                     let calls = Array(calls.prefix(1))
                     // v3.1.72：思考(reasoning)与可见输出(content)分开存放——
                     // 旧逻辑把流式可见文本+思考合并成 thinkText 塞进 assistant.content，
@@ -1471,7 +1488,8 @@ final class ConversationStore: ObservableObject {
                     // v3.1.72：thinkText 传可见文本 (工具调用前的说明），不再写入 tool 消息 thinking
                     self.processToolCalls(calls, index: 0, toolMessages: [], newlyDisclosed: [],
                                           config: config, tools: tools, disclosed: disclosed, depth: depth,
-                                          reasoningLevel: reasoningLevel, thinkText: visibleText)
+                                          reasoningLevel: reasoningLevel, thinkText: visibleText,
+                                              truncatedCalls: truncatedCalls)
                 case .failure(let error):
                     self.isLoading = false
                     self.currentClient = nil
@@ -1605,12 +1623,20 @@ final class ConversationStore: ObservableObject {
                                   disclosed: [String],
                                   depth: Int,
                                   reasoningLevel: Int,
-                                  thinkText: String = "") {
+                                  thinkText: String = "",
+                                  truncatedCalls: Int = 0) {
         // 一次一个硬约束已在 .toolCalls 源头把批次裁成 prefix(1)，这里 calls.count==1，
         // 执行完 index=1 >= calls.count 即回模型。
         if index >= calls.count {
             // v3.4.1：工具气泡已在 handleDispatchResult 逐条实时上屏（对齐 OpenMinis 逐步展示），
             // 不再攒批到最后统一追加 —— 边做边说更接近"直播"。
+            // v7.15.3：若上一轮模型一次发了多个调用而被裁成 1 个，明确告诉它还剩几个没执行，
+            // 否则它会以为都没执行、反复重发同一批（每次重发又是一整轮往返）。
+            if truncatedCalls > 0 {
+                self.pendingParamCorrection = "你上次一次给出了多个工具调用，系统按「一次一个」只执行了第一个，"
+                    + "另外 \(truncatedCalls) 个已被丢弃、不会自动补执行。请根据已拿到的结果决定下一步，"
+                    + "需要的话逐个调用，不要把整批重新发一遍。"
+            }
             let merged = Array(Set(disclosed + newlyDisclosed))
             self.runLoop(config: config, tools: tools, disclosed: merged, depth: depth + 1, reasoningLevel: reasoningLevel)
             return
