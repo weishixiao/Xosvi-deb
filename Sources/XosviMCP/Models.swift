@@ -605,6 +605,15 @@ struct ChatMessage: Codable, Identifiable, Hashable {
     var imageDataURLs: [String]? = nil
     /// v2.9.20：思考记录 (reasoning）。Responses API 返回的 reasoning 摘要，气泡内可展开。
     var thinking: String? = nil
+    /// v7.8.1：思考分段（对齐 kelivo reasoningSegments）——工具轮之间可以有多个思考块
+    var reasoningSegments: [ReasoningSegment]? = nil
+    /// v7.8.1：首个思考 token 到达 / 思考结束时间，用于显示耗时
+    var reasoningStartAt: Date? = nil
+    var reasoningFinishedAt: Date? = nil
+    var reasoningTokens: Int? = nil
+    /// v7.8.1：同一语义位置的多版本消息（编辑重发 / 重新生成）
+    var groupId: String? = nil
+    var version: Int? = nil
     /// v2.9.127：执行轨迹 (对齐豆包工作任务/Codex turn 流）——AI 本次回复的
     /// 思考→工具调用→工具结果 全过程，随消息持久化，可展开回看。
     var trail: [TrailStep]? = nil
@@ -646,6 +655,10 @@ struct ChatConversation: Codable, Identifiable, Hashable {
     var createdAt: Date
     var updatedAt: Date
     var messages: [ChatMessage]
+    /// v7.8.1：每个 group 当前显示第几版（groupId → version）
+    var versionSelections: [String: Int]? = nil
+    /// v7.8.1：从第几条消息开始截断上下文（nil / 负数 = 不截断）
+    var truncateIndex: Int? = nil
 }
 
 // MARK: - 会话管理
@@ -675,6 +688,20 @@ final class ConversationStore: ObservableObject {
     // v3.0.3：保存当前请求的思考内容 (onThinking 流式累加），
     // toolCalls 时传到 tool 消息，前端在 toolBubble 顶部显示
     private var thinkBuffer: String = ""
+    /// v7.8.1：当前请求的思考起止（对齐 kelivo reasoningStartAt/FinishedAt）
+    private var liveReasonStart: Date? = nil
+
+    /// 把本轮的思考时间戳与分段盖到消息上。
+    private func stampReasoning(_ message: inout ChatMessage, thinking: String?) {
+        guard let th = thinking, !th.isEmpty else { return }
+        let finish = Date()
+        let start = liveReasonStart ?? finish
+        message.reasoningStartAt = start
+        message.reasoningFinishedAt = finish
+        message.reasoningSegments = [
+            ReasoningSegment(text: th, startAt: start, finishedAt: finish)
+        ]
+    }
 
     // v2.9.87：网络恢复自动重试 ("切后台回来网络中断"补偿）——
     // 网络类错误且当前确认为断网时，等 AppLifecycleMonitor 广播 networkRestored 后自动重发一次。
@@ -950,6 +977,8 @@ final class ConversationStore: ObservableObject {
     func send(_ text: String, using config: ModelConfig, imageDataURLs: [String]? = nil,
               reasoningLevel: Int = 0, smartSearch: Bool = true,
               appendUserMessage: Bool = true, in convId: UUID? = nil) {
+        liveReasonStart = nil
+
         // v6.6.17：会话级并发——本实例正在跑 A，用户切到 B 又发消息时，
         // 把 B 交给独立的后台 worker（它有自己的整套运行状态），
         // 这里只负责把用户消息落到 B 的 UI 上，然后在完成时合并结果。
@@ -1221,6 +1250,7 @@ final class ConversationStore: ObservableObject {
             // 不再写 liveTrail——否则实时轨迹卡也渲染思考，导致同一思考出现两次 (用户实测截图)。
             // 实时轨迹卡(liveTrail)只显示"工具执行步骤"：工具名/命令/结果，绝不显示思考文字。
             DispatchQueue.main.async {
+                if self.liveReasonStart == nil { self.liveReasonStart = Date() }
                 self.thinkBuffer += delta
                 // v6.2.7：思考显示也走节流缓冲（thinkBuffer 即时累加供 toolCalls 装配）
                 if self.streamingMessageId != nil {
@@ -1265,6 +1295,13 @@ final class ConversationStore: ObservableObject {
                 self.statusText = nil
                 switch result {
                 case .success(.text(let text, let thinking)):
+                    // v7.8.1：模型把思考写进正文时剥离出来（kelivo thinking_tag_parser 同款规则）
+                    let inline = InlineThink.extract(text)
+                    let wantsInline = (thinking?.isEmpty ?? true) && inline.hasThinking
+                    let finalText = wantsInline ? inline.visible : text
+                    let finalThinking: String? = (thinking?.isEmpty == false)
+                        ? thinking
+                        : (inline.hasThinking ? inline.thoughts.joined(separator: "\n\n") : thinking)
                     self.isLoading = false
                     self.currentClient = nil
                     self.requestRound = 0
@@ -1297,9 +1334,13 @@ final class ConversationStore: ObservableObject {
                         }
                         self.updateMessageContent(id: sid, content: merged)
                         if let idx = self.activeConvIndex,
-                           let mi = self.conversations[idx].messages.firstIndex(where: { $0.id == sid }),
-                           let th = thinking, !th.isEmpty {
-                            self.conversations[idx].messages[mi].thinking = th
+                           let mi = self.conversations[idx].messages.firstIndex(where: { $0.id == sid }) {
+                            if let th = finalThinking, !th.isEmpty {
+                                self.conversations[idx].messages[mi].thinking = th
+                                var m = self.conversations[idx].messages[mi]
+                                self.stampReasoning(&m, thinking: th)
+                                self.conversations[idx].messages[mi] = m
+                            }
                         }
                         self.attachTrail(to: sid, thinking: thinking)
                         self.streamingMessageId = nil
@@ -1328,8 +1369,11 @@ final class ConversationStore: ObservableObject {
                                msgs[li].role == "assistant",
                                msgs[li].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                                msgs[li].thinking?.isEmpty == false {
-                                msgs[li].content = text
-                                if let th = thinking, !th.isEmpty { msgs[li].thinking = th }
+                                msgs[li].content = finalText
+                                if let th = finalThinking, !th.isEmpty {
+                                    msgs[li].thinking = th
+                                    self.stampReasoning(&msgs[li], thinking: th)
+                                }
                                 self.conversations[ci].messages = msgs
                                 self.streamingMessageId = nil
                                 self.liveProducedID = nil
@@ -1338,8 +1382,11 @@ final class ConversationStore: ObservableObject {
                             }
                         }
                         if !reused {
-                            var am = ChatMessage(role: "assistant", content: text)
-                            if let th = thinking, !th.isEmpty { am.thinking = th }
+                            var am = ChatMessage(role: "assistant", content: finalText)
+                            if let th = finalThinking, !th.isEmpty {
+                                am.thinking = th
+                                self.stampReasoning(&am, thinking: th)
+                            }
                             self.appendToCurrent(am)
                             self.liveProducedID = am.id
                             self.attachTrail(to: am.id, thinking: thinking)

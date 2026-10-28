@@ -1883,7 +1883,7 @@ struct MessageBubble: View {
             // v2.9.20：思考记录（reasoning）可展开显示
             // v3.5.31：加 thinkEnabled —— 思考关时即使 API 返回 thinking 也一律不显示
             if !isUser, thinkEnabled, let th = message.thinking, !th.isEmpty {
-                thinkingView(th)
+                thinkingView(th, message: message)
             }
             // v3.0.2: 去掉旧的 TrailCard，改用 toolBubble 显示工具调用
             // v3.0.2e：如果 content 是空的，就不显示气泡（避免空白气泡）
@@ -1959,9 +1959,16 @@ struct MessageBubble: View {
     }
 
     /// v2.9.20：思考记录（reasoning）折叠视图
-    private func thinkingView(_ text: String) -> some View {
+    private func thinkingView(_ text: String, message: ChatMessage) -> some View {
         // v7.7.0：统一走 ReasoningBlock（preview 渐变折叠 / 展开全量 + 代码块渲染）
-        ReasoningBlock(text: text, isStreaming: isStreaming, expanded: thinkingExpandedBinding)
+        ReasoningBlock(
+            text: text,
+            isStreaming: isStreaming,
+            expanded: thinkingExpandedBinding,
+            startAt: message.reasoningStartAt,
+            finishedAt: message.reasoningFinishedAt,
+            tokens: message.reasoningTokens
+        )
             .padding(.horizontal, 6)
             .padding(.bottom, 4)
     }
@@ -2005,7 +2012,7 @@ struct MessageBubble: View {
         // 展开后才是参数与结果，默认收起（避免一屏全是工具噪声）。
         VStack(alignment: .leading, spacing: 8) {
             if thinkEnabled, let thinking = message.thinking, !thinking.isEmpty {
-                thinkingMiniBubble(thinking)
+                thinkingMiniBubble(thinking, message: message)
             }
 
             ToolCallCard(
@@ -2045,9 +2052,16 @@ struct MessageBubble: View {
     }
 
     // 📝 思考过程迷你气泡
-    private func thinkingMiniBubble(_ text: String) -> some View {
+    private func thinkingMiniBubble(_ text: String, message: ChatMessage) -> some View {
         // v7.7.0：与正文里的思考块同一套渲染
-        ReasoningBlock(text: text, isStreaming: isStreaming, expanded: thinkingExpandedBinding)
+        ReasoningBlock(
+            text: text,
+            isStreaming: isStreaming,
+            expanded: thinkingExpandedBinding,
+            startAt: message.reasoningStartAt,
+            finishedAt: message.reasoningFinishedAt,
+            tokens: message.reasoningTokens
+        )
     }
 
 

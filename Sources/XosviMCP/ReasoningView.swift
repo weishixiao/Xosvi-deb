@@ -14,13 +14,31 @@ struct ReasoningBlock: View {
     let text: String
     let isStreaming: Bool
     @Binding var expanded: Bool
+    /// v7.8.1：思考起止时间与 token（对齐 kelivo，用于显示"思考了 Xs · N tokens"）
+    var startAt: Date? = nil
+    var finishedAt: Date? = nil
+    var tokens: Int? = nil
 
     /// preview 态高度上限（Kelivo 用 100）
     private let previewHeight: CGFloat = 100
 
+    /// 思考耗时（流式中随每次刷新递增）
+    private var elapsedSeconds: Int? {
+        guard let start = startAt else { return nil }
+        let end = finishedAt ?? Date()
+        return max(0, Int(end.timeIntervalSince(start)))
+    }
+
     private var headerText: String {
-        if isStreaming { return "思考中…" }
-        return "已深度思考 \(text.count) 字"
+        if isStreaming {
+            if let s = elapsedSeconds, s > 0 { return "思考中… \(s)s" }
+            return "思考中…"
+        }
+        var parts: [String] = []
+        if let s = elapsedSeconds, s > 0 { parts.append("\(s)s") }
+        if let t = tokens, t > 0 { parts.append("\(t) tokens") }
+        parts.append("\(text.count) 字")
+        return "已深度思考 · " + parts.joined(separator: " · ")
     }
 
     var body: some View {
