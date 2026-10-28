@@ -41,6 +41,10 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         DispatchQueue.global(qos: .userInitiated).async {
             _ = DeviceProbe.shared.run()
         }
+        // v7.7.0：内置工具链自检 + 自签——解决 python3/r2/bsdtar 等 errno 85 起不来
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
+            ToolchainSigner.autoRepairIfNeeded()
+        }
         LocationProvider.shared.start()
         // v2.9.10：网络与生命周期监控（切后台重连 / 网络恢复提示）
         AppLifecycleMonitor.shared.start()
