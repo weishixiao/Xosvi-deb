@@ -49,35 +49,33 @@ enum SpawnDiag {
               let blob = try? fh.read(upToCount: mo.codeSigSize),
               blob.count >= 12 else { return out }
 
-        let magic: UInt32 = blob.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+        let magic = UInt32(bigEndian: blob.withUnsafeBytes { $0.loadUnaligned( as: UInt32.self) })
         guard magic == 0xfade0cc0 else { return out }   // SuperBlob
-        let count: UInt32 = blob.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self) }
+        let count = UInt32(bigEndian: blob.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 8,  as: UInt32.self) })
 
         var cdOffset = -1
         for i in 0..<Int(min(count, 32)) {
             let base = 12 + i * 8
             guard base + 8 <= blob.count else { break }
-            let type: UInt32 = blob.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: base, as: UInt32.self) }
-            let off: UInt32 = blob.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: base + 4, as: UInt32.self) }
+            let type = UInt32(bigEndian: blob.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: base,  as: UInt32.self) })
+            let off = UInt32(bigEndian: blob.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: base + 4,  as: UInt32.self) })
             if type == 0 { cdOffset = Int(off) }                       // CSSLOT_CODEDIRECTORY
             if type == 0x10000 { out.hasCMS = true }                   // CSSLOT_SIGNATURESLOT
         }
         guard cdOffset >= 0, cdOffset + 44 <= blob.count else { return out }
 
-        let cdMagic: UInt32 = blob.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cdOffset, as: UInt32.self) }
+        let cdMagic = UInt32(bigEndian: blob.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cdOffset,  as: UInt32.self) })
         guard cdMagic == 0xfade0c02 else { return out }
-        let version: UInt32 = blob.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cdOffset + 8, as: UInt32.self) }
-        let flags: UInt32 = blob.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cdOffset + 12, as: UInt32.self) }
-        let identOff: UInt32 = blob.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cdOffset + 20, as: UInt32.self) }
+        let version = UInt32(bigEndian: blob.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cdOffset + 8,  as: UInt32.self) })
+        let flags = UInt32(bigEndian: blob.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cdOffset + 12,  as: UInt32.self) })
+        let identOff = UInt32(bigEndian: blob.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cdOffset + 20,  as: UInt32.self) })
         out.cdVersion = version
         out.adhoc = (flags & 0x2) != 0
         out.identifier = cString(blob, cdOffset + Int(identOff))
 
         // teamOffset 只有 CodeDirectory v0x20200 起才有
         if version >= 0x20200, cdOffset + 52 <= blob.count {
-            let teamOff: UInt32 = blob.withUnsafeBytes {
-                $0.loadUnaligned(fromByteOffset: cdOffset + 48, as: UInt32.self)
-            }
+            let teamOff = UInt32(bigEndian: blob.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cdOffset + 48,  as: UInt32.self) })
             if teamOff > 0 {
                 out.teamID = cString(blob, cdOffset + Int(teamOff))
             }

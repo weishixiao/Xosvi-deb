@@ -76,34 +76,101 @@ enum ToolchainSigner {
         guard (try? fh.seek(toOffset: UInt64(mo.codeSigOffset))) != nil,
             let blob = try? fh.read(upToCount: mo.codeSigSize), blob.count >= 12
         else { return nil }
-        let magic: UInt32 = blob.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+        // 签名 blob 一律大端（Apple cs_blobs），按小端读会让 magic 永远不匹配
+        let magic = UInt32(bigEndian: blob.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) })
         guard magic == 0xfade0cc0 else { return nil }
-        let count: UInt32 = blob.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self) }
+        let count = UInt32(bigEndian: blob.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 8, as: UInt32.self) })
         for index in 0..<Int(min(count, 32)) {
             let base = 12 + index * 8
             guard base + 8 <= blob.count else { break }
-            let type: UInt32 = blob.withUnsafeBytes {
+            let type = UInt32(bigEndian: blob.withUnsafeBytes {
                 $0.loadUnaligned(fromByteOffset: base, as: UInt32.self)
-            }
-            let offset: UInt32 = blob.withUnsafeBytes {
+            })
+            let offset = UInt32(bigEndian: blob.withUnsafeBytes {
                 $0.loadUnaligned(fromByteOffset: base + 4, as: UInt32.self)
-            }
+            })
             guard type == 5 else { continue }  // CSSLOT_ENTITLEMENTS
             let start = Int(offset)
             guard start + 8 <= blob.count else { return nil }
-            let emagic: UInt32 = blob.withUnsafeBytes {
+            let emagic = UInt32(bigEndian: blob.withUnsafeBytes {
                 $0.loadUnaligned(fromByteOffset: start, as: UInt32.self)
-            }
+            })
             guard emagic == 0xfade7171 else { return nil }
-            let length: UInt32 = blob.withUnsafeBytes {
+            let length = UInt32(bigEndian: blob.withUnsafeBytes {
                 $0.loadUnaligned(fromByteOffset: start + 4, as: UInt32.self)
-            }
+            })
             let dataStart = start + 8
             let dataEnd = min(start + Int(length), blob.count)
             guard dataStart < dataEnd else { return nil }
             return String(data: blob.subdata(in: dataStart..<dataEnd), encoding: .utf8)
         }
         return nil
+    }
+
+
+    // MARK: - 对照实验：到底是谁在拦
+
+    static func errnoName(_ code: Int32) -> String {
+        switch code {
+        case 0: return "OK"
+        case 1: return "EPERM"
+        case 2: return "ENOENT"
+        case 13: return "EACCES"
+        case 78: return "ENOSYS"
+        case 85: return "EBADEXEC"
+        case 86: return "EBADARCH"
+        default: return "errno\(code)"
+        }
+    }
+
+    /// 分别尝试 spawn：Apple 自带二进制 / 自带二进制 / 越狱路径。
+    /// 用来区分「整个 spawn 被拦」和「只是自带二进制签名不被接受」。
+    static func spawnProbe() -> [[String: Any]] {
+        let dir = binDir()
+        let targets: [(String, String)] = [
+            ("system_true", "/usr/bin/true"),
+            ("system_ls", "/bin/ls"),
+            ("bundled_ldid", (dir as NSString).appendingPathComponent("ldid")),
+            ("bundled_opainject", (dir as NSString).appendingPathComponent("opainject")),
+            ("jailbreak_true", "/var/jb/usr/bin/true"),
+        ]
+        var out: [[String: Any]] = []
+        for (label, path) in targets {
+            var row: [String: Any] = ["target": label, "path": path]
+            guard FileManager.default.fileExists(atPath: path) else {
+                row["exists"] = false
+                out.append(row)
+                continue
+            }
+            row["exists"] = true
+            var pid: pid_t = 0
+            var argv: [UnsafeMutablePointer<CChar>?] = [strdup(path), nil]
+            let rc = posix_spawn(&pid, path, nil, nil, &argv, environ)
+            for pointer in argv where pointer != nil { free(pointer) }
+            var status: Int32 = 0
+            if rc == 0 { waitpid(pid, &status, 0) }
+            let code = rc == 0 ? Int32(0) : errno
+            row["spawn_ok"] = rc == 0
+            row["errno"] = Int(code)
+            row["errno_name"] = errnoName(code)
+            row["exit"] = rc == 0 ? Int((status >> 8) & 0xff) : -1
+            out.append(row)
+        }
+        return out
+    }
+
+    /// 根据对照实验结果给出结论。
+    static func probeVerdict(_ probe: [[String: Any]]) -> String {
+        func ok(_ name: String) -> Bool {
+            probe.first { ($0["target"] as? String) == name }?["spawn_ok"] as? Bool == true
+        }
+        if !ok("system_true") {
+            return "连 /usr/bin/true 都起不来：整个 spawn 被环境拦截（不是签名问题），只能从越狱环境侧解决。"
+        }
+        if !ok("bundled_ldid") {
+            return "系统二进制能跑、自带的起不来：问题在自带二进制的签名（EBADEXEC），需要重签。"
+        }
+        return "spawn 通道正常，签名器可执行。"
     }
 
     // MARK: - 自签
@@ -175,11 +242,11 @@ enum ToolchainSigner {
             items.append(info)
         }
 
+        let probe = spawnProbe()
+        let verdict = probeVerdict(probe)
         var advice = ""
         if !signerRunnable {
-            advice =
-                "自带 ldid 跑不起来（很可能就是 errno 85）：先解决父 App 的执行权限，"
-                + "或把该 App 从 RootHide Inject 白名单移出后重启再试。"
+            advice = "自带 ldid 跑不起来。" + verdict
         } else if !broken.isEmpty && repaired.isEmpty {
             advice = "签名器可用但补签失败：App bundle 通常只读，需要在打包阶段（CI）完成签名。"
         } else if !broken.isEmpty {
@@ -190,6 +257,8 @@ enum ToolchainSigner {
 
         let report: [String: Any] = [
             "bin_dir": dir,
+            "spawn_probe": probe,
+            "spawn_verdict": probeVerdict(probe),
             "signer": ldid,
             "signer_runnable": signerRunnable,
             "count": items.count,
