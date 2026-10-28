@@ -545,9 +545,10 @@ final class ContainerExecTool: MCPTool {
 final class DiagnoseExecTool: MCPTool {
     let definition = ToolDefinition(
         name: "diagnose",
-        summary: "Diagnose app/injection/environment issues. Subcommands: startup (app won't launch) / injection (inject failure) / spawn (bundled binaries fail with Bad executable) / rootchain (full root privilege chain - spawnRoot/persona/setuid/entitlements, for iOS 17+ ENOSYS/85 failures). Use for: diagnose why app won't launch, why injection failed, why root operations fail. Don't use for: fix issues (use inject.*), restart app (use app restart). Example: startup → diagnose startup bundle_id:com.xxx; injection → diagnose injection bundle_id:com.xxx; rootchain → diagnose rootchain (no params).",
+        summary: "Diagnose app/injection/environment issues. Subcommands: startup (app won't launch) / injection (inject failure) / spawn (bundled binaries fail with Bad executable) / toolchain (bundled tools signature self-check and self-sign) / rootchain (full root privilege chain - spawnRoot/persona/setuid/entitlements, for iOS 17+ ENOSYS/85 failures). Use for: diagnose why app won't launch, why injection failed, why root operations fail. Don't use for: fix issues (use inject.*), restart app (use app restart). Example: startup → diagnose startup bundle_id:com.xxx; injection → diagnose injection bundle_id:com.xxx; rootchain → diagnose rootchain (no params).",
         parameters: [
-            "command": "Subcommand: startup / injection / spawn / rootchain",
+            "command": "Subcommand: startup / injection / spawn / toolchain / rootchain",
+            "repair": "toolchain only: true = try re-signing bundled binaries with the bundled ldid",
             "bundle_id": "App bundle ID (required for startup/injection; ignore for rootchain)"
         ],
         verified: true, category: "diagnose", prerequisites: ["App 已安装且 bundle_id 有效 (先 app status 确认，rootchain 不需要)", "startup 诊断依赖 App 曾启动过 (有崩溃日志才有意义)"])
@@ -576,6 +577,11 @@ final class DiagnoseExecTool: MCPTool {
             // v6.6.13：内置二进制（python3/r2/bsdtar…）为什么起不来。
             // 全部在进程内完成——即使所有 spawn 都失败，这个诊断仍能跑。
             return SpawnDiag.run()
+
+        case "toolchain":
+            // v7.7.0：内置工具链自检 + 自签（errno 85 排查）
+            let repair = (params["repair"] as? Bool) ?? false
+            return ToolchainSigner.run(repair: repair)
 
         case "rootchain":
             // v6.6.7: 完整 root 提权链路诊断 (spawnRoot 85 ENOSYS / persona-mgmt / TSRootBinaries setuid / iOS 17 AMFI)
