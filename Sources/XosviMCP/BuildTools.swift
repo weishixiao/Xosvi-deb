@@ -126,7 +126,9 @@ final class BuildRunner {
         // 等待 + 超时杀进程
         var status: Int32 = 0
         var timedOut = false
-        let deadline = Date().addingTimeInterval(timeout)
+        // v7.15.1：上方文档约定 timeout = 0 表示"不超时"，但 deadline = now
+        // 会让首轮循环立刻判定超时并 SIGKILL。0 改为永不超时。
+        let deadline = timeout > 0 ? Date().addingTimeInterval(timeout) : Date.distantFuture
         while true {
             let w = waitpid(pid, &status, WNOHANG)
             if w == pid { break }

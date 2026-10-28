@@ -346,7 +346,10 @@ final class InjectionManager {
     /// 只处理参数形态明确的简单操作，无法安全映射返回 nil 走 spawn。
     private func nativeFileOp(_ name: String, _ args: [String]) -> (Int32, String)? {
         let fm = FileManager.default
-        if name == "cp", args.count >= 3 {
+        // v7.15.1：runAsRoot("cp", args: [纯参数]) 传的是 2 个参数（不像 argv 带 argv[0]），
+        // 旧的 >= 3 让这条快路径恒不命中 → 注入时的 cp 永远退回 spawnRoot，
+        // rootHide 下 spawnRoot 返回 85，于是"明明能写"的操作报失败。
+        if name == "cp", args.count >= 2 {
             let src = args[args.count - 2], dst = args[args.count - 1]
             do {
                 if fm.fileExists(atPath: dst) { try fm.removeItem(atPath: dst) }
@@ -364,7 +367,8 @@ final class InjectionManager {
             }
             return (failed ? 1 : 0, failed ? "rm: \(errMsg)" : "")
         }
-        if name == "mv", args.count >= 3 {
+        // v7.15.1：同 cp —— 去掉 argv[0] 后正常 mv 是 2 个参数
+        if name == "mv", args.count >= 2 {
             let src = args[args.count - 2], dst = args[args.count - 1]
             do {
                 if fm.fileExists(atPath: dst) { try fm.removeItem(atPath: dst) }

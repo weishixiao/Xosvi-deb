@@ -140,14 +140,16 @@ extension ModelConfig {
     /// 请求时显式携带 reasoning_effort=none 提速。
     var isReasoningModel: Bool {
         let m = model.lowercased()
-        let prefixes = ["gpt-5.", "o1", "o3", "o4", "o1-", "o3-", "o4-"]
+        // v7.15.1："gpt-5" 覆盖 gpt-5 / gpt-5-mini / gpt-5.1；旧表只认 "gpt-5."，
+        // 中转站常见的裸 gpt-5 会被带上 temperature 而 400。
+        let prefixes = ["gpt-5", "o1", "o3", "o4", "o1-", "o3-", "o4-"]
         return prefixes.contains(where: { m.hasPrefix($0) }) || m.contains("reasoning")
     }
 
     /// 推理系列模型使用 max_completion_tokens 而非 max_tokens
     var maxTokensKey: String {
         let m = model.lowercased()
-        let reasoningPrefixes = ["gpt-5.", "o1", "o3", "o4", "o1-", "o3-", "o4-"]
+        let reasoningPrefixes = ["gpt-5", "o1", "o3", "o4", "o1-", "o3-", "o4-"]   // v7.15.1：同 isReasoningModel
         if reasoningPrefixes.contains(where: { m.hasPrefix($0) }) { return "max_completion_tokens" }
         return "max_tokens"
     }
@@ -167,7 +169,7 @@ extension ModelConfig {
         // Anthropic 模型
         if p.contains("anthropic") || m.hasPrefix("claude") { return "Anthropic Messages" }
         // 推理系列 (Codex 同款 responses 端点)
-        let reasoningPrefixes = ["gpt-5.", "o1", "o3", "o4", "o1-", "o3-", "o4-"]
+        let reasoningPrefixes = ["gpt-5", "o1", "o3", "o4", "o1-", "o3-", "o4-"]   // v7.15.1：同 isReasoningModel
         if reasoningPrefixes.contains(where: { m.hasPrefix($0) }) || m.contains("reasoning") { return "OpenAI Responses" }
         // deepseek 对话模型 → Chat Completions
         if p.contains("deepseek") || m.contains("deepseek") { return "OpenAI Chat Completions" }

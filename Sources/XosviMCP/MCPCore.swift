@@ -132,14 +132,17 @@ enum FailureKind {
                     "target App incompatible with dylib (encryption/arch/dependency); switch to a matching target, decrypt first, or check plugin compatibility")
         }
         // 3) 参数：not found / 不存在 / 参数 / bundle_id 等
+        // v7.15.1：删掉裸 "bundle"——"bundle 写入被拒"这类权限问题会被误判成参数错误，
+        // 只有明确提到 bundle_id 才归为参数问题。
         if m.contains("not found") || m.contains("不存在") || m.contains("未找到")
-            || m.contains("参数") || m.contains("invalid") || m.contains("bundle") {
+            || m.contains("参数") || m.contains("invalid") || m.contains("bundle_id") {
             return ("PARAM_INVALID", "parameter",
                     "check param name/value against the tool description (bundle_id / path / name) and retry; missing required params are listed in the error message with usage example")
         }
         // 4) 工具自身：缺组件 / 执行failed / 超时
         if m.contains("未内置") || m.contains("missing") || m.contains("超时")
-            || m.contains("timeout") || m.contains("failed") || m.contains("failed") {
+            // v7.15.1：第二个 "failed" 是复制粘贴错误，本意是中文"失败"，中文错误信息永不命中
+            || m.contains("timeout") || m.contains("failed") || m.contains("失败") {
             return ("TOOL_FAILED", "tool",
                     "tool execution failed, inspect detail/logs or retry once")
         }
@@ -180,8 +183,16 @@ enum FailureKind {
             "canceled": "canceled", "killed": "killed", "resumed": "resumed", "paused": "paused",
             "exists": "exists", "is_core": "resident", "valid": "valid", "compatible": "compatible"
         ]
-        for (key, verb) in boolVerb {
-            if let v = result[key] as? Bool {
+        // v7.15.1：Dictionary 遍历顺序每进程随机，同一份结果会得出 "injectedOK"
+        // 或 "readyfailed" 两种结论。改为固定优先级顺序，保证可复现。
+        let boolOrder = ["injected", "ready", "started", "running", "success", "found",
+                         "deleted", "created", "updated", "removed", "connected", "loaded",
+                         "installed", "enabled", "disabled", "restored", "cleaned", "written",
+                         "saved", "downloaded", "sent", "completed", "active", "available",
+                         "canceled", "killed", "resumed", "paused", "exists", "is_core",
+                         "valid", "compatible"]
+        for key in boolOrder {
+            if let verb = boolVerb[key], let v = result[key] as? Bool {
                 return "\(verb)\(v ? "OK" : "failed")"
             }
         }
@@ -230,7 +241,12 @@ public final class ToolRegistry: ObservableObject {
 
     private var tools: [String: MCPTool] = [:]
     /// v3.1.8：公开工具总数
-    public var toolCount: Int { tools.count }
+    // v7.15.1：register() 加锁而读取不加锁，Swift Dictionary 并发读写是未定义行为
+    // （BackgroundRunManager 多会话并发调工具时实测 SIGSEGV）。读取一律加锁。
+    public var toolCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return tools.count
+    }
     private var apiNameToOriginal: [String: String] = [:]
     private let lock = NSLock()
     private let disabledKey = "xosvi.disabled_tools"
@@ -261,7 +277,12 @@ public final class ToolRegistry: ObservableObject {
     private var cacheHitCounts: [String: Int] = [:]
     // v4.3.26：缓存绕过工具——有状态工具（浏览器页面内容随时可变）绝不能喂缓存。
     // web.* / workspace / browser.* 全部绕过：URL 变了 params 不变，旧缓存必错 (BUG-1/BUG-2 根因)。
-    private var cacheBypassPrefixes: [String] = ["workspace", "browser", "control", "device.fake", "injection.mem"]
+    // v7.15.1：分两类补进来
+    //   时效类 web —— 同 query 5 分钟后必须重抓，否则模型拿旧闻当"最新"复述；
+    //   状态类 inject/app/rescue/engine —— 写操作成功后立刻读 status 必须看到新状态。
+    private var cacheBypassPrefixes: [String] = ["workspace", "browser", "control",
+                                                 "device.fake", "injection.mem",
+                                                 "web", "inject", "app", "rescue", "engine"]
     private let defaultCacheWindow: TimeInterval = 300.0  // 默认 5 分钟缓存窗口
     private let longCacheWindow: TimeInterval = 1800.0  // 30 分钟缓存窗口 (静态数据）
 
@@ -439,18 +460,20 @@ public final class ToolRegistry: ObservableObject {
     }
 
     public var definitions: [ToolDefinition] {
-        // v3.0.90：去掉锁——只读操作
+        // v3.0.90 曾去掉锁（"只读"），但 register() 是有锁的写——
+        // Dictionary 并发读写未定义，多会话并发时实测 SIGSEGV。
+        lock.lock(); defer { lock.unlock() }
         return tools.values.map { $0.definition }.sorted { $0.name < $1.name }
     }
 
     // v2.9.71：本地 HTTP 服务需要的工具查询接口
     public func allToolNames() -> [String] {
-        // v3.0.90：去掉锁——只读操作
+        lock.lock(); defer { lock.unlock() }
         return tools.keys.sorted()
     }
 
     public func tool(named name: String) -> MCPTool? {
-        // v3.0.90：去掉锁——只读操作
+        lock.lock(); defer { lock.unlock() }
         return tools[name]
     }
 
@@ -913,6 +936,10 @@ public final class ToolRegistry: ObservableObject {
                     cachedData["_call_count"] = callCount
                     cachedData["_cached"] = true
                     cachedData["_cache_hits"] = cacheHitCounts[cacheKey] ?? 1
+                    // v7.15.1：告诉模型这是缓存，避免把旧结果当实时数据引用
+                    let ageSec = Int(Date().timeIntervalSince(resultCache[cacheKey]?.time ?? Date()))
+                    cachedData["_cached_age_seconds"] = ageSec
+                    cachedData["_cached_note"] = "缓存结果（\(ageSec)s 前），非实时抓取。涉及时效信息（价格/新闻/版本号）请勿直接引用，必要时换参数重新获取。"
                     return ["ok": true, "data": cachedData]
                 }
                 cacheHitCounts[cacheKey] = 0   // 真实执行前清零命中计数

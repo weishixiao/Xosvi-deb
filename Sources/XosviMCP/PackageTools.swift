@@ -593,11 +593,25 @@ final class PackageTool: MCPTool {
     }
 
     /// 把解压后的 tar 写进目标目录（路径穿越防护），返回写入的常规文件数。
+    /// v7.15.1：归一化 tar 成员路径——只剥前导 "./" 与 "/"，拒绝含 ".." 的段。
+    /// 不用 trimmingCharacters：它会把文件名首尾的 '.'/'/' 一并吃掉。
+    static func normalizeMemberPath(_ name: String) -> String {
+        var s = name
+        while s.hasPrefix("./") { s.removeFirst(2) }
+        while s.hasPrefix("/") { s.removeFirst(1) }
+        guard !s.isEmpty else { return "" }
+        if s.split(separator: "/").contains("..") { return "" }
+        return s
+    }
+
     private func writeTar(_ tar: Data, into destURL: URL) throws -> Int {
         let fm = FileManager.default
         var count = 0
         for (name, content) in parseTar(tar) {
-            let clean = name.trimmingCharacters(in: CharacterSet(charactersIn: "./"))
+            // v7.15.1：trimmingCharacters 从两端剥掉**任意** '.' 与 '/'：
+            // .DS_Store → DS_Store、./usr/lib/.keep → usr/lib/.keep（点文件被改名）。
+            // tar 成员只可能以 "./" 或 "/" 开头，只剥前缀即可。
+            let clean = Self.normalizeMemberPath(name)
             guard !clean.isEmpty else { continue }
             let target = destURL.appendingPathComponent(clean).standardizedFileURL
             guard target.path.hasPrefix(destURL.path + "/") else { continue } // zip-slip guard
