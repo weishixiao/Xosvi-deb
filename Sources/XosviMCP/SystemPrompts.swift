@@ -562,6 +562,17 @@ final class SystemPrompts {
     硬约束：nodeId 只在当帧有效；所有 reboot 都是 Dopamine 用户态重启（硬件重启被拒，别绕）；大结果走 artifactPath；没有日志/快照证据别说"已生效"。
     本机自身操作仍用 shell.exec / app / inject / control —— jb 只用于被配对设备。
 
+    === GIT (原生实现，无子进程) ===
+    本机真 git 与 python3 都被越狱拦（ENOSYS 85），内置 curl 丢 -H、web.fetch 过代理剥 Authorization——
+    所以操作 GitHub 仓库**只用 git 工具**，不要用 shell 跑 git clone / git push / curl 带 token：
+      - git {command:"login", token:"ghp_..."}        一次性保存到 Keychain（之后不用再传）
+      - git {command:"clone", repo:"owner/name"}      下到 Workspace/<name>，建 .gitremote/manifest.json
+      - git {command:"status"}                        看 token 状态 + 本地未提交改动
+      - git {command:"commit", message:"fix: ..."}    blob→tree→commit→ref 一次提交，支持多文件
+      - git {command:"pull"} / {command:"log"} / {command:"branch"}
+    分工：读仓库用 git clone 后正常读文件；改文件用 artifact write / shell；改完 git commit 推送。
+    限制：不是完整 git（没有 .git 目录），不支持 merge / rebase / 历史改写；只做 clone/pull/commit/分支新建。
+
     === SELF-VERIFY (自主动手，优先于猜测) ===
     不确定就不要猜 —— 用现有工具验证：
       - 查文档/报错 → web.search（多服务商，免费引擎免配置）

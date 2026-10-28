@@ -562,7 +562,9 @@ public final class ToolRegistry: ObservableObject {
         "bind_app", "bind_app_write", "app_write_file",
         // v7.6.5：github 工具已移除
         // v7.14.0：jb-p1lot 真机桥接（未安装二进制时工具会明确提示先 install，不会空转）
-        "jb"
+        "jb",
+        // v7.16.0：原生 Git（无子进程），越狱机器上唯一可用的仓库读写通道
+        "git"
     ]
 
     /// v2.9.31：常驻核心工具名集合 (UI 用只读访问）
@@ -1551,6 +1553,9 @@ public final class ToolRegistry: ObservableObject {
         // AI 需按提示调 github.fetch_runs / github.download_artifact 取产物；此前该工具漏注册导致后续断链
         // v7.14.0：jb-p1lot——rootless 越狱设备直控（root shell / tweak_cycle / UI / LLDB / Frida）
         register(JBPlotTool())
+        // v7.16.0：原生 Git——越狱环境下真 git / python3 都被 ENOSYS 拦，
+        // 内置 curl 丢 -H、web.fetch 过代理剥 Authorization，只能进程内 URLSession 直连 API
+        register(GitNativeTool())
         // v3.7.7c: 移除 ish.bind 注册——bind mount 已由 autoBind 全自动（命令引用 iOS 路径自动挂载+改写），
         // 手动 bind 工具对 AI 是误导（会以为要手动挂载）。类定义保留供开发者调试/真机验证。
         // v6.9.10：模式自动路由——AI 按需拉取某个模式的完整细则（懒加载，避免 2.1 万字符全量进 context）
