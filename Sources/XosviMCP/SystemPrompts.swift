@@ -580,7 +580,12 @@ final class SystemPrompts {
       - 看某命令是否存在 → shell.exec("which xxx")
       - 读网页全文 → web.fetch {url}（自动走 reader，JS 页面也能读）
       - 多轮探索型任务 → subagent（自包含任务书，它自己跑完只回结论）
-    注意：apk / git / 任何依赖包管理器或 fork() 的操作都没有可用路径，别去试。
+    iSH 引擎（v7.16.2 起 shell.exec 会真的走它）：
+      - 需要 apk / git / ffmpeg / 完整 Linux 工具链时，直接 shell.exec 写命令即可，引擎会自动接管
+      - 首次启动约 1~2 秒；引擎起不来会返回 runtime_actual=ish_boot_failed 并带真实原因
+      - 卡住/装不上先跑 diagnose {command:"engine"}：它按 rootfs → boot → guest → DNS → TCP 逐层给结论
+      - 若返回 runtime_actual=alpine_disabled，是用户在设置里关了「使用 iSH 引擎」
+    注意：原生命令（ls/cat/grep/plutil/sqlite3/bsdtar/python3）仍然优先走原生，更快且不依赖引擎。
 
     === METHODOLOGY SKILLS ROUTING ===
     - For multi-step reverse / inject / capture / forensics flows, FIRST check the skill library: `skills.list`

@@ -199,13 +199,52 @@ final class ShellExecTool: MCPTool {
                 r["_busybox_fallback"] = nil
                 return r
             }
-            // v7.3.0：iSH/Alpine 运行时已整体移除（在 arm64 上反复段错误）。
-            // 走到这里的命令都是"必须有完整 Linux 工具链"的（apk add / git clone / 复杂脚本），
-            // 统一给出说明 + 原生替代方案，不再尝试启动引擎。
+            // v7.16.2：接通 iSH 引擎（Kelivo 移植的 arm64-guest 版本）。
+            //
+            // v7.3.0 之所以删掉这条路，依据是"11 条崩溃日志 100% 是 iSH 段错误"——
+            // 但那是**旧版 x86 guest** 的模拟器（cpu_run_to_interrupt / err_map 调用栈）。
+            // v7.6.0 换成 Kelivo 的 arm64-guest 构建后，guest 与宿主同架构，不再走 x86 翻译，
+            // 环境预设安装（EnvironmentCore → ISH.run）一直在用这条引擎。
+            // 所以这里不再直接劝退，而是真的把命令交给引擎；引擎起不来才退回原生建议。
+            //
+            // 是否走引擎由设置项控制（默认开），出问题可一键关掉回到纯原生。
+            let ishEnabled = UserDefaults.standard.object(forKey: "shell_use_ish") == nil
+                ? true : UserDefaults.standard.bool(forKey: "shell_use_ish")
+            if ishEnabled {
+                let bootRC = ISH.boot()
+                if bootRC == 0 {
+                    // apk/pip/git 这类可能要跑几分钟，给足时间
+                    let ishTimeout = max(timeout, 120)
+                    let r = ISH.run(trimmed, timeout: ishTimeout, cwd: "/root")
+                    AuditLog.shared.log("shell.exec (ish)", detail: String(trimmed.prefix(100)))
+                    var out = ["command": trimmed,
+                               "exit_code": Int(r.exitCode),
+                               "ios_native": false,
+                               "runtime_actual": "ish",
+                               "timed_out": r.timedOut] as [String: Any]
+                    out["stdout"] = String(r.output.prefix(outLimit))
+                    if r.output.count > outLimit {
+                        out["truncated"] = true
+                        out["full_length"] = r.output.count
+                    }
+                    return out
+                }
+                // 引擎起不来：把真实错误带出去，而不是一句"已移除"
+                let why = ISH.lastError ?? "boot 返回 rc=\(bootRC)"
+                return ["command": trimmed, "exit_code": 127, "ios_native": false,
+                        "runtime_actual": "ish_boot_failed",
+                        "stdout": "iSH 引擎启动失败：\(why)\n\n"
+                            + "排查顺序：\n"
+                            + "1) 设置 → 环境 看沙盒状态 / 重装 rootfs\n"
+                            + "2) shell.exec 跑 diagnose {command:\"engine\"} 取完整诊断\n"
+                            + "3) 仍不行可在 设置 里关闭「使用 iSH」，改用原生命令（ls/find/plutil/sqlite3/bsdtar）",
+                        "hint": "引擎未就绪，见 stdout"]
+            }
             return ["command": trimmed, "exit_code": 127, "ios_native": false,
-                    "runtime_actual": "alpine_removed",
-                    "stdout": "Alpine/iSH 运行时已从本版本移除（它在 arm64 真机上会段错误闪退）。\n可用的原生替代：\n• 列/读文件：ls / cat / stat\n• 查找：find <目录> [-name 模式] [-maxdepth N]\n• 大小：du -sh <目录>\n• 文本：grep / head / tail / sed / wc\n• plist：plutil\n• 数据库：sqlite3\n• 二进制：strings / nm / hexdump / objdump\n• Python：python3（App 内置原生 ARM64）\n• 压缩包：bsdtar（内置原生，tar/zip/gzip 都走它）\napk add / git clone 这类依赖包管理器或 fork() 的操作已无可用路径。",
-                    "hint": "Alpine 已移除：请改用原生命令（ls/find/du/plutil/sqlite3/python3/bsdtar）"]
+                    "runtime_actual": "alpine_disabled",
+                    "stdout": "iSH 已被手动关闭（设置 → 使用 iSH）。需要 apk/git/完整 Linux 工具链时请打开它。\n"
+                        + "当前可用原生命令：ls / cat / stat / find / du / grep / sed / wc / plutil / sqlite3 / strings / nm / hexdump / objdump / python3 / bsdtar",
+                    "hint": "设置里打开「使用 iSH」后重试"]
         }
         
         // v3.1.33: shell 语法识别——含管道/分号/重定向/逻辑符的命令不再裸前缀匹配 (iOS 原生朴素分词会把 | ; 当参数），

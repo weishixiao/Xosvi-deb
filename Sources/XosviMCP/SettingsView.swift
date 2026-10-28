@@ -149,6 +149,16 @@ struct SettingsView: View {
 
         // 环境（v6.6.19：环境变量）
         groups.append(SettingsGroup(header: "环境", items: [
+            // v7.16.2：shell.exec 是否把需要完整 Linux 的命令交给 iSH 引擎。
+            // 关闭后只跑原生命令（ls/find/plutil/sqlite3/bsdtar），apk/git 之类会明确报错。
+            SettingsItem(title: "使用 iSH 引擎",
+                         subtitle: "apk / git / 完整 Linux 工具链（关闭则仅原生）",
+                         icon: "terminal", color: .gray,
+                         isOn: {
+                             UserDefaults.standard.object(forKey: "shell_use_ish") == nil
+                                 ? true : UserDefaults.standard.bool(forKey: "shell_use_ish")
+                         },
+                         onToggle: { UserDefaults.standard.set($0, forKey: "shell_use_ish") }),
             SettingsItem(title: "环境变量",
                          subtitle: "注入子进程与进程内 Python · \(EnvVars.current().count) 项",
                          icon: "key.fill", color: .gray,

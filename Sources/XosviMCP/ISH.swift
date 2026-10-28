@@ -401,6 +401,92 @@ enum ISH {
     }
 }
 
+// MARK: - v7.16.2：iSH 引擎体检
+//
+// 把"命令卡住/起不来"拆成可判定的几层：rootfs → 内核 boot → guest 工具 → DNS → TCP。
+// 每层都带真实输出与超时，避免再靠猜。
+
+extension ISH {
+    static func diagnose() -> [String: Any] {
+        let fm = FileManager.default
+        var out: [String: Any] = [:]
+        var advice: [String] = []
+
+        // ① rootfs
+        let meta = installRoot.appendingPathComponent("meta.db").path
+        let dataDir = dataPath
+        let rootfs: [String: Any] = [
+            "path": installRoot.path,
+            "meta_db": fm.fileExists(atPath: meta),
+            "data_dir": fm.fileExists(atPath: dataDir),
+            "bundled_zip": bundledZip != nil,
+        ]
+        out["rootfs"] = rootfs
+        if !fm.fileExists(atPath: meta) || !fm.fileExists(atPath: dataDir) {
+            advice.append("rootfs 不完整：设置 → 环境 → 重装 rootfs（会重新解压 alpine-rootfs.zip）")
+        }
+
+        // ② boot
+        let rc = boot()
+        out["boot"] = ["rc": Int(rc), "error": lastError ?? ""]
+        if rc != 0 {
+            out["ok"] = false
+            out["advice"] = advice + ["内核启动失败，后续检查已跳过。优先看 boot.error 里的 rc 与 meta.db/data 标记。"]
+            return out
+        }
+        if let e = lastError { advice.append(e) }
+
+        // ③ guest 环境
+        func probe(_ cmd: String, _ timeout: Double) -> [String: Any] {
+            let r = run(cmd, timeout: timeout, cwd: "/")
+            return ["exit": Int(r.exitCode),
+                    "timed_out": r.timedOut,
+                    "out": String(r.output.prefix(600))]
+        }
+        var guest: [String: Any] = [:]
+        guest["uname"] = probe("uname -a", 10)
+        guest["alpine"] = probe("cat /etc/alpine-release 2>/dev/null", 8)
+        guest["sh"] = probe("echo $((1+1))", 8)
+        guest["apk"] = probe("command -v apk && apk --version 2>&1 | head -1", 10)
+        guest["python3"] = probe("command -v python3 || echo MISSING", 8)
+        guest["repositories"] = probe("cat /etc/apk/repositories 2>/dev/null", 8)
+        out["guest"] = guest
+
+        if let sh = guest["sh"] as? [String: Any], (sh["timed_out"] as? Bool) == true {
+            advice.append("guest 连 `echo` 都超时 → 内核卡死，重装 rootfs 并完全退出 App 后重开")
+        }
+        if let apk = guest["apk"] as? [String: Any], (apk["exit"] as? Int) != 0 {
+            advice.append("guest 里没有 apk → rootfs 不是 Alpine 或解包不完整")
+        }
+
+        // ④ DNS
+        var network: [String: Any] = [:]
+        network["resolv_conf"] = probe("cat /etc/resolv.conf 2>/dev/null", 8)
+        network["dns"] = probe("nslookup mirrors.aliyun.com 2>&1 | head -6", 15)
+        // ⑤ TCP（用 busybox wget，5 秒超时，能区分"DNS 通但 TCP 不通"）
+        network["tcp_http"] = probe("wget -q -O /dev/null --timeout=5 http://mirrors.aliyun.com/alpine/ 2>&1 && echo TCP_OK || echo TCP_FAIL", 20)
+        network["tcp_https"] = probe("wget -q -O /dev/null --timeout=5 https://mirrors.aliyun.com/alpine/ 2>&1 && echo TLS_OK || echo TLS_FAIL", 25)
+        out["network"] = network
+
+        let dnsOK: Bool = {
+            if let d = network["dns"] as? [String: Any], let t = d["out"] as? String {
+                return t.contains("Address") || t.contains("Name:")
+            }
+            return false
+        }()
+        if !dnsOK {
+            advice.append("DNS 解析失败：检查 设置 → 环境 里的 rootfs 是否带 /etc/resolv.conf，或换一个 APK 源")
+        }
+        if let t = network["tcp_https"] as? [String: Any], let o = t["out"] as? String, o.contains("TLS_FAIL") {
+            advice.append("DNS 可通但 HTTPS 建连失败：多见于宿主网络受限（VPN/代理），可试 http 源或换镜像")
+        }
+
+        out["ok"] = rc == 0 && (guest["apk"] as? [String: Any])?["exit"] as? Int == 0
+        out["advice"] = advice.isEmpty ? ["各层检查正常"] : advice
+        return out
+    }
+}
+
 // MARK: - v7.14.4：Log 命名空间
 // ISH 桥接里用的是 Log.browser(...)，但全仓没有定义（CI 报 cannot find 'Log' in scope）。
 // 这里补一个最小实现：同时写审计日志（设置 → 日志可见）和系统日志（log_query 可抓）。

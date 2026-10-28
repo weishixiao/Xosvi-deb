@@ -583,6 +583,11 @@ final class DiagnoseExecTool: MCPTool {
             let repair = (params["repair"] as? Bool) ?? false
             return ToolchainSigner.run(repair: repair)
 
+        case "engine":
+            // v7.16.2：iSH 引擎体检——把"卡住"拆成可判定的几层
+            // （rootfs → boot → guest → DNS → TCP）
+            return ISH.diagnose()
+
         case "rootchain":
             // v6.6.7: 完整 root 提权链路诊断 (spawnRoot 85 ENOSYS / persona-mgmt / TSRootBinaries setuid / iOS 17 AMFI)
             let chain = InjectionManager.shared.diagnoseRootChain()
@@ -598,7 +603,7 @@ final class DiagnoseExecTool: MCPTool {
             ]
             
         default:
-            throw MCPError.invalidParams("Unknown command: \(command). Available: startup/injection/spawn/rootchain")
+            throw MCPError.invalidParams("Unknown command: \(command). Available: startup/injection/spawn/rootchain/toolchain/engine")
         }
     }
 }
