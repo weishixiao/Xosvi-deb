@@ -411,7 +411,6 @@ struct ModelEditorView: View {
     @State private var paramAliasesText: String
 
     @State private var showKey = false
-    @State private var showingQuickPicker = false
     @State private var testStatus = ""
     @State private var testColor: Color = .secondary
     @State private var isTesting = false
@@ -445,7 +444,6 @@ struct ModelEditorView: View {
         CompatNav {
             List {
                 Section(header: sectionHeader(apiProtocol.uppercased())) {
-                    quickConfigRow
                     editorRow("名称", text: $name, placeholder: "Botcf")
                     pickerRow("API 协议", selection: $apiProtocol, options: ModelConfig.apiProtocols)
                 }
@@ -570,9 +568,6 @@ struct ModelEditorView: View {
                     Button("完成") { saveOnly() }
                 }
             }
-            .sheet(isPresented: $showingQuickPicker) {
-                QuickConfigPicker { applyPreset(name: $0) }
-            }
             .sheet(isPresented: $showingModelPicker) {
                 ModelPickerSheet(models: fetchedModels, selected: $model)
             }
@@ -580,19 +575,6 @@ struct ModelEditorView: View {
     }
 
     // MARK: - 子视图
-
-    private var quickConfigRow: some View {
-        Button(action: { showingQuickPicker = true }) {
-            HStack(spacing: 12) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 20))
-                    .foregroundColor(.blue)
-                Text(L10n.t("ui_25"))
-                    .foregroundColor(.blue)
-                Spacer()
-            }
-        }
-    }
 
     private func editorRow(_ label: String, text: Binding<String>, placeholder: String) -> some View {
         HStack {
@@ -804,50 +786,6 @@ struct ModelEditorView: View {
     }
 }
 
-// MARK: - 快速配置选择器
-
-struct QuickConfigPicker: View {
-    @Environment(\.presentationMode) var presentationMode
-    let onSelect: (String) -> Void
-
-    var body: some View {
-        CompatNav {
-            List(ModelConfig.providerPresets, id: \.name) { preset in
-                Button(action: {
-                    onSelect(preset.name)
-                    presentationMode.wrappedValue.dismiss()
-                }) {
-                    HStack(spacing: 12) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color(UIColor { $0.userInterfaceStyle == .dark ? UIColor(white: 0.24, alpha: 1) : UIColor(white: 0.92, alpha: 1) }))
-                                .frame(width: 34, height: 34)
-                            Image(systemName: "sparkles")
-                                .font(.system(size: 17, weight: .semibold))
-                                .foregroundColor(.primary)
-                        }
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(preset.name)
-                                .font(.body)
-                            Text("\(preset.protocol) · \(preset.baseURL)")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .lineLimit(1)
-                        }
-                        Spacer()
-                    }
-                }
-            }
-            .listStyle(.insetGrouped)
-        .deepseekList()
-            .navigationTitle("供应商快速配置")
-            .toolbar {
-                Button("关闭") { presentationMode.wrappedValue.dismiss() }
-            }
-        }
-        .navigationViewStyle(.stack)
-    }
-}
 
 // MARK: - 模型选择 Sheet
 

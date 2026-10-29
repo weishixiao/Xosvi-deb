@@ -44,19 +44,36 @@ final class GitNativeTool: MCPTool {
 
         switch cmd {
         case "login":
-            guard let t = params["token"] as? String, !t.isEmpty else {
-                throw MCPError.invalidParams("token required")
+            // v7.9.5：模型常把参数写成 pat / github_token / key，或者把 "Bearer " 一起粘进来。
+            // 这里统一认；并且**用刚传入的 token 校验**——之前用 GitNative.api 走的是
+            // "环境变量优先"的 token 取法，环境里若是旧 token 就会一直验不过。
+            let rawToken = (params["token"] as? String)
+                ?? (params["pat"] as? String)
+                ?? (params["github_token"] as? String)
+                ?? (params["key"] as? String)
+                ?? ""
+            let cleaned = GitNative.clean(rawToken)
+            guard !cleaned.isEmpty else {
+                throw MCPError.invalidParams("token required（也可用 pat / github_token / key）")
             }
-            guard GitNative.saveToken(t) else {
+            guard GitNative.saveToken(cleaned) else {
                 throw MCPError.failed("保存 token 失败（Keychain 写入被拒）")
             }
-            let r = GitNative.api("GET", "/user")
-            if r.status == 200, let login = r.json?["login"] as? String {
-                return ["ok": true, "user": login, "token": GitNative.mask(t),
-                        "message": "token 已保存到 Keychain，并验证可用"]
+            let v = GitNative.verifyToken(cleaned)
+            if v.status == 200, let login = v.login {
+                var out: [String: Any] = [
+                    "ok": true, "user": login, "token": GitNative.mask(cleaned),
+                    "message": "token 已保存到 Keychain，并验证可用",
+                ]
+                if let envTok = EnvVars.current()["GITHUB_TOKEN"].map(GitNative.clean),
+                   !envTok.isEmpty, envTok != cleaned {
+                    out["warning"] = "环境变量 GITHUB_TOKEN 仍然优先于 Keychain；如需用新 token，请先清掉那个环境变量"
+                }
+                return out
             }
-            return ["ok": false, "token": GitNative.mask(t),
-                    "error": "token 已保存，但验证失败：HTTP \(r.status) \(r.error ?? "")"]
+            return ["ok": false, "token": GitNative.mask(cleaned),
+                    "error": "token 已保存，但验证失败：HTTP \(v.status) \(v.error ?? "")",
+                    "hint": "确认是 fine-grained PAT 且勾了 Contents: Read and write / Actions: Read；classic PAT 需要 repo 权限"]
 
         case "status":
             var out: [String: Any] = ["ok": true]

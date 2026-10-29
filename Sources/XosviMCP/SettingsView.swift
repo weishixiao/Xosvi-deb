@@ -201,11 +201,6 @@ struct SettingsView: View {
                              subtitle: "注入 · UI 树 · 截图 · 点按 · 滑动 · 输入 · 按键",
                              icon: "slider.horizontal.3", color: .gray,
                              destination: AnyView(ControlConsoleView())),
-                // v7.10.0：技能回放（移植 ghost-in-the-droid 的 skills 思路）
-                SettingsItem(title: "技能回放",
-                             subtitle: "已知流程零 token 重放 · 界面扫描",
-                             icon: "play.circle", color: .gray,
-                             destination: AnyView(GhostSkillsView())),
                 // v7.8.0：深度思考（方言 / 采样策略 / 回传 / token 预算）
                 SettingsItem(title: "深度思考",
                              subtitle: "参数方言 · 采样策略 · token 预算",

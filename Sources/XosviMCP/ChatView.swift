@@ -97,11 +97,9 @@ struct ChatView: View {
                         },
                         leftIcon: selectionMode ? nil : "line.3.horizontal",
                         trailing: selectionMode ? nil : AnyView(
-                            Menu {
-                                // v7.5.0：内置浏览器已删除，这里改为打开联网搜索设置
-                                Button { uiState.settingsPresented = true } label: {
-                                    Label("联网搜索", systemImage: "magnifyingglass")
-                                }
+                            // v7.9.5：+ 号 = 直接开一个临时会话（原来弹菜单且只有「联网搜索」→ 打开设置页）
+                            Button {
+                                store.newConversation(title: "临时会话")
                             } label: {
                                 FloatingCircleButton(icon: "plus")
                             }
@@ -181,14 +179,9 @@ struct ChatView: View {
                                 .disabled(selectedIds.isEmpty)
                         }
                     } else {
-                        // v6.6.11：模型切换已移到任务名下方；右上角改为 + 号（终端 / Hax 电脑入口）
-                        Menu {
-                            // v7.5.0：内置浏览器已删除，这里改为打开联网搜索设置
-                            Button {
-                                uiState.settingsPresented = true
-                            } label: {
-                                Label("联网搜索", systemImage: "magnifyingglass")
-                            }
+                        // v7.9.5：+ 号 = 直接开临时会话
+                        Button {
+                            store.newConversation(title: "临时会话")
                         } label: {
                             Image(systemName: "plus.circle")
                                 .font(.system(size: 18, weight: .semibold))
@@ -750,12 +743,6 @@ struct ChatView: View {
                 Self.presentDocumentPicker { urls in
                     handlePickedFiles(urls)
                 }
-            }
-            .frame(maxWidth: .infinity)
-            attachQuickButton("globe", "浏览器") {
-                withAnimation { attachExpanded = false }
-                attachmentSheet = nil
-                // v7.5.0：内置浏览器已删除——网页内容由 web.search / web.fetch 直接读取
             }
             .frame(maxWidth: .infinity)
         }

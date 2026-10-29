@@ -26,24 +26,63 @@ enum GitNative {
     static let manifestFileName = "manifest.json"
 
     /// token 来源优先级：环境变量 → Keychain。绝不回显明文。
+    /// v7.9.5：统一清洗——去掉 "Bearer " 前缀和空白（粘 PAT 时常带换行/空格）
+    static func clean(_ raw: String) -> String {
+        var v = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if v.lowercased().hasPrefix("bearer ") {
+            v = String(v.dropFirst(7)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        v = v.replacingOccurrences(of: "\n", with: "")
+             .replacingOccurrences(of: "\r", with: "")
+             .replacingOccurrences(of: " ", with: "")
+             .replacingOccurrences(of: "\t", with: "")
+        return v
+    }
+
     static var token: String? {
         let env = EnvVars.current()
         for key in ["GITHUB_TOKEN", "GH_TOKEN", "GIT_TOKEN", "GITHUB_PAT"] {
-            if let v = env[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !v.isEmpty {
-                return v
-            }
+            if let v = env[key].map(clean), !v.isEmpty { return v }
         }
-        if let v = KeychainStore.shared.string(forKey: "git.github.token"),
-           !v.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if let v = KeychainStore.shared.string(forKey: "git.github.token").map(clean),
+           !v.isEmpty {
             return v
         }
         return nil
     }
 
     static func saveToken(_ raw: String) -> Bool {
-        let v = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let v = clean(raw)
         guard v.count > 10 else { return false }
         return KeychainStore.shared.set(v, forKey: "git.github.token")
+    }
+
+    /// 用指定 token 校验（不读 Keychain/环境变量）——避免"环境变量里的旧 token 盖住新存的"。
+    static func verifyToken(_ raw: String) -> (status: Int, login: String?, error: String?) {
+        let tk = clean(raw)
+        guard let url = URL(string: "https://api.github.com/user") else {
+            return (0, nil, "bad url")
+        }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 20
+        req.setValue("Bearer \(tk)", forHTTPHeaderField: "Authorization")
+        req.setValue("Xosvi-NativeGit", forHTTPHeaderField: "User-Agent")
+        let sem = DispatchSemaphore(value: 0)
+        var status = 0
+        var body: Data?
+        var errText: String?
+        URLSession.shared.dataTask(with: req) { data, resp, err in
+            status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            body = data
+            errText = err?.localizedDescription
+            sem.signal()
+        }.resume()
+        _ = sem.wait(timeout: .now() + 25)
+        var login: String?
+        if let body, let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any] {
+            login = obj["login"] as? String
+        }
+        return (status, login, errText)
     }
 
     static func mask(_ t: String) -> String {

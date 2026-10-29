@@ -1465,8 +1465,6 @@ public final class ToolRegistry: ObservableObject {
         // v7.5.0：内置浏览器已删除（用户要求）。联网能力改为「多服务商搜索 + 全文读取」，
         // 工作区能力（Kelivo workspace）新增。
         register(WorkspaceExecTool())
-        // v7.10.0：技能回放 / 界面自动探索（移植 ghost-in-the-droid 的 skills 思路）
-        register(GhostTool())
         // v7.1.0：通用子代理——多轮探索任务甩给它，只回结论
         register(SubagentTool())
         // v3.1.47: 删旧的 13 个 browser.* 工具 (已合并到 browser 大工具）
