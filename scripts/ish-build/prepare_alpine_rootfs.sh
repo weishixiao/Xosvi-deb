@@ -169,7 +169,8 @@ create_fakefs() {
 
     local ROOTFS_FILE="alpine-minirootfs-${ALPINE_VERSION}.${ALPINE_MINOR}-${ALPINE_ARCH}.tar.gz"
     local ROOTFS_PATH="$CACHE_DIR/$ROOTFS_FILE"
-    local PROVISIONED_PATH="$CACHE_DIR/${ROOTFS_FILE}.provisioned"
+    # v7.9.2：env2 —— 补装 nodejs/npm/openssh/wget/zip 后让旧缓存失效
+    local PROVISIONED_PATH="$CACHE_DIR/${ROOTFS_FILE}.provisioned.env2"
     local FAKEFSIFY="$ISH_DIR/build-native/tools/fakefsify"
     local OUTPUT_ROOTFS="$OUTPUT_DIR/alpine-rootfs"
 
@@ -242,12 +243,25 @@ provision_rootfs_tar() {
     qemu-aarch64 "$CACHE_DIR/sbin/apk.static" add --root "$STAGE" --arch "$ALPINE_ARCH" --no-scripts \
         --repository "https://mirrors.aliyun.com/alpine/v${ALPINE_VERSION}/main" \
         --repository "https://mirrors.aliyun.com/alpine/v${ALPINE_VERSION}/community" \
-        python3 py3-pip binutils git file sqlite3 tar unzip curl ca-certificates \
+        python3 py3-pip py3-virtualenv binutils git file sqlite3 tar unzip curl ca-certificates \
+        nodejs npm openssh-client-default wget zip \
         > "$CACHE_DIR/provision.log" 2>&1
     local RC=$?
     if [ $RC -ne 0 ]; then
         log_warning "预装失败(rc=$RC)，降级为原始 minirootfs；日志尾部: $(tail -1 "$CACHE_DIR/provision.log" 2>/dev/null)"
         return 0
+    fi
+    # v7.9.2：核对环境预设的关键命令是否真的进包（缺了只告警，运行时 apkAdd 兜底）
+    local missing=""
+    for b in python3 pip3 virtualenv node npm git ssh curl wget zip unzip; do
+        if [ ! -x "$STAGE/usr/bin/$b" ] && [ ! -x "$STAGE/usr/local/bin/$b" ]; then
+            missing="$missing $b"
+        fi
+    done
+    if [ -n "$missing" ]; then
+        log_warning "预装后仍缺命令:$missing（运行时会联网兜底）"
+    else
+        log_success "环境预设已离线内置: python3/pip/virtualenv/node/npm/git/ssh/curl/wget/zip/unzip"
     fi
 
     tar -czf "$OUT_TAR" -C "$STAGE" . 2>/dev/null || { log_warning "预装后重打包失败，降级"; return 0; }
