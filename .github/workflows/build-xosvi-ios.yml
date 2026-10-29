@@ -11,7 +11,11 @@ permissions:
 # native-wheels 排队 15min 超时被 GitHub 自动取消 → build 依赖失败被 skip（连挂 3 次）。
 concurrency:
   group: build-xosvi-ios
-  cancel-in-progress: true
+  # v7.9.6：改成 false。之前 true 会在新 run 进入时把**正在跑**的旧 run 直接砍掉，
+  # 表现就是 native-tools/native-wheels「cancelled」→ build skipped → 整条标红，
+  # 但代码其实没问题（同一 commit 另一次 build 是 success 的）。
+  # 现在：新 run 排队等旧的跑完，宁可慢，也不要产出红叉和半成品包。
+  cancel-in-progress: false
 
 on:
   # v6.6.32：本仓库（Xosvi）是开发主线，push main 自动构建并发布滚动 Release。
