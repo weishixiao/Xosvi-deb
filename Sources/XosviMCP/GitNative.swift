@@ -314,6 +314,65 @@ extension GitNative {
         return def
     }
 
+    // MARK: - 远端同步（避免 422 非快进）
+
+    static func remoteHead(owner: String, repo: String, branch: String) -> String? {
+        let r = api("GET", "/repos/\(owner)/\(repo)/commits/\(branch)")
+        guard r.status == 200 else { return nil }
+        return r.json?["sha"] as? String
+    }
+
+    /// 远端领先时做一次「本地改动优先」的合并：
+    /// 只把本地没动过的文件覆盖成远端版本，然后推进 manifest.head。
+    static func mergeRemote(
+        root: URL, manifest: inout Manifest, remoteHead: String,
+        skipping: Set<String>, progress: ((String) -> Void)? = nil
+    ) throws {
+        guard let tk = token else {
+            throw MCPError.failed("未配置 GitHub token：git command:login token:<PAT>")
+        }
+        let urlStr = "https://codeload.github.com/\(manifest.owner)/\(manifest.repo)/zip/\(remoteHead)"
+        guard let url = URL(string: urlStr) else { throw MCPError.failed("远端地址非法") }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 180
+        req.setValue("Bearer \(tk)", forHTTPHeaderField: "Authorization")
+        req.setValue("Xosvi-NativeGit", forHTTPHeaderField: "User-Agent")
+        let r = perform(req, retryOn5xx: false)
+        guard r.status == 200, let zipData = r.data, !zipData.isEmpty else {
+            throw MCPError.failed("同步远端失败：HTTP \(r.status)")
+        }
+        progress?("远端有新提交，先合并 …")
+        let fm = FileManager.default
+        let tmp = fm.temporaryDirectory.appendingPathComponent("gitmerge-\(UUID().uuidString).zip")
+        try zipData.write(to: tmp)
+        defer { try? fm.removeItem(at: tmp) }
+        guard let archive = Archive(url: tmp, accessMode: .read) else {
+            throw MCPError.failed("远端 zip 打不开")
+        }
+        var merged = 0
+        var files = manifest.files
+        for entry in Array(archive) {
+            let comps = entry.path.split(separator: "/", omittingEmptySubsequences: true)
+            guard comps.count > 1 else { continue }
+            let rel = comps.dropFirst().joined(separator: "/")
+            guard !rel.isEmpty, !skipping.contains(rel), let dest = resolve(root, rel) else { continue }
+            if entry.type == .directory {
+                try? fm.createDirectory(at: dest, withIntermediateDirectories: true)
+                continue
+            }
+            try? fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+            _ = try? archive.extract(entry, to: dest)
+            let data = (try? Data(contentsOf: dest, options: .mappedIfSafe)) ?? Data()
+            files[rel] = sha256Hex(data)
+            merged += 1
+        }
+        manifest.files = files
+        manifest.head = remoteHead
+        manifest.updatedAt = Date()
+        try saveManifest(manifest, in: root)
+        progress?("已合并远端 \(merged) 个文件（基于 \(remoteHead.prefix(7))）")
+    }
+
     // MARK: - 构建护栏（仓库硬规则）
 
     struct BuildRun {
@@ -451,11 +510,21 @@ extension GitNative {
     static func commit(_ root: URL, message: String,
                        only paths: [String]? = nil,
                        redAck: String? = nil,
+                       retryOnRace: Bool = true,
                        progress: ((String) -> Void)? = nil) throws -> [String: Any] {
         var manifest = try loadManifest(root)
         try requireBuildGreenOrAck(
             owner: manifest.owner, repo: manifest.repo,
             branch: manifest.branch, ack: redAck)
+        // v7.8.3：远端领先时先合并（本地已改的路径保留本地版本），否则更新 ref 会 422
+        if !manifest.head.isEmpty,
+           let remote = remoteHead(owner: manifest.owner, repo: manifest.repo, branch: manifest.branch),
+           !remote.isEmpty, remote != manifest.head {
+            let pre = diff(root: root, manifest: manifest)
+            let touchedNow = Set(pre.added + pre.modified + pre.deleted)
+            try mergeRemote(root: root, manifest: &manifest, remoteHead: remote,
+                            skipping: touchedNow, progress: progress)
+        }
         let rules = IgnoreRules.load(root: root)
         let files = scan(root: root, ignoring: rules)
         var cs = diff(root, manifest: manifest)
@@ -522,7 +591,16 @@ extension GitNative {
         let refRes = api("PATCH", "/repos/\(o)/\(rep)/git/refs/heads/\(br)",
                          body: ["sha": newCommit, "force": false])
         if refRes.status != 200 {
-            throw MCPError.failed("更新分支失败：HTTP \(refRes.status) \(refRes.error ?? "")（可能远端有新提交，先 git command:pull）")
+            // 并发竞态：我们合并后远端又被推了。自动重来一次（会再次预合并）
+            if retryOnRace, refRes.status == 422 {
+                progress?("远端刚有新提交，自动重试一次 …")
+                return try commit(root, message: message, only: paths,
+                                  redAck: redAck, retryOnRace: false, progress: progress)
+            }
+            throw MCPError.failed(
+                "更新分支失败：HTTP \(refRes.status) \(refRes.error ?? "")"
+                + "（已尝试自动合并远端；如仍失败请 git command:pull 后重试）"
+            )
         }
 
         // ⑤ 更新 manifest
