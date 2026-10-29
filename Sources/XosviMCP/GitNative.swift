@@ -520,7 +520,7 @@ extension GitNative {
         if !manifest.head.isEmpty,
            let remote = remoteHead(owner: manifest.owner, repo: manifest.repo, branch: manifest.branch),
            !remote.isEmpty, remote != manifest.head {
-            let pre = diff(root: root, manifest: manifest)
+            let pre = diff(root, manifest: manifest)
             let touchedNow = Set(pre.added + pre.modified + pre.deleted)
             try mergeRemote(root: root, manifest: &manifest, remoteHead: remote,
                             skipping: touchedNow, progress: progress)
