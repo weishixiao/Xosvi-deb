@@ -355,18 +355,22 @@ final class EnvironmentInstaller: ObservableObject {
             // 原来整条脚本在 `set -e` 下执行，community 一旦拉不到就整条退出，
             // 表现正是"日志里 fetch 出两行后戛然而止"。
             // 现在：main 是硬要求（set -e 只覆盖它），community 拉不到只记一行日志。
+            // v7.9.3：**先挂 community 再装**。
+            // 原来顺序是「先装 → 再尝试加 community」，而 py3-pip / py3-virtualenv
+            // 这类包装在 community，main 里没有 → apk 直接报
+            // "py3-pip (no such package): required by: world[py3-pip]" 整单失败。
+            // 现在：先探 community 索引，可达就一起写进 repositories，再 update + add。
             let script = """
             set -e
             printf '%s\n' '\(repoMain)' > /etc/apk/repositories
+            if wget -q -O /dev/null --timeout=10 '\(repoComm)/aarch64/APKINDEX.tar.gz'; then
+              printf '%s\n' '\(repoComm)' >> /etc/apk/repositories
+              echo '[env] community 源可用，已加入'
+            else
+              echo '[env] community 源不可达（py3-pip 等包可能缺失）'
+            fi
             apk --wait 60 update
             apk --wait 60 add \(d.packages)
-            set +e
-            if wget -q -O /dev/null --timeout=8 '\(repoComm)/aarch64/APKINDEX.tar.gz'; then
-              printf '%s\n' '\(repoComm)' >> /etc/apk/repositories
-              apk --wait 30 update || echo '[env] community 索引拉取失败（已忽略，不影响本次安装）'
-            else
-              echo '[env] community 源不可达（已跳过，不影响本次安装）'
-            fi
             """
             let r = ISH.runStreaming(script, timeout: 1800, cwd: "/",
                                      onChunk: { text in self.consume(text) })
