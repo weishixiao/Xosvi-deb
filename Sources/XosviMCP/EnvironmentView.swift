@@ -290,8 +290,8 @@ struct EnvironmentView: View {
             _ = ISH.run("""
             set -e
             mkdir -p /etc/apk /etc/pip /root
-            printf '%s\\n%s\\n' '\(apk.base)v3.21/main' '\(apk.base)v3.21/community' > /etc/apk/repositories
-            printf '[global]\\nindex-url = \(pip.pipIndexURL())\\n' > /etc/pip.conf
+            printf '%s\\n%s\\n' '\(apk.guestBase)\(AlpineVersion.branch())/main' '\(apk.guestBase)\(AlpineVersion.branch())/community' > /etc/apk/repositories
+            printf '[global]\\nindex-url = \(pip.pipIndexURL())\\ntrusted-host = mirrors.aliyun.com pypi.tuna.tsinghua.edu.cn mirrors.ustc.edu.cn pypi.org\\n' > /etc/pip.conf
             printf 'registry=\(npm.npmRegistry)\\n' > /root/.npmrc
             """, timeout: 30)
             DispatchQueue.main.async { toast = "已切换源：\(apk.displayName)" }

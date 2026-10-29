@@ -90,15 +90,22 @@ struct AlpineMirror: Identifiable, Equatable {
 
     var displayName: String { region.isEmpty ? name : "\(name) · \(region)" }
 
+    /// v7.9.1：iSH guest 的 TLS 握手会挂死（实测：HTTP 正常、HTTPS 一直卡到超时），
+    /// 所以写进 guest 的源一律降级成 http；宿主侧测速仍用 https。
+    var guestBase: String {
+        base.replacingOccurrences(of: "https://", with: "http://")
+    }
+
     func apkIndexURL(alpineVersion: String? = nil) -> URL? {
         URL(string: base + "\(alpineVersion ?? AlpineVersion.branch())/main/aarch64/APKINDEX.tar.gz")
     }
     func pipIndexURL() -> String {
+        // v7.9.1：同上，guest 内只能走 http（宿主侧 TLS 正常，这里只影响写进 pip.conf 的值）
         switch id {
-        case "pip.aliyun": return "https://mirrors.aliyun.com/pypi/simple"
-        case "pip.tuna": return "https://pypi.tuna.tsinghua.edu.cn/simple"
-        case "pip.ustc": return "https://mirrors.ustc.edu.cn/pypi/simple"
-        default: return "https://pypi.org/simple"
+        case "pip.aliyun": return "http://mirrors.aliyun.com/pypi/simple"
+        case "pip.tuna": return "http://pypi.tuna.tsinghua.edu.cn/simple"
+        case "pip.ustc": return "http://mirrors.ustc.edu.cn/pypi/simple"
+        default: return "http://pypi.org/simple"
         }
     }
     var npmRegistry: String {
@@ -267,14 +274,33 @@ final class EnvironmentInstaller: ObservableObject {
         pkgTotal = 0
 
         queue.async {
+            var logLines: [String] = []
             Self.setPhase(.writingMirror, notify: self)
             // 先把当前选择的 APK 源写进去（Kelivo 也是先应用源再装）
-            let mirror = MirrorCatalog.current("apk")
-            // v7.14.20：分支从 rootfs 真实版本读（原来硬编码 v3.21，
-            // rootfs 不是 3.21 时整条源路径都不存在 → apk fetch 直接 404）
+            // v7.9.1：分支从 rootfs 真实版本读（原来硬编码 v3.21 → 404）
             let branch = AlpineVersion.branch()
-            let repoMain = mirror.base + "\(branch)/main"
-            let repoComm = mirror.base + "\(branch)/community"
+            // v7.9.1：先按 http 逐个镜像实测，选第一个真能拉到索引的。
+            // 之前直接用当前镜像的 https 地址 —— iSH 的 TLS 挂死，表现为
+            // "fetch 发出后无响应直到 30 分钟超时"，用户看到的就是装了永远不动。
+            let preferred = MirrorCatalog.current("apk")
+            let candidates = [preferred] + MirrorCatalog.apk.filter { $0.id != preferred.id }
+            var mirror = preferred
+            for candidate in candidates.prefix(5) {
+                let probeURL = candidate.guestBase + "\(branch)/main/aarch64/APKINDEX.tar.gz"
+                let probe = ISH.run(
+                    "wget -q -O /dev/null --timeout=6 --tries=1 '\(probeURL)' && echo __MIRROR_OK || echo __MIRROR_FAIL",
+                    timeout: 20, cwd: "/")
+                if probe.output.contains("__MIRROR_OK") {
+                    mirror = candidate
+                    break
+                }
+            }
+            if mirror.id != preferred.id {
+                MirrorCatalog.setCurrent("apk", mirror)
+                logLines.append("[env] 镜像自动切换：\(preferred.name) → \(mirror.name)（http）")
+            }
+            let repoMain = mirror.guestBase + "\(branch)/main"
+            let repoComm = mirror.guestBase + "\(branch)/community"
             _ = ISH.run("""
             mkdir -p /etc/apk
             old=$(cat /etc/apk/repositories 2>/dev/null)
@@ -308,8 +334,6 @@ final class EnvironmentInstaller: ObservableObject {
             //   cwd = '/'，timeout = 30 分钟，**一条脚本跑完**，不拆步、不预探、不跳过 update。
             // 之前我加了"索引探测/跳过 update/分阶段"，反而引入了 430s 卡死与换源逻辑混乱。
             // 先回到 Kelivo 的原样实现，把可靠性交给 apk 自己的 --wait 与 30 分钟上限。
-            var logLines: [String] = []
-
             // v7.14.16：先做 15 秒网络自检，把实际情况写进日志。
             // 之前在 App 里表现为"fetch 发出后无响应直到超时"，但同一台机器 shell 里 2~3s 就成功，
             // 需要先拿到 DNS / 直连 / 代理三个层面的证据，而不是继续猜。
