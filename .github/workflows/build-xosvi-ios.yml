@@ -532,7 +532,16 @@ jobs:
         # 缓存命中时跳过（构建产物一致；改 scripts/ish-build/*.sh 需 bump key）。
         if: steps.cache-ish.outputs.cache-hit != 'true'
         run: |
-          brew install meson ninja libarchive llvm lld qemu >/dev/null 2>&1 || true
+          brew install meson ninja libarchive llvm lld
+          # v7.9.3：qemu 单独装 + 显式校验。之前它和上面混在一条 `|| true` 里，
+          # 装失败被静默吞掉 → rootfs 预装整段跳过（日志只有一行 warning），
+          # 结果包里连 python3/git 都没有，用户只能靠运行时联网 apk add。
+          if ! command -v qemu-aarch64 >/dev/null 2>&1; then
+            brew install qemu || true
+          fi
+          command -v qemu-aarch64 >/dev/null 2>&1 \
+            && echo "qemu OK: $(qemu-aarch64 --version | head -1)" \
+            || echo "::warning::qemu-aarch64 不可用，rootfs 将不预装工具"
           # libarchive 是 tools/fakefsify 的硬依赖：meson 只通过 pkg-config 探测，
           # Homebrew 装的 keg-only，不导出 PATH 就 found: NO，ninja 会报 unknown target 'tools/fakefsify'
           if [ -d /opt/homebrew/opt/libarchive/lib/pkgconfig ]; then
