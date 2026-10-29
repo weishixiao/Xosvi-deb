@@ -524,24 +524,25 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ish-stage
-          key: ish-stage-${{ hashFiles('scripts/ish-build/*.sh') }}-v3
+          key: ish-stage-${{ hashFiles('scripts/ish-build/*.sh') }}-v4
 
-      - name: Build iSH engine (libish.a + alpine rootfs)
-        # v3.0.37：编译 iSH-ARM64 静态库与 Alpine rootfs，供 shell.exec 新引擎使用。
-        # 脚本来自 OpenMinis（build_ish.sh / prepare_alpine_rootfs.sh），产出 ish-stage/{libs,include,resources}。
-        # 缓存命中时跳过（构建产物一致；改 scripts/ish-build/*.sh 需 bump key）。
-        if: steps.cache-ish.outputs.cache-hit != 'true'
+      - name: 🧰 安装 qemu（rootfs 预装需要）
         run: |
-          brew install meson ninja libarchive llvm lld
-          # v7.9.3：qemu 单独装 + 显式校验。之前它和上面混在一条 `|| true` 里，
-          # 装失败被静默吞掉 → rootfs 预装整段跳过（日志只有一行 warning），
-          # 结果包里连 python3/git 都没有，用户只能靠运行时联网 apk add。
+          # v7.9.4：qemu 必须在 rootfs 前装好且可校验。之前它和别的 brew 包挤在
+          # 一条静默命令里，失败被吞 → rootfs 预装整段跳过（包里连 python3 都没有）。
           if ! command -v qemu-aarch64 >/dev/null 2>&1; then
             brew install qemu || true
           fi
-          command -v qemu-aarch64 >/dev/null 2>&1 \
-            && echo "qemu OK: $(qemu-aarch64 --version | head -1)" \
-            || echo "::warning::qemu-aarch64 不可用，rootfs 将不预装工具"
+          if command -v qemu-aarch64 >/dev/null 2>&1; then
+            echo "qemu OK: $(qemu-aarch64 --version | head -1)"
+          else
+            echo "::warning::qemu-aarch64 不可用，rootfs 将不预装工具"
+          fi
+
+      - name: 🧱 构建 iSH + Alpine rootfs（预装环境预设）
+        if: steps.cache-ish.outputs.cache-hit != 'true'
+        run: |
+          brew install meson ninja libarchive llvm lld
           # libarchive 是 tools/fakefsify 的硬依赖：meson 只通过 pkg-config 探测，
           # Homebrew 装的 keg-only，不导出 PATH 就 found: NO，ninja 会报 unknown target 'tools/fakefsify'
           if [ -d /opt/homebrew/opt/libarchive/lib/pkgconfig ]; then
