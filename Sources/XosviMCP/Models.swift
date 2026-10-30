@@ -882,6 +882,35 @@ final class ConversationStore: ObservableObject {
         if conv.messages.isEmpty {
             conv.title = title(from: message.content)
         }
+        // v7.9.11：把「被工具卡打断的半句话」接回去。
+        //
+        // 现场（截图）：AI 说「刚才发现白」→ 调 control → 再回「描里已经有 …」，
+        // 一句话被拆到两三个气泡里，看起来像错位。
+        // 根因：每一轮工具调用都会开一条新的 assistant 消息，模型跨轮写同一句话时就被切开。
+        // 规则（保守）：新消息是纯文本、上一条 assistant 文本没写完（不以句末标点结尾）、
+        // 且两者之间只有工具消息 —— 就接回上一条，不再新开气泡。
+        if message.role == "assistant",
+           message.toolCalls == nil,
+           !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let prev = conv.messages.lastIndex(where: { $0.role == "assistant" }) {
+            let between = conv.messages[(prev + 1)...]
+            let onlyTools = between.allSatisfy { $0.role == "tool" }
+            let prevText = conv.messages[prev].content
+            let endings = ["。", "！", "？", ".", "!", "?", "：", ":", "\n"]
+            let unfinished = !endings.contains { prevText.hasSuffix($0) }
+            if onlyTools, unfinished, !prevText.isEmpty {
+                let glue = prevText.hasSuffix("\n") ? "" : ""
+                conv.messages[prev].content = prevText + glue + message.content
+                if let th = message.thinking, !th.isEmpty,
+                   (conv.messages[prev].thinking ?? "").isEmpty {
+                    conv.messages[prev].thinking = th
+                }
+                conv.updatedAt = Date()
+                conversations[idx] = conv
+                sortAndSave()
+                return
+            }
+        }
         // v7.9.10：按时间戳插到正确位置，而不是无脑 append。
         //
         // 现场：上一轮还没跑完（工具循环）时用户又发了一条 → 新用户消息先 append；
