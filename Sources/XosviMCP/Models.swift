@@ -876,6 +876,48 @@ final class ConversationStore: ObservableObject {
     }
 
     /// v3.1.70：写入活动请求的会话 (无活动请求时写入当前选中会话）
+
+    /// v7.9.13：收尾合并——把「被工具卡截断的半句话」接回来。
+    /// 之前的合并只在 append 路径生效；但有些轮次是直接改已存在消息（reuse 路径），
+    /// 绕过合并，于是仍然出现「…之前 md5sum 只读」+ 工具卡 + 「了一个…」。
+    /// 这里按结构扫一遍：assistant 文本 + 仅隔工具消息 + assistant 文本，
+    /// 且前一段不以句末标点结尾 → 合并成一条。
+    private func mergeSplitAssistantFragments() {
+        guard let idx = activeConvIndex else { return }
+        var msgs = conversations[idx].messages
+        var changed = false
+        var i = 0
+        while i < msgs.count {
+            guard msgs[i].role == "assistant", !msgs[i].content.isEmpty else {
+                i += 1
+                continue
+            }
+            var j = i + 1
+            while j < msgs.count, msgs[j].role == "tool" { j += 1 }
+            if j < msgs.count, msgs[j].role == "assistant",
+               msgs[j].toolCalls == nil, !msgs[j].content.isEmpty {
+                let head = msgs[i].content
+                let endings = ["。", "！", "？", ".", "!", "?", "：", ":", "\n"]
+                let finished = endings.contains { head.hasSuffix($0) }
+                if !finished {
+                    msgs[i].content = head + msgs[j].content
+                    if (msgs[i].thinking ?? "").isEmpty, let th = msgs[j].thinking {
+                        msgs[i].thinking = th
+                    }
+                    msgs.remove(at: j)
+                    changed = true
+                    continue   // 同一段可能被拆成三段
+                }
+            }
+            i += 1
+        }
+        if changed {
+            conversations[idx].messages = msgs
+            conversations[idx].updatedAt = Date()
+            sortAndSave()
+        }
+    }
+
     func appendToCurrent(_ message: ChatMessage) {
         guard let idx = activeConvIndex else { return }
         var conv = conversations[idx]
@@ -928,6 +970,8 @@ final class ConversationStore: ObservableObject {
         conv.updatedAt = Date()
         conversations[idx] = conv
         sortAndSave()
+        // v7.9.13：兜底收尾（覆盖 reuse / 直接改消息等绕过上面合并逻辑的路径）
+        if message.role != "user" { mergeSplitAssistantFragments() }
     }
 
     /// v3.1.70：更新活动请求会话内消息内容 (无活动请求时用当前选中会话）
