@@ -482,11 +482,32 @@ struct ChatView: View {
         store.send(text, using: cfg, reasoningLevel: thinkEnabled ? reasoning : 5, smartSearch: true, in: store.selectedId)
     }
 
+    /// v7.9.12：只渲染最近 N 条。会话几百条时，任何一次流式 delta 都会让整列 body 重算，
+    /// LazyVStack 也救不了已经实例化过的行 —— 表现就是"聊久了越来越卡"。
+    @State private var visibleMessageLimit = 60
+
+    private var visibleMessages: [ChatMessage] {
+        let all = store.currentMessages
+        guard all.count > visibleMessageLimit else { return all }
+        return Array(all.suffix(visibleMessageLimit))
+    }
+
     private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 12) {
-                    ForEach(store.currentMessages) { msg in
+                    if store.currentMessages.count > visibleMessageLimit {
+                        Button {
+                            visibleMessageLimit += 60
+                        } label: {
+                            Text("显示更早的 \(min(60, store.currentMessages.count - visibleMessageLimit)) 条")
+                                .font(.footnote)
+                                .padding(.vertical, 6)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(.secondary)
+                    }
+                    ForEach(visibleMessages) { msg in
                         MessageBubble(
                             message: msg,
                             selectionMode: selectionMode,

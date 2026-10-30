@@ -23,7 +23,26 @@ struct MessageBlock: Identifiable {
 
 enum MessageBlockParser {
     /// 按 ``` 围栏切分。未闭合的围栏（流式输出中途）按普通文本处理，避免闪烁。
+    // v7.9.12：按原文缓存——同一段文本在多次 body 重算里会被反复解析（列表越大越明显）
+    private static var parseCache: [String: [MessageBlock]] = [:]
+    private static let parseLock = NSLock()
+
     static func parse(_ raw: String) -> [MessageBlock] {
+        parseLock.lock()
+        if let hit = parseCache[raw] {
+            parseLock.unlock()
+            return hit
+        }
+        parseLock.unlock()
+        let result = parseUncached(raw)
+        parseLock.lock()
+        if parseCache.count > 200 { parseCache.removeAll(keepingCapacity: true) }
+        parseCache[raw] = result
+        parseLock.unlock()
+        return result
+    }
+
+    private static func parseUncached(_ raw: String) -> [MessageBlock] {
         guard raw.contains("```") else { return [MessageBlock(kind: .text(raw))] }
         var blocks: [MessageBlock] = []
         var buffer: [String] = []
