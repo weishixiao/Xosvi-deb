@@ -801,12 +801,22 @@ jobs:
           # 默认值（6.6.6），直接读它会让 Release 标题永远停在旧版本，与实际产物不一致。
           VER="${RELEASE_VERSION:-$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Support/Info.plist 2>/dev/null || echo "unknown")}"
           echo "version=$VER"
-          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
-          # v6.6.7：只上传 Xosvi.tipa（Bundle ID 已改 com.xosvi.app，老用户需卸载重装）
-          gh release create latest Xosvi.tipa \
-            --title "Xosvi latest (v${VER})" \
-            --notes "滚动构建（main 分支最新）。供 App 内多源自动更新使用：GitHub 被墙时经镜像前缀或 Releases 直链下载。下载地址：https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/Xosvi.tipa" || \
-            { echo "RELEASE PUBLISH FAILED (non-fatal)"; exit 0; }
+          # v7.16.4：不再 delete + create——tag "latest" 受保护/被引用时 delete 会静默失败，
+          # 紧接着 create 报 "tag already exists"，导致构建成功但 Release 一直是旧包（2026-10-30 事故）。
+          # 改成幂等更新：存在就 clobber 上传 + 改标题，不存在才 create。
+          NOTES="滚动构建（main 分支最新）。供 App 内多源自动更新使用：GitHub 被墙时经镜像前缀或 Releases 直链下载。下载地址：https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/Xosvi.tipa"
+          set -e
+          if gh release view latest >/dev/null 2>&1; then
+            echo "release latest exists -> update in place"
+            gh release upload latest Xosvi.tipa --clobber
+            gh release edit latest --title "Xosvi latest (v${VER})" --notes "$NOTES"
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/latest" -f make_latest=true >/dev/null || true
+          else
+            # v6.6.7：只上传 Xosvi.tipa（Bundle ID 已改 com.xosvi.app，老用户需卸载重装）
+            gh release create latest Xosvi.tipa \
+              --title "Xosvi latest (v${VER})" \
+              --notes "$NOTES" --latest
+          fi
           # v6.6.27：dSYM 随包发布——崩溃栈不再靠 base= 手工换算偏移
           DSYM=$(find "$GITHUB_WORKSPACE" -maxdepth 3 -name "*.app.dSYM" -type d 2>/dev/null | head -1)
           if [ -n "$DSYM" ]; then
