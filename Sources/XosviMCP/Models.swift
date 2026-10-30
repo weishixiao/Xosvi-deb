@@ -882,7 +882,20 @@ final class ConversationStore: ObservableObject {
         if conv.messages.isEmpty {
             conv.title = title(from: message.content)
         }
-        conv.messages.append(message)
+        // v7.9.10：按时间戳插到正确位置，而不是无脑 append。
+        //
+        // 现场：上一轮还没跑完（工具循环）时用户又发了一条 → 新用户消息先 append；
+        // 随后旧轮的回复/工具结果才写回来，于是被追加到这条用户消息**下面**，
+        // 看起来就是「我发的消息跑到 AI 回复的下面」。
+        // 消息本身带创建时间，直接用时间戳归位即可：旧轮产物会插回用户消息之前。
+        if let last = conv.messages.last, message.timestamp < last.timestamp {
+            let insertAt = conv.messages.firstIndex {
+                $0.timestamp > message.timestamp
+            } ?? conv.messages.count
+            conv.messages.insert(message, at: insertAt)
+        } else {
+            conv.messages.append(message)
+        }
         conv.updatedAt = Date()
         conversations[idx] = conv
         sortAndSave()
