@@ -106,6 +106,13 @@ enum GitNative {
         var manifest: Manifest
     }
 
+    /// v7.9.14：最近一次操作的仓库路径（resolveRoot 在没 path 时兜底用）
+    static let lastRepoKey = "git.lastRepoPath"
+
+    static func rememberRepo(_ root: URL) {
+        UserDefaults.standard.set(root.path, forKey: lastRepoKey)
+    }
+
     static func manifestURL(in root: URL) -> URL {
         root.appendingPathComponent(manifestDirName).appendingPathComponent(manifestFileName)
     }
@@ -535,6 +542,7 @@ extension GitNative {
             let data = (try? Data(contentsOf: info.0, options: .mappedIfSafe)) ?? Data()
             map[rel] = sha256Hex(data)
         }
+        rememberRepo(root)
         let m = Manifest(owner: owner, repo: repo, branch: usedBranch,
                          head: headSha, files: map, updatedAt: Date())
         try saveManifest(m, in: root)

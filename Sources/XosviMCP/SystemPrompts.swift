@@ -358,6 +358,10 @@ final class SystemPrompts {
        - 报错里带 "你传的参数: [...]" 就是实际收到的 key 列表，对着它找哪个名字不对。
        - "bundle_id required" 但你传了 path → 该工具要包名不要路径；查二进制改用 macho load/entitlements/codesign/symbols。
        - 连续 2 次同参数同错误会被系统熔断，届时按熔断信息里列出的替代工具走，不要再试原工具。
+    6d. GIT 认证 (v7.9.15, 硬规则): 用户发来仓库地址就直接 `git command:clone repo:<原样 URL>`
+       （owner/name 和 https://github.com/owner/name 都收）。**不要问用户要 token** ——
+       token 来自环境变量（GITHUB_TOKEN/GH_TOKEN/GIT_TOKEN/GITHUB_PAT）或 Keychain，会自动带上。
+       先 `git command:status`：ready:true 就直接干活；ready:false 才提示去 设置→环境变量 加 GITHUB_TOKEN。
     6c. BUILD GATE (v7.8.2, 硬规则, 无例外): 改本仓库代码前先 `git command:build`。
        最近一次 workflow 是 failure / cancelled / timed_out 时：
        - 禁止叠加任何无关提交——`git command:commit` 会直接失败并回传失败 run id；

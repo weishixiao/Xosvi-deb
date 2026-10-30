@@ -11,7 +11,8 @@ final class GitNativeTool: MCPTool {
             + "BUILD GATE (hard rule): if `build` shows the latest run failed, commit is REJECTED unless you pass build_red_ack=\"<run id>\" — i.e. you must fix that red build first, not stack unrelated changes. "
             + "Use for: read or write a GitHub repo from this device (clone source, review code, edit files, commit & push). "
             + "Don't use for: local-only git history (this keeps a lightweight manifest, not a .git directory). "
-            + "Typical flow: git command:login token:ghp_xxx → git command:clone repo:owner/name → 用 artifact/shell 改文件 → git command:commit message:\"fix: ...\"。",
+            + "AUTH: token comes from env vars (GITHUB_TOKEN / GH_TOKEN / GIT_TOKEN / GITHUB_PAT) or Keychain automatically — do NOT ask the user for a token; run git command:status first (ready:true means just clone). "
+            + "Typical flow: git command:status → git command:clone repo:https://github.com/owner/name → edit files → git command:commit message:\"fix: ...\"。",
         parameters: [
             "command": "status / login / whoami / clone / pull / commit / build / log / branch / repos",
             "token": "for login: GitHub PAT (fine-grained 需 Contents: Read and write；classic 需 repo)",
@@ -79,13 +80,21 @@ final class GitNativeTool: MCPTool {
             var out: [String: Any] = ["ok": true]
             if let t = GitNative.token {
                 out["token"] = GitNative.mask(t)
-                out["token_source"] = EnvVars.current()["GITHUB_TOKEN"] != nil ? "env" : "keychain"
+                let envKeys = ["GITHUB_TOKEN", "GH_TOKEN", "GIT_TOKEN", "GITHUB_PAT"]
+                    .filter { k in (EnvVars.current()[k]?.isEmpty == false) }
+                out["token_source"] = envKeys.isEmpty ? "keychain" : "env:\(envKeys.joined(separator: ","))"
+                out["ready"] = true
+                out["hint"] = envKeys.isEmpty
+                    ? "已用 Keychain 里的 token，可直接 clone/commit"
+                    : "环境变量里已有 token，认证会自动带上；不需要再 login，直接 clone repo:owner/name 或整条仓库地址"
             } else {
                 out["token"] = NSNull()
-                out["hint"] = "未配置 token：git command:login token:<PAT>"
+                out["ready"] = false
+                out["hint"] = "未配置 token：在 设置→环境变量 加 GITHUB_TOKEN，或 git command:login token:<PAT>"
             }
-            let root = try resolveRoot(params)
-            if FileManager.default.fileExists(atPath: GitNative.manifestURL(in: root).path),
+            let root = try? resolveRoot(params)
+            if let root,
+               FileManager.default.fileExists(atPath: GitNative.manifestURL(in: root).path),
                let m = try? GitNative.loadManifest(root) {
                 let cs = GitNative.diff(root, manifest: m)
                 out["repo"] = "\(m.owner)/\(m.repo)"
@@ -121,8 +130,14 @@ final class GitNativeTool: MCPTool {
                     "repos": list.compactMap { $0["full_name"] as? String }]
 
         case "clone":
-            guard let repo = params["repo"] as? String, repo.contains("/") else {
-                throw MCPError.invalidParams("repo required，格式 owner/name")
+            // v7.9.15：直接吃整条仓库地址 —— 用户/模型常发 https://github.com/owner/repo(.git)
+            let rawRepo = (params["repo"] as? String)
+                ?? (params["url"] as? String)
+                ?? (params["repository"] as? String)
+                ?? ""
+            guard let repo = Self.normalizeRepo(rawRepo) else {
+                throw MCPError.invalidParams(
+                    "repo required：可传 owner/name，也可直接传 https://github.com/owner/name")
             }
             let parts = repo.split(separator: "/")
             let owner = String(parts[0]), name = String(parts[1])
@@ -225,6 +240,21 @@ final class GitNativeTool: MCPTool {
 
     // MARK: 路径解析
 
+    /// v7.9.15：owner/name 或整条 URL → owner/name
+    static func normalizeRepo(_ raw: String) -> String? {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return nil }
+        if s.hasSuffix(".git") { s = String(s.dropLast(4)) }
+        if s.contains("://"), let u = URL(string: s) {
+            s = u.path
+        } else if s.hasPrefix("git@"), let colon = s.firstIndex(of: ":") {
+            s = String(s[s.index(after: colon)...])
+        }
+        let parts = s.split(separator: "/").map(String.init).filter { !$0.isEmpty }
+        guard parts.count >= 2 else { return nil }
+        return parts[parts.count - 2] + "/" + parts[parts.count - 1]
+    }
+
     private func resolveRoot(_ params: [String: Any], defaultName: String? = nil) throws -> URL {
         if let p = params["path"] as? String, !p.isEmpty {
             if p.hasPrefix("/") { return URL(fileURLWithPath: p) }
@@ -244,6 +274,14 @@ final class GitNativeTool: MCPTool {
                 throw MCPError.invalidParams("workspace 下有多个仓库：\(found.map { $0.lastPathComponent }.joined(separator: ", "))。请用 path: 指定")
             }
         }
-        throw MCPError.invalidParams("path required（或用 clone 先建一个本地仓库）")
+        // v7.9.14：记住上一次操作的仓库（clone/loadManifest 时写入），
+        // 这样即使仓库不在 Workspace（例如用户传入绝对路径），后续命令也不用每次带 path。
+        if let last = UserDefaults.standard.string(forKey: GitNative.lastRepoKey), !last.isEmpty {
+            let url = URL(fileURLWithPath: last)
+            if fm.fileExists(atPath: GitNative.manifestURL(in: url).path) { return url }
+        }
+        throw MCPError.invalidParams(
+            "还没有可用的本地仓库。先建一个：git command:clone repo:owner/name "
+            + "（已有仓库但不在 Workspace 下时，传 path:"/绝对路径"）")
     }
 }
