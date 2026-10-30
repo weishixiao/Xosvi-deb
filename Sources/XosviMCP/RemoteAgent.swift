@@ -70,10 +70,12 @@ public final class RemoteAgent: ObservableObject {
     public func start() {
         stop()
         guard enabled, !serverURL.isEmpty, !token.isEmpty else { return }
-        let t = Timer(timeInterval: 4, repeats: true) { [weak self] _ in
+        // v7.9.8：4 秒 → 15 秒。4s 轮询等于每分钟 15 次网络唤醒，后台耗电明显；
+        // 远程诊断本来就不需要秒级响应，15s 足够（tolerance 让系统合并唤醒时机）。
+        let t = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
             self?.pollOnce()
         }
-        t.tolerance = 1.5
+        t.tolerance = 5
         RunLoop.main.add(t, forMode: .common)
         timer = t
     }

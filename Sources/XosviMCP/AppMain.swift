@@ -45,7 +45,8 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
             ToolchainSigner.autoRepairIfNeeded()
         }
-        LocationProvider.shared.start()
+        // v7.9.8：不再启动即开定位（原来这里 start → 前台全程 GPS，耗电主因）。
+        // 定位改为按需：只有 location 工具真正要坐标时才 start，拿到即停。
         // v2.9.10：网络与生命周期监控（切后台重连 / 网络恢复提示）
         AppLifecycleMonitor.shared.start()
         // fix3cy8：启动即清理残留 VPN 配置（上次异常退出/旧版关 VPN 没删配置 → 残留隧道路由

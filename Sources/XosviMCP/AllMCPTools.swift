@@ -518,6 +518,8 @@ final class LocationGetTool: MCPTool {
     let definition = ToolDefinition(name: "location.get", summary: "Get current GPS location (latitude/longitude). Use for: find where the phone is, location-based tasks. Don't use for: spoof fake location (use device.fake), get device info (use device.info). Example: user says 'where am I now' → get current location.")
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         let mgr = LocationProvider.shared
+        // v7.9.8：定位不再常驻，工具调用时才按需取一次（最多等 8 秒）
+        if !mgr.available { _ = mgr.awaitFix(timeout: 8) }
         return [
             "latitude": mgr.latitude ?? 0,
             "longitude": mgr.longitude ?? 0,
@@ -735,15 +737,46 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
     var longitude: Double?
     var available = false
 
+    /// v7.9.8：改成「按需单次」。
+    /// 原来 App 一启动就 startUpdatingLocation() 且从不 stop，精度还是 Best(GPS)，
+    /// 等于前台全程开着定位 —— iOS 上最耗电的行为之一。现在：
+    ///   - 只有真正要位置时才 start()
+    ///   - 拿到一次 fix 立刻 stop()
+    ///   - 兜底 10 秒自动停，避免拿不到时一直挂着
+    ///   - 精度降到百米级（天气/位置展示够用，省电）
+    private var autoStop: DispatchWorkItem?
+
     override init() {
         super.init()
         mgr.delegate = self
-        mgr.desiredAccuracy = kCLLocationAccuracyBest
+        mgr.desiredAccuracy = kCLLocationAccuracyHundredMeters
     }
 
     func start() {
+        guard CLLocationManager.locationServicesEnabled() else { return }
+        autoStop?.cancel()
         mgr.requestWhenInUseAuthorization()
         mgr.startUpdatingLocation()
+        let work = DispatchWorkItem { [weak self] in self?.stop() }
+        autoStop = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: work)
+    }
+
+    func stop() {
+        autoStop?.cancel()
+        autoStop = nil
+        mgr.stopUpdatingLocation()
+    }
+
+    /// 按需等待一次 fix（最多 timeout 秒），拿到就返回 true
+    private let fixSem = DispatchSemaphore(value: 0)
+
+    func awaitFix(timeout: TimeInterval = 8) -> Bool {
+        if available { return true }
+        start()
+        _ = fixSem.wait(timeout: .now() + timeout)
+        stop()
+        return available
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
@@ -751,7 +784,13 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
             latitude = loc.coordinate.latitude
             longitude = loc.coordinate.longitude
             available = true
+            fixSem.signal()
+            stop()   // 拿到就走
         }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        stop()
     }
 }
 
