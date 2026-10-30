@@ -93,7 +93,37 @@ final class UpdateManager: ObservableObject {
         isChecking = true
         errorMessage = nil
         lastSource = nil
-        checkViaGitHub(currentVersion: currentVersion, completion: completion)
+        // v7.16.5：先看滚动 Release 的标题（发布步骤用 RELEASE_VERSION 写进去，最准）。
+        // 仓库里的 Support/Info.plist 只是默认值（长期停在旧版本），拿它比对会永远「已是最新」。
+        checkViaReleaseAPI(currentVersion: currentVersion, completion: completion)
+    }
+
+    /// 源0：滚动 Release 标题（Xosvi latest (v6.6.31)）——带令牌时私有仓库也能读
+    private func checkViaReleaseAPI(currentVersion: String, completion: ((Bool) -> Void)?) {
+        guard let url = URL(string: "https://api.github.com/repos/\(repo)/releases/tags/latest") else {
+            checkViaGitHub(currentVersion: currentVersion, completion: completion)
+            return
+        }
+        perform(url, timeout: 20) { [weak self] data, status, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                guard status == 200, let data = data,
+                      let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                    self.checkViaGitHub(currentVersion: currentVersion, completion: completion)
+                    return
+                }
+                let title = (json["name"] as? String) ?? ""
+                let v = self.extractVersion(from: title)
+                if v != title, !v.isEmpty {
+                    // 下载走 release 资产，artifact 已不被这个源使用
+                    self.latestRunId = nil
+                    self.artifactDownloadURL = nil
+                    self.applyVersion(v, currentVersion: currentVersion, source: "Release", completion: completion)
+                } else {
+                    self.checkViaGitHub(currentVersion: currentVersion, completion: completion)
+                }
+            }
+        }
     }
 
     /// 源1：GitHub API（最准——只看最新成功构建）
