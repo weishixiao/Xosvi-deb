@@ -681,6 +681,7 @@ struct UpdateView: View {
                 }
             }
         }
+        .sheet(isPresented: $showMirrorEditor) {
             NavigationView {
                 Form {
                     Section(footer: Text("GitHub 被墙（国内常见）时，自动按顺序尝试这些镜像前缀来检查与下载更新。每行一个，用逗号分隔；留空恢复默认（ghfast.top、gh-proxy.com）。")) {
