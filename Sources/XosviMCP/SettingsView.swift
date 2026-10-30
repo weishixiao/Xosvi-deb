@@ -556,6 +556,10 @@ struct UpdateView: View {
     @ObservedObject private var updateManager = UpdateManager.shared
     @State private var showMirrorEditor = false
     @State private var mirrorsText = ""
+    @State private var showTokenEditor = false
+    @State private var tokenText = ""
+    @State private var tokenHint = ""
+    @State private var tokenRevision = 0
     
     private var currentVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
@@ -595,6 +599,35 @@ struct UpdateView: View {
                 }
             }
             
+            Section(header: Text("私有仓库令牌"),
+                    footer: Text("仓库是 private 时，GitHub Releases 直链和所有镜像都会 404，必须带令牌走 API 下载。\n令牌与「构建与注入」页的 Git 令牌共用（存 Keychain），只需要 repo 读权限（Fine-grained: Contents / Actions 只读）。环境变量 GITHUB_TOKEN / GH_TOKEN 也会被自动使用。")) {
+                Button(action: {
+                    tokenText = GitNative.token ?? ""
+                    tokenHint = ""
+                    showTokenEditor = true
+                }) {
+                    HStack {
+                        Image(systemName: "key.fill")
+                            .foregroundColor(.orange)
+                        Text("访问令牌")
+                        Spacer()
+                        Text(GitNative.token == nil ? "未设置" : "已设置")
+                            .foregroundColor(.secondary)
+                            .font(.caption)
+                    }
+                }
+                .id(tokenRevision)
+                if GitNative.token != nil {
+                    Button(action: {
+                        _ = KeychainStore.shared.delete("git.github.token")
+                        tokenRevision += 1
+                        updateManager.errorMessage = "已清除令牌（若配了环境变量仍会使用环境变量里的）"
+                    }) {
+                        Text("清除令牌").foregroundColor(.red)
+                    }
+                }
+            }
+
             Section(header: Text("高级设置"), footer: Text("GitHub 被墙（国内常见）时，自动按顺序尝试这些镜像前缀来检查与下载更新。每行一个，用逗号分隔；留空恢复默认（ghfast.top、gh-proxy.com）。")) {
                 Button(action: {
                     mirrorsText = UpdateManager.shared.mirrorsText
@@ -614,7 +647,40 @@ struct UpdateView: View {
         }
         .navigationTitle("检查更新")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(isPresented: $showMirrorEditor) {
+        .sheet(isPresented: $showTokenEditor) {
+            NavigationView {
+                Form {
+                    Section(header: Text("GitHub 访问令牌"),
+                            footer: Text("用于私有仓库的更新检查与下载（API 鉴权）。只需 repo 读权限：Fine-grained PAT → Contents: Read, Actions: Read；或 classic PAT 勾选 repo。保存在 Keychain，不会写进 UserDefaults。")) {
+                        SecureField("github_pat_… 或 ghp_…", text: $tokenText)
+                            .font(.system(.body, design: .monospaced))
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                    }
+                    if !tokenHint.isEmpty {
+                        Section { Text(tokenHint).font(.caption).foregroundColor(.secondary) }
+                    }
+                }
+                .navigationTitle("访问令牌")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("取消") { showTokenEditor = false }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("保存") {
+                            if GitNative.saveToken(tokenText) {
+                                tokenRevision += 1
+                                showTokenEditor = false
+                                updateManager.errorMessage = nil
+                            } else {
+                                tokenHint = "令牌太短（至少 11 个字符），请检查是否复制完整"
+                            }
+                        }
+                    }
+                }
+            }
+        }
             NavigationView {
                 Form {
                     Section(footer: Text("GitHub 被墙（国内常见）时，自动按顺序尝试这些镜像前缀来检查与下载更新。每行一个，用逗号分隔；留空恢复默认（ghfast.top、gh-proxy.com）。")) {

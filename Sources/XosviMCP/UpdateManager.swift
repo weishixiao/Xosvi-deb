@@ -57,12 +57,20 @@ final class UpdateManager: ObservableObject {
 
     private init() {}
 
-    /// 带 token（如已登录 GitHub 账号）的请求
+    /// v7.16.5：私有仓库必须带令牌。令牌统一由 GitNative 管理
+    /// （环境变量 GITHUB_TOKEN/GH_TOKEN/GIT_TOKEN/GITHUB_PAT 或 Keychain "git.github.token"）。
+    /// 公开仓库不配令牌时等同于匿名请求。
+    private var token: String? { GitNative.token }
+
+    /// 带 token（私有仓库）的请求
     private func authorizedRequest(_ url: URL) -> URLRequest {
         var request = URLRequest(url: url)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        // v7.6.5：GitHub 账号功能已移除，更新检查走匿名请求（API 限流 60/小时，够用）
+        request.setValue("Xosvi-Updater", forHTTPHeaderField: "User-Agent")
+        if let tk = token {
+            request.setValue("Bearer \(tk)", forHTTPHeaderField: "Authorization")
+        }
         return request
     }
 
@@ -226,13 +234,19 @@ final class UpdateManager: ObservableObject {
 
     private func finishCheckFail(completion: ((Bool) -> Void)?) {
         isChecking = false
-        errorMessage = "检查更新失败：GitHub 与备用源均不可达（可能被墙）。可在「更新镜像源」里配置可用镜像。"
+        errorMessage = "检查更新失败：GitHub 与备用源均不可达（可能被墙）。私有仓库请在下方填访问令牌；也可在「更新镜像源」里配置可用镜像。"
         completion?(false)
     }
 
     /// 从 GitHub 最新构建 commit 的 Support/Info.plist 读版本号（v4.3.29 起；artifact 名无版本号）
     private func fetchVersionAtSHA(_ sha: String, title: String, currentVersion: String,
                                    source: String, completion: ((Bool) -> Void)?) {
+        // v7.16.5：私有仓库读 raw.githubusercontent.com 一定 404 —— 改用 contents API（base64）
+        if token != nil, !sha.isEmpty {
+            fetchVersionViaContentsAPI(sha, title: title, currentVersion: currentVersion,
+                                       source: source, completion: completion)
+            return
+        }
         guard !sha.isEmpty, let url = URL(string: "https://raw.githubusercontent.com/\(repo)/\(sha)/Support/Info.plist") else {
             let v = extractVersion(from: title)
             if v == title {
@@ -250,6 +264,38 @@ final class UpdateManager: ObservableObject {
                 } else {
                     // raw 不可达 → 换源链继续
                     self.checkViaJsDelivr(currentVersion: currentVersion, completion: completion)
+                }
+            }
+        }
+    }
+
+    /// v7.16.5：私有仓库用 contents API 取 Info.plist（raw.githubusercontent.com 对私有仓库 404）
+    private func fetchVersionViaContentsAPI(_ sha: String, title: String, currentVersion: String,
+                                            source: String, completion: ((Bool) -> Void)?) {
+        guard let url = URL(string: "https://api.github.com/repos/\(repo)/contents/Support/Info.plist?ref=\(sha)") else {
+            checkViaJsDelivr(currentVersion: currentVersion, completion: completion)
+            return
+        }
+        perform(url, timeout: 20) { [weak self] data, status, _ in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                var version: String?
+                if status == 200, let data = data,
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let b64 = json["content"] as? String,
+                   let raw = Data(base64Encoded: b64.filter { !$0.isWhitespace }) {
+                    version = self.parseVersion(from: raw)
+                }
+                if let v = version {
+                    self.applyVersion(v, currentVersion: currentVersion, source: source, completion: completion)
+                    return
+                }
+                // 回退：run 标题里的 vX.Y.Z
+                let v = self.extractVersion(from: title)
+                if v == title {
+                    self.checkViaJsDelivr(currentVersion: currentVersion, completion: completion)
+                } else {
+                    self.applyVersion(v, currentVersion: currentVersion, source: source, completion: completion)
                 }
             }
         }
@@ -331,13 +377,71 @@ final class UpdateManager: ObservableObject {
             if let art = artifactDownloadURL { attempts.append((m + art, true)) }
             attempts.append((m + releaseURL, false))
         }
-        attemptDownload(attempts, index: 0, version: version)
+        // v7.16.5：私有仓库上 web 直链和所有镜像都是 404（匿名无权限），必须走 API 资产端点。
+        if token != nil {
+            downloadViaAPI(version: version) { [weak self] in
+                self?.attemptDownload(attempts, index: 0, version: version)
+            }
+        } else {
+            attemptDownload(attempts, index: 0, version: version)
+        }
+    }
+
+    /// v7.16.5：私有仓库下载链——/releases/tags/latest 找资产 → /releases/assets/{id}（Accept: octet-stream）
+    /// 失败则回调 fallback，让公开多源链继续试。
+    private func downloadViaAPI(version: String, fallback: @escaping () -> Void) {
+        guard let relURL = URL(string: "https://api.github.com/repos/\(repo)/releases/tags/latest") else {
+            DispatchQueue.main.async { fallback() }
+            return
+        }
+        perform(relURL, timeout: 20) { [weak self] data, status, _ in
+            guard let self = self else { return }
+            guard status == 200, let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let assets = json["assets"] as? [[String: Any]],
+                  let asset = assets.first(where: { ($0["name"] as? String) == "Xosvi.tipa" }),
+                  let id = asset["id"] as? Int,
+                  let url = URL(string: "https://api.github.com/repos/\(self.repo)/releases/assets/\(id)") else {
+                DispatchQueue.main.async { fallback() }
+                return
+            }
+            var req = self.authorizedRequest(url)
+            req.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
+            self.startDownload(req, isArtifact: false, version: version) { ok in
+                if !ok { DispatchQueue.main.async { fallback() } }
+            }
+        }
+    }
+
+    /// 真正发起的单次下载（私有/公开共用；跨域重定向由 TokenSession 处理）
+    private func startDownload(_ request: URLRequest, isArtifact: Bool, version: String,
+                               done: @escaping (Bool) -> Void) {
+        var req = request
+        if req.timeoutInterval < 30 { req.timeoutInterval = 60 }
+        let task = TokenSession.shared.session.downloadTask(with: req) { [weak self] tempURL, resp, error in
+            guard let self = self else { done(false); return }
+            let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            guard error == nil, status == 200, let tempURL = tempURL else {
+                done(false)
+                return
+            }
+            // v4.3.38: 解压+安装挪后台线程——之前整个 processDownloaded (含同步阻塞等待安装, 最长240s)
+            // 跑在 DispatchQueue.main.async 里, 主线程无响应超过 iOS watchdog 阈值会被系统杀进程 (表现为"检查更新闪退")。
+            DispatchQueue.global(qos: .userInitiated).async {
+                let ok = self.processDownloaded(tempURL, isArtifact: isArtifact, version: version)
+                done(ok)
+            }
+        }
+        progressObserver = task.progress.observe(\.fractionCompleted) { [weak self] p, _ in
+            DispatchQueue.main.async { self?.downloadProgress = p.fractionCompleted }
+        }
+        task.resume()
     }
 
     private func attemptDownload(_ attempts: [(url: String, isArtifact: Bool)], index: Int, version: String) {
         guard index < attempts.count else {
             isDownloading = false
-            errorMessage = "所有下载源都失败了（GitHub 可能被墙，可在「更新镜像源」配置可用镜像）"
+            errorMessage = "所有下载源都失败了（GitHub 可能被墙；私有仓库需在「检查更新」里填访问令牌，可在「更新镜像源」配置可用镜像）"
             return
         }
         let attempt = attempts[index]
@@ -345,32 +449,14 @@ final class UpdateManager: ObservableObject {
             attemptDownload(attempts, index: index + 1, version: version)
             return
         }
-        var req = URLRequest(url: url)
-        req.timeoutInterval = 30
-        let task = URLSession.shared.downloadTask(with: req) { [weak self] tempURL, resp, error in
+        startDownload(authorizedRequest(url), isArtifact: attempt.isArtifact, version: version) { [weak self] ok in
             guard let self = self else { return }
-            let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            if error != nil || status != 200 || tempURL == nil {
+            if !ok {
                 DispatchQueue.main.async {
                     self.attemptDownload(attempts, index: index + 1, version: version)
                 }
-                return
-            }
-            // v4.3.38: 解压+安装挪后台线程——之前整个 processDownloaded (含同步阻塞等待安装, 最长240s)
-            // 跑在 DispatchQueue.main.async 里, 主线程无响应超过 iOS watchdog 阈值会被系统杀进程 (表现为"检查更新闪退")。
-            DispatchQueue.global(qos: .userInitiated).async {
-                let ok = self.processDownloaded(tempURL!, isArtifact: attempt.isArtifact, version: version)
-                if !ok {
-                    DispatchQueue.main.async {
-                        self.attemptDownload(attempts, index: index + 1, version: version)
-                    }
-                }
             }
         }
-        progressObserver = task.progress.observe(\.fractionCompleted) { [weak self] p, _ in
-            DispatchQueue.main.async { self?.downloadProgress = p.fractionCompleted }
-        }
-        task.resume()
     }
 
     /// 处理下载结果：artifact zip → 解压出 Xosvi.tipa；Release 资产 → tipa 本体。
@@ -453,5 +539,29 @@ final class UpdateManager: ObservableObject {
                 }
             }
         }
+    }
+}
+
+// MARK: - v7.16.5 私有仓库下载会话
+
+/// GitHub 对私有仓库的资产/artifact 请求会 302 到签名 URL（objects.githubusercontent.com / S3），
+/// 跨域重定向还带着 Authorization 会被拒绝（S3: "Only one auth mechanism allowed"）。
+/// 这里在重定向时手动丢掉 Authorization，其余请求原样透传。
+final class TokenSession: NSObject, URLSessionTaskDelegate {
+    static let shared = TokenSession()
+
+    lazy var session: URLSession = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        var req = request
+        if let from = task.originalRequest?.url?.host,
+           let to = request.url?.host,
+           from != to {
+            req.setValue(nil, forHTTPHeaderField: "Authorization")
+        }
+        completionHandler(req)
     }
 }
