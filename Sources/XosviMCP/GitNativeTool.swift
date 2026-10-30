@@ -282,6 +282,6 @@ final class GitNativeTool: MCPTool {
         }
         throw MCPError.invalidParams(
             "还没有可用的本地仓库。先建一个：git command:clone repo:owner/name "
-            + "（已有仓库但不在 Workspace 下时，传 path:"/绝对路径"）")
+            + "（已有仓库但不在 Workspace 下时，传 path:\"/绝对路径\"）")
     }
 }
