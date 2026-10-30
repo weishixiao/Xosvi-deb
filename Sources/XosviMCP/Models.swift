@@ -911,6 +911,8 @@ final class ConversationStore: ObservableObject {
         cancelNetworkRetry()
         currentClient?.cancel()
         currentClient = nil
+        // v7.9.9：清掉流式目标——旧流即使还有回调，也不会再往那条气泡里写
+        streamingMessageId = nil
         isLoading = false
         statusText = nil
         // v2.9.82：回收后台任务
@@ -995,6 +997,13 @@ final class ConversationStore: ObservableObject {
             BackgroundRunManager.shared.start(conversation: snapshot, config: config,
                                               reasoningLevel: reasoningLevel, smartSearch: smartSearch)
             return
+        }
+        // v7.9.9：同一会话里上一轮还在回复就再发一条 → 先把旧请求停掉。
+        // 否则两条流会同时往同一个 messages 数组里写：旧回复继续更新它自己那条
+        // （位置在用户新消息之前），等它写完，界面上就变成「我发的消息跑到 AI 回复下面」。
+        if !isBackgroundWorker, isLoading,
+           (activeConvId ?? requestSessionId) == (convId ?? selectedId) {
+            cancelCurrent()
         }
         // v2.9.97：记住最近使用的模型，顶栏/下次启动立即恢复
         ModelStore.shared.markUsed(config.id.uuidString)
