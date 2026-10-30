@@ -957,6 +957,10 @@ public final class ToolRegistry: ObservableObject {
         // v2.9.31：去掉授权弹窗。放行 = 策略启用 (isEnabled）或会话已授权。
         // 未加载/未启用工具直接返回错误，提示 AI 换用已加载工具，而不是弹窗打扰用户。
         let originalName = t.definition.name
+        // v7.9.7：黑匣子——执行前先落盘工具名/参数。闪退时文件会停在 phase=start，
+        // 下次启动 `diagnose lasttool` 就能知道是哪条调用把 App 带走的。
+        ToolBlackBox.mark(tool: originalName, params: params, phase: "start")
+        defer { ToolBlackBox.mark(tool: originalName, params: params, phase: "done") }
         // v2.9.34：放行 = 策略启用 或 会话已授权 或 常驻核心工具。
         // 修复 bug：coreToolNames 里的工具 (如 artifact.find）schema 已发给模型，
         // 但 defaultEnabledTools 未收录时 isEnabled 返回 false → 报"未加载"。

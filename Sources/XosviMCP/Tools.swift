@@ -545,9 +545,9 @@ final class ContainerExecTool: MCPTool {
 final class DiagnoseExecTool: MCPTool {
     let definition = ToolDefinition(
         name: "diagnose",
-        summary: "Diagnose app/injection/environment issues. Subcommands: startup (app won't launch) / injection (inject failure) / spawn (bundled binaries fail with Bad executable) / toolchain (bundled tools signature self-check and self-sign) / rootchain (full root privilege chain - spawnRoot/persona/setuid/entitlements, for iOS 17+ ENOSYS/85 failures). Use for: diagnose why app won't launch, why injection failed, why root operations fail. Don't use for: fix issues (use inject.*), restart app (use app restart). Example: startup → diagnose startup bundle_id:com.xxx; injection → diagnose injection bundle_id:com.xxx; rootchain → diagnose rootchain (no params).",
+        summary: "Diagnose app/injection/environment issues. Subcommands: startup (app won't launch) / injection (inject failure) / spawn (bundled binaries fail with Bad executable) / toolchain (bundled tools signature self-check and self-sign) / lasttool (which tool ran before the last crash) / rootchain (full root privilege chain - spawnRoot/persona/setuid/entitlements, for iOS 17+ ENOSYS/85 failures). Use for: diagnose why app won't launch, why injection failed, why root operations fail. Don't use for: fix issues (use inject.*), restart app (use app restart). Example: startup → diagnose startup bundle_id:com.xxx; injection → diagnose injection bundle_id:com.xxx; rootchain → diagnose rootchain (no params).",
         parameters: [
-            "command": "Subcommand: startup / injection / spawn / toolchain / rootchain",
+            "command": "Subcommand: startup / injection / spawn / toolchain / lasttool / rootchain",
             "repair": "toolchain only: true = try re-signing bundled binaries with the bundled ldid",
             "bundle_id": "App bundle ID (required for startup/injection; ignore for rootchain)"
         ],
@@ -577,6 +577,18 @@ final class DiagnoseExecTool: MCPTool {
             // v6.6.13：内置二进制（python3/r2/bsdtar…）为什么起不来。
             // 全部在进程内完成——即使所有 spawn 都失败，这个诊断仍能跑。
             return SpawnDiag.run()
+
+        case "lasttool":
+            // v7.9.7：上一次工具调用（闪退排查用）——phase=start 说明那条没跑完
+            var out: [String: Any] = ["ok": true]
+            if let last = ToolBlackBox.read() {
+                out["last"] = last
+                out["suspected_crash"] = (last["phase"] as? String) == "start"
+            } else {
+                out["last"] = NSNull()
+                out["hint"] = "还没有记录（黑匣子从这一版开始记）"
+            }
+            return out
 
         case "toolchain":
             // v7.7.0：内置工具链自检 + 自签（errno 85 排查）
