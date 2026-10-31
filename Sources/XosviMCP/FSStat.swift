@@ -51,16 +51,10 @@ enum FSStat {
                     device: UInt64(st.st_dev))
     }
 
-    /// 跟随符号链接
+    /// 跟随符号链接（先解链再 lstat，避开 Swift 里 `stat` 与同名 struct 的解析歧义）
     static func stat(_ path: String) -> Info? {
-        var st = Darwin.stat()
-        let rc = path.withCString { Darwin.stat($0, &st) }
-        guard rc == 0 else { return nil }
-        return Info(path: path,
-                    uid: st.st_uid, gid: st.st_gid, mode: st.st_mode,
-                    size: Int64(st.st_size),
-                    inode: UInt64(st.st_ino),
-                    device: UInt64(st.st_dev))
+        let real = resolveSymlinks(path)
+        return lstat(real)
     }
 
     /// 文件是否真的可执行（用 access(2)，走真实 VFS，不走 NSFileManager 的容器视图）
