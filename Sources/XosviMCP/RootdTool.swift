@@ -2,15 +2,14 @@ import Foundation
 import Darwin
 
 /// v7.16.6：rootd 桥——给 AI 一条**真正可用的 root 通道**。
+/// v7.16.8：真机上 App（mobile/沙箱视图）看不到 `/var/mobile/Library/Rootd`，
+/// 导致 status 报 installed:false。改成：
+///   · 多目录候选（含 App 一定能读写的 Documents 侧），逐个做**真实写入探针**而不是只查 isWritableFile
+///   · daemon 存活按「任一目录的 rootd.pid」判断（pid 只在主目录）
+///   · 探针失败时把 errno 原样报出来，别再用"视图不一致"这种猜测
 ///
-/// 历史问题（2026-10-31 真机 23 小时会话）：setuid helper 早就 root:wheel 了，
-/// 但 `shell.exec` 的白名单挡着绝对路径 / 裸名，AI 根本调不起来；LaunchDaemon 也一直没装成。
-/// 与其在 App 里开一个"任意二进制执行"的口子（等于把 root 权限直接交给模型输出，
-/// 还要重新签名重装），不如复用 deb 装的 rootd：
-///   · `/var/mobile/Library/Rootd/.cmd`    写入一段脚本
-///   · `/var/mobile/Library/Rootd/.out`    读结果
-///   · `/var/mobile/Library/Rootd/.status` IDLE / RUNNING / DONE rc=N
-/// 权限完全在系统侧（deb + launchd），App 侧不新增任何特权代码。
+/// 通道协议（rootd v1.3.2 同时服务三个目录）：
+///   写 `<dir>/.cmd` → rootd 执行 → `<dir>/.out` / `<dir>/.status`（IDLE / RUNNING / DONE rc=N）
 final class RootdTool: MCPTool {
     let definition = ToolDefinition(
         name: "root",
@@ -24,15 +23,18 @@ final class RootdTool: MCPTool {
             "stdout": "命令输出（exec）",
             "exit_code": "退出码（exec）",
             "status": "daemon 状态：IDLE / RUNNING / DONE rc=N",
-            "dirs": "各候选目录的可用性（status / probe）",
+            "dirs": "各候选目录的可用性 + 写入探针错误码（status / probe）",
             "diagnosis": "失败时的现场诊断"
         ],
         verified: false, category: "shell",
-        prerequisites: ["需要先安装 newterm-autoroot deb（含 rootd LaunchDaemon）；status 返回 daemon_alive:false 时先让用户在终端跑 sh /var/mobile/.newterm-autoroot/selfcheck.sh"])
+        prerequisites: ["需要先安装 newterm-autoroot deb（≥1.3.2，含 rootd LaunchDaemon）；status 返回 daemon_alive:false 时让用户在终端跑 sh /var/mobile/.newterm-autoroot/selfcheck.sh"])
 
-    /// 主目录 + roothide/rootfs 别名（同一份文件在不同进程视图里可能挂在不同路径）
+    /// 候选目录，**App 侧可写的排前面**。
+    /// v7.16.8：Library 在真机上对 App 不可见（写入探针会报 ENOENT/EACCES），Documents 侧才是通的。
     static let candidateDirs = [
+        "/var/mobile/Documents/Rootd",
         "/var/mobile/Library/Rootd",
+        "/var/mobile/Documents/Workspace",
         "/rootfs/var/mobile/Library/Rootd"
     ]
 
@@ -61,25 +63,45 @@ final class RootdTool: MCPTool {
     private struct DirState {
         let path: String
         let exists: Bool
-        let writable: Bool
+        let writeError: String?      // nil = 真写进去了
         let status: String
-        let daemonAlive: Bool
 
-        /// 目录可写且守护进程活着 —— 才能真正投递命令
-        var usable: Bool { exists && writable && daemonAlive }
+        var writable: Bool { writeError == nil }
+    }
+
+    /// 真实写入探针：能不能在这个目录里建文件。比 isWritableFile 可信——
+    /// 后者在容器重定向/roothide 下会照着容器注册表撒谎。
+    private func writeProbe(_ dir: String) -> String? {
+        let name = ".probe-\(getpid())-\(Int(Date().timeIntervalSince1970))"
+        let path = dir + "/" + name
+        errno = 0
+        let fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0o644)
+        if fd >= 0 {
+            close(fd)
+            unlink(path)
+            return nil
+        }
+        let code = errno
+        return "errno=\(code) \(String(cString: strerror(code)))"
     }
 
     private func dirState(_ dir: String) -> DirState {
         let exists = fm.fileExists(atPath: dir) || FSStat.exists(dir)
-        let writable = exists && fm.isWritableFile(atPath: dir)
+        let werr = exists ? writeProbe(dir) : "目录不存在"
         let status = (try? String(contentsOfFile: dir + "/.status", encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        var alive = false
-        if let raw = try? String(contentsOfFile: dir + "/rootd.pid", encoding: .utf8),
-           let pid = pid_t(raw.trimmingCharacters(in: .whitespacesAndNewlines)) {
-            alive = kill(pid, 0) == 0
+        return DirState(path: dir, exists: exists, writeError: werr, status: status)
+    }
+
+    /// daemon 存活：pid 文件只在主目录，任一候选目录里有且进程活着就算活着
+    private func daemonPID() -> pid_t? {
+        for d in Self.candidateDirs {
+            guard let raw = try? String(contentsOfFile: d + "/rootd.pid", encoding: .utf8),
+                  let pid = pid_t(raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  pid > 0, kill(pid, 0) == 0 else { continue }
+            return pid
         }
-        return DirState(path: dir, exists: exists, writable: writable, status: status, daemonAlive: alive)
+        return nil
     }
 
     private func usableDirs() -> [DirState] {
@@ -90,61 +112,59 @@ final class RootdTool: MCPTool {
 
     private func statusReport() -> [String: Any] {
         let states = Self.candidateDirs.map(dirState)
+        let pid = daemonPID()
         let dirs: [[String: Any]] = states.map {
-            ["path": $0.path, "exists": $0.exists, "writable": $0.writable,
-             "status": $0.status, "daemon_alive": $0.daemonAlive]
+            var m: [String: Any] = ["path": $0.path, "exists": $0.exists,
+                                    "writable": $0.writable, "status": $0.status]
+            if let e = $0.writeError { m["write_error"] = e }
+            return m
         }
-        let alive = states.contains { $0.daemonAlive }
         var out: [String: Any] = [
             "installed": states.contains { $0.exists },
-            "daemon_alive": alive,
+            "daemon_alive": pid != nil,
+            "daemon_pid": pid.map { Int($0) } ?? 0,
             "dirs": dirs,
             "jb_kind": JBEnvironment.kind.rawValue,
             "jbroot": JBEnvironment.jbrootPath ?? "",
             "rootfs": JBEnvironment.rootfsPrefix.isEmpty ? "无" : JBEnvironment.rootfsPrefix
         ]
         if !states.contains(where: { $0.exists }) {
-            out["hint"] = "rootd 未安装：宿主需安装 newterm-autoroot deb（或手动跑 /var/mobile/.newterm-autoroot/selfcheck.sh 排查）"
-        } else if !alive {
-            out["hint"] = "目录在但守护进程没跑：让用户在终端执行 sh /var/mobile/.newterm-autoroot/selfcheck.sh，或 launchctl kickstart -k system/com.xosvi.rootd"
+            out["hint"] = "rootd 未安装，或 App 完全看不到候选目录（看 dirs[].write_error）：安装 newterm-autoroot ≥1.3.2"
+        } else if pid == nil {
+            out["hint"] = "目录在但守护进程没跑：让用户执行 sh /var/mobile/.newterm-autoroot/selfcheck.sh 或 launchctl kickstart -k system/com.xosvi.rootd"
         } else if !states.contains(where: { $0.writable }) {
-            out["hint"] = "目录存在但不可写（应为 root:wheel + 1777）：让用户 chmod 1777 /var/mobile/Library/Rootd"
+            out["hint"] = "daemon 活着但所有目录都写不进去：让用户 chmod 1777 对应目录（deb ≥1.3.2 会自动建 /var/mobile/Documents/Rootd）"
         }
         return out
     }
 
-    /// 探针：向每个可写目录写一条 `id -u`，看哪个真能被 rootd 执行
     private func probe() -> [String: Any] {
         var results: [[String: Any]] = []
+        var working = false
         for dir in Self.candidateDirs {
-            let st = dirState(dir)
-            guard st.exists, st.writable else {
-                results.append(["dir": dir, "skipped": "不可用"])
-                continue
-            }
-            guard st.daemonAlive else {
-                results.append(["dir": dir, "skipped": "daemon 未运行"])
-                continue
-            }
             var r: [String: Any] = ["dir": dir]
+            let st = dirState(dir)
+            r["exists"] = st.exists
+            if let e = st.writeError { r["write_error"] = e }
+            guard st.writable else { results.append(r); continue }
             do {
                 let res = try run("id -u", timeout: 8, forceDir: dir)
                 r["uid"] = res["stdout"] ?? ""
-                r["ok"] = res["completed"] ?? false
+                r["completed"] = res["completed"] ?? false
+                if let s = res["stdout"] as? String, s.contains("0") { working = true }
             } catch {
                 r["error"] = "\(error)"
             }
             results.append(r)
         }
-        let ok = results.contains { ($0["uid"] as? String)?.contains("0") == true }
-        return ["working": ok, "results": results,
-                "hint": ok ? "root 通道可用" : "所有目录都拿不到 uid=0：多半是 App 沙箱视图与 root 视图不一致，见 results 里的 completed/error"]
+        return ["working": working, "results": results,
+                "hint": working ? "root 通道可用" : "没有目录能拿到 uid=0：看 results 里每个目录的 write_error / completed"]
     }
 
     private func setDisabled(_ disabled: Bool) -> [String: Any] {
         let dirs = usableDirs()
         guard !dirs.isEmpty else {
-            return ["ok": false, "error": "找不到可写的 Rootd 目录（rootd 未安装？）"]
+            return ["ok": false, "error": "找不到可写的 Rootd 目录（rootd 未安装？）", "diagnosis": statusReport()]
         }
         var done: [String] = []
         for d in dirs {
@@ -162,11 +182,17 @@ final class RootdTool: MCPTool {
     // MARK: - 执行
 
     private func run(_ script: String, timeout: Double, forceDir: String? = nil) throws -> [String: Any] {
-        let candidates = forceDir.map { [dirState($0)] } ?? usableDirs()
-        guard let dir = candidates.first(where: { $0.usable }) else {
+        let target: DirState?
+        if let fd = forceDir {
+            let st = dirState(fd)
+            target = (st.exists && st.writable) ? st : nil
+        } else {
+            target = usableDirs().first
+        }
+        guard let dir = target, daemonPID() != nil else {
             return ["completed": false, "error": "no_writable_dir",
                     "diagnosis": statusReport(),
-                    "hint": "rootd 未安装或目录不可写；先让用户安装 newterm-autoroot deb"]
+                    "hint": "rootd 未安装 / 未运行 / 候选目录都写不进去；先看 diagnosis.dirs[].write_error"]
         }
         let base = dir.path
         let cmdPath = base + "/.cmd"
@@ -178,14 +204,13 @@ final class RootdTool: MCPTool {
         do {
             try script.write(toFile: tmp, atomically: false, encoding: .utf8)
             if rename(tmp, cmdPath) != 0 {
-                // 跨视图 rename 可能失败，退回原地写
                 try? fm.removeItem(atPath: tmp)
                 try script.write(toFile: cmdPath, atomically: true, encoding: .utf8)
             }
         } catch {
             return ["completed": false, "error": "write_failed", "dir": base,
                     "detail": "\(error)",
-                    "hint": "App 写不进 \(base)；可试 /rootfs 别名或让用户 chmod 1777"]
+                    "diagnosis": statusReport()]
         }
 
         let deadline = Date().addingTimeInterval(timeout)
@@ -196,7 +221,7 @@ final class RootdTool: MCPTool {
             if status.hasPrefix("DONE") { break }
             if status == "DISABLED" {
                 return ["completed": false, "error": "disabled", "dir": base,
-                        "hint": "rootd 处于 disabled 状态：root command:enable 或 rm \(base)/disabled"]
+                        "hint": "rootd 处于 disabled 状态：root command:enable 或删掉 disabled 文件"]
             }
             Thread.sleep(forTimeInterval: 0.3)
         }
@@ -206,9 +231,9 @@ final class RootdTool: MCPTool {
             return ["completed": false, "status": status, "dir": base,
                     "cmd_consumed": !stillPending,
                     "diagnosis": stillPending
-                        ? "命令没被取走：App 写的 .cmd 与 rootd 看到的不是同一路径（沙箱/roothide 视图隔离），或 daemon 已死"
-                        : "命令被取走了但没有 DONE 状态：daemon 可能在执行中超时（默认 \(Int(timeout))s）",
-                    "hint": "试 root command:probe 看哪个目录真能用；或让用户在终端执行 selfcheck.sh"]
+                        ? "命令没被取走：daemon 没在看这个目录（deb 版本太旧？1.3.2 起才会轮询 Documents/Rootd）"
+                        : "命令被取走了但没等到 DONE：可能在执行中超时（默认 \(Int(timeout))s）",
+                    "hint": "root command:probe 看哪个目录通"]
         }
 
         let out = (try? String(contentsOfFile: outPath, encoding: .utf8)) ?? ""
