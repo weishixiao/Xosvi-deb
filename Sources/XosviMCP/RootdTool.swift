@@ -31,12 +31,20 @@ final class RootdTool: MCPTool {
 
     /// 候选目录，**App 侧可写的排前面**。
     /// v7.16.8：Library 在真机上对 App 不可见（写入探针会报 ENOENT/EACCES），Documents 侧才是通的。
-    static let candidateDirs = [
-        "/var/mobile/Documents/Rootd",
-        "/var/mobile/Library/Rootd",
-        "/var/mobile/Documents/Workspace",
-        "/rootfs/var/mobile/Library/Rootd"
-    ]
+    static let candidateDirs: [String] = {
+        // v7.16.10：App 自己的沙箱 Documents 才是它**一定能写**的地方。
+        // 现场：App 能看到 /var/mobile/Documents/Workspace（可能是容器映射），
+        // 却看不到 /var/mobile/Library/Rootd；于是把 NSHomeDirectory() 也加进候选，
+        // rootd 1.3.3 起会 glob 每个 App 容器的 Documents/Rootd。
+        var dirs: [String] = []
+        let home = NSHomeDirectory()
+        dirs.append(home + "/Documents/Rootd")
+        dirs.append("/var/mobile/Documents/Rootd")
+        dirs.append("/var/mobile/Library/Rootd")
+        dirs.append("/var/mobile/Documents/Workspace")
+        dirs.append("/rootfs/var/mobile/Library/Rootd")
+        return dirs
+    }()
 
     private var fm: FileManager { FileManager.default }
 
@@ -90,6 +98,9 @@ final class RootdTool: MCPTool {
     }
 
     private func dirState(_ dir: String) -> DirState {
+        if !(fm.fileExists(atPath: dir) || FSStat.exists(dir)), dir.hasPrefix(NSHomeDirectory()) {
+            try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        }
         let exists = fm.fileExists(atPath: dir) || FSStat.exists(dir)
         let werr = exists ? writeProbe(dir) : "目录不存在"
         let status = (try? String(contentsOfFile: dir + "/.status", encoding: .utf8))?
@@ -141,6 +152,7 @@ final class RootdTool: MCPTool {
             "daemon_alive": pid != nil,
             "daemon_pid": pid.map { Int($0) } ?? 0,
             "dirs": dirs,
+            "app_home": NSHomeDirectory(),
             "jb_kind": JBEnvironment.kind.rawValue,
             "jbroot": JBEnvironment.jbrootPath ?? "",
             "rootfs": JBEnvironment.rootfsPrefix.isEmpty ? "无" : JBEnvironment.rootfsPrefix
@@ -207,6 +219,9 @@ final class RootdTool: MCPTool {
             target = (st.exists && st.writable) ? st : nil
         } else {
             target = usableDirs().first
+        }
+        if let d = target?.path, d.hasPrefix(NSHomeDirectory()) {
+            try? fm.createDirectory(atPath: d, withIntermediateDirectories: true)
         }
         guard let dir = target, daemonPID() != nil else {
             return ["completed": false, "error": "no_writable_dir",
