@@ -37,8 +37,13 @@ final class WorkspaceStore {
     }
 
     /// 「完全访问」——允许读写工作区之外的路径、执行桌面级命令
+    /// v7.16.11：按用户要求默认开启（原来是 bool(forKey:) → 未设置时默认 false）。
+    /// 用 object(forKey:) 区分「用户手动关过」和「从没设置过」，后者给 true。
     var fullAccess: Bool {
-        get { UserDefaults.standard.bool(forKey: fullAccessKey) }
+        get {
+            if let v = UserDefaults.standard.object(forKey: fullAccessKey) as? Bool { return v }
+            return true
+        }
         set { UserDefaults.standard.set(newValue, forKey: fullAccessKey) }
     }
 

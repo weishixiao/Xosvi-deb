@@ -40,9 +40,6 @@ struct SettingsView: View {
     // v4.3.30：更新镜像源编辑器
     @State private var showMirrorEditor = false
     @State private var mirrorsText = ""
-    // v6.2.1：重置所有数据确认弹窗
-    @State private var showResetAlert = false
-
     var body: some View {
         // v2.9.247：GeometryReader 拿真实全屏尺寸——fullScreenCover+NavigationStack 组合下 List 高度被解析为内容高度(内容不满一屏时列表只占上半屏、下半空白),外层 frame 也无效;改用几何尺寸显式强制 List 与 NavigationStack 铺满全屏,所有机型一致
         GeometryReader { geo in
@@ -174,10 +171,9 @@ struct SettingsView: View {
                              subtitle: "伪装机型 · 注入生效",
                              icon: "iphone.gen3.radiowaves.left.and.right", color: .pink,
                              destination: AnyView(FakeDeviceView())),
-                SettingsItem(title: L10n.t("row_tool_policy"),
-                             subtitle: "工具权限 · 系统权限 · 自动化",
-                             icon: "lock.shield.fill", color: .green,
-                             destination: AnyView(ToolPermissionPoliciesView())),
+                // v7.16.11：按用户要求删除「工具权限」入口。
+                // 实测它只是工具清单展示（开关早已移除，isEnabled 由白名单决定），
+                // 对用户没有任何可操作项，属纯信息噪音。
                 SettingsItem(title: L10n.t("row_transcripts"),
                              subtitle: "完整对话存档",
                              icon: "text.book.closed.fill", color: .tmBrown,
@@ -186,11 +182,7 @@ struct SettingsView: View {
                              subtitle: "SSH 连接远程服务器 · 远程终端被控制",
                              icon: "terminal.fill", color: .teal,
                              destination: AnyView(RemoteAccessView())),
-                // v7.14.0：jb-p1lot——越狱设备直控桥（宿主二进制 / 配对 / 发现）
-                SettingsItem(title: "构建与注入",
-                             subtitle: "jb-p1lot · 越狱设备配对 · tweak 闭环",
-                             icon: "point.3.connected.trianglepath.dotted", color: .gray,
-                             destination: AnyView(JBPlotSettingsView())),
+                // v7.16.11：按用户要求删除「构建与注入」入口（JBPlotSettingsView 一并删除）
                 // v7.5.0：内置浏览器已删除；改为「联网搜索」（多服务商 + 全文读取）
                 SettingsItem(title: "联网搜索",
                              subtitle: "服务商 / API Key / 自动读全文",
@@ -233,17 +225,9 @@ struct SettingsView: View {
                          subtitle: "工具调用 · 成功/失败 · 导出给 AI 查看",
                          icon: "list.bullet.rectangle", color: .tmIndigo,
                          destination: AnyView(AuditLogView())),
-            // v7.3.0：Alpine/iSH 引擎整体移除，「引擎开关」这一项也一并删除
-            // v7.3.0：本项已从设置里删除——该行为恒为开启（见 SearchAlwaysOn 同款的做法），
-            // 由 AI 自行判断何时需要引擎，用户无需干预。
-            SettingsItem(title: "重置所有数据",
-                         subtitle: "清空配置 · 会话 · 工作区 · Keychain（恢复到全新安装）",
-                         icon: "arrow.counterclockwise.circle.fill", color: .red,
-                         action: { showResetAlert = true }),
-            SettingsItem(title: L10n.t("row_workspace"),
-                         subtitle: "点开浏览目录 · 预览 · 复制路径 · 分享",
-                         icon: "folder", color: .blue,
-                         destination: AnyView(WorkspaceBrowserView())),
+            // v7.16.11：按用户要求删除「重置所有数据」入口（含 resetAllData 实现）。
+            // 卸载即清空数据已由 AppDelegate 的「首装检测」接管，不再需要手动重置。
+            // v7.16.11：按用户要求删除「工作区文件」入口（WorkspaceBrowserView 已从设置移除）。
             // v7.4.1：清理中心（含系统清理 / App 清理）整块删除（用户要求）
             // v6.9.15：Coruna 安全盾 / Web 注入已按用户要求删除
         ]))
@@ -251,10 +235,7 @@ struct SettingsView: View {
         // 关于
         let ver = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
         var aboutItems: [SettingsItem] = [
-            SettingsItem(title: L10n.t("about_title"),
-                         subtitle: "开源致谢 · 安全说明 · 免责声明",
-                         icon: "person.crop.circle.fill", color: .blue,
-                         destination: AnyView(AboutAuthorView())),
+            // v7.16.11：按用户要求删除「关于作者」入口（AboutAuthorView 源文件一并删除）
             SettingsItem(title: L10n.t("row_lang"),
                          subtitle: LanguageManager.shared.language.displayName,
                          icon: "globe", color: .purple,
@@ -311,15 +292,6 @@ struct SettingsView: View {
             Button("好", role: .cancel) { vpnToggleError = "" }
         } message: {
             Text(vpnToggleError)
-        }
-        // v6.2.1：重置所有数据——清空 UserDefaults 域 + Workspace + Keychain + 崩溃日志
-        .alert("重置所有数据", isPresented: $showResetAlert) {
-            Button("取消", role: .cancel) {}
-            Button("确认重置", role: .destructive) {
-                resetAllData()
-            }
-        } message: {
-            Text("将清空：模型配置、API Key、会话记录、工作区文件、知识库。此操作不可撤销！")
         }
         // v4.3.30：更新镜像源编辑（GitHub 被墙时的备用通道，每行一个前缀，逗号分隔）
         .sheet(isPresented: $showMirrorEditor) {
@@ -468,36 +440,6 @@ struct SettingsView: View {
         VpnManager.shared.vpnActive ? "运行中 · 点击右侧开关关闭" : "未运行 · 点击右侧开关开启"
     }
 
-    /// v6.2.1：重置所有数据——恢复"全新安装"状态。
-    /// 覆盖安装 (TrollStore 导入 tipa) 时 iOS 保留沙盒数据是标准行为，
-    /// 用户若要彻底清空，从这里一键执行。清空范围：
-    /// UserDefaults 域 / Workspace 目录(会话·知识库·项目·崩溃日志) / Keychain 全部项。
-    private func resetAllData() {
-        // 1. UserDefaults 本 App 域
-        if let domain = Bundle.main.bundleIdentifier {
-            UserDefaults.standard.removePersistentDomain(forName: domain)
-        }
-        UserDefaults.standard.synchronize()
-
-        // 2. Workspace 目录（会话 conversations.json / 知识库 / 项目 / 崩溃日志 / shell-diag）
-        try? FileManager.default.removeItem(at: Workspace.root)
-
-        // 3. Keychain 全部项（本 App service 下的 token/apiKey）
-        KeychainStore.shared.clearAll()
-
-        // 4. 提示用户重启 App 让所有单例重建（数据已清空，内存中旧状态仅本次会话残留）
-        let alert = UIAlertController(title: "已重置", message: "所有数据已清空。请完全退出 App 后重新打开，以加载全新状态。", preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "好", style: .default) { _ in
-            DispatchQueue.main.async {
-                presentationMode.wrappedValue.dismiss()
-            }
-        })
-        if let vc = ShareCenter.topViewController(), let view = vc.view {
-            alert.popoverPresentationController?.sourceView = view
-            alert.popoverPresentationController?.sourceRect = CGRect(x: view.bounds.midX, y: view.bounds.maxY, width: 1, height: 1)
-            vc.present(alert, animated: true)
-        }
-    }
 }
 
 /// 行内容（列表/卡片共用视觉）

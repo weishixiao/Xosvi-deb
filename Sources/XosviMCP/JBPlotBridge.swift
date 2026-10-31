@@ -12,7 +12,7 @@ import Darwin
 // 原来的用法是"电脑上跑 CLI，AI(Claude/Cursor) 通过 MCP 连它"。
 // 在 Xosvi 里我们把这层搬进 App 自己：
 //   1) iOS 版可执行按需从上游 GitHub Release（iphoneos-arm64.deb）取出并重签，
-//      落 App 沙盒。GPL-3.0 的产物不随本 App 捆绑分发（见 JBPlotSettingsView 说明）。
+//      落 App 沙盒。GPL-3.0 的产物不随本 App 捆绑分发（见 SettingsView 里的说明）。
 //   2) 身份/配对状态放 App 沙盒（hosts.json、identity/），首次 setup 时生成。
 //   3) 工具层（JBTool）负责子命令分发 → 进程调 CLI → 解析 JSON。
 //

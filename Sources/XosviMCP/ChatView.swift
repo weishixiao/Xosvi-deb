@@ -98,10 +98,11 @@ struct ChatView: View {
                         leftIcon: selectionMode ? nil : "line.3.horizontal",
                         trailing: selectionMode ? nil : AnyView(
                             // v7.9.5：+ 号 = 直接开一个临时会话（原来弹菜单且只有「联网搜索」→ 打开设置页）
+                            // v7.16.11：按用户要求把 + 号换成匿名（人形剪影）图标
                             Button {
                                 store.newConversation(title: "临时会话")
                             } label: {
-                                FloatingCircleButton(icon: "plus")
+                                FloatingCircleButton(icon: "person.crop.circle")
                             }
                         )
                     )
@@ -180,10 +181,11 @@ struct ChatView: View {
                         }
                     } else {
                         // v7.9.5：+ 号 = 直接开临时会话
+                        // v7.16.11：按用户要求换成匿名（人形剪影）图标
                         Button {
                             store.newConversation(title: "临时会话")
                         } label: {
-                            Image(systemName: "plus.circle")
+                            Image(systemName: "person.crop.circle")
                                 .font(.system(size: 18, weight: .semibold))
                         }
                     }

@@ -26,23 +26,11 @@ struct DateGroup: Identifiable {
 struct RootView: View {
     @ObservedObject private var ui = AppUIState.shared
     @ObservedObject private var lang = LanguageManager.shared   // v2.9.76：语言切换全局刷新
-    // v2.9.78：首次启动引导；v2.9.83：改为按版本展示——每次安装新版本/覆盖老版本都重新展现引导页
-    @State private var showOnboarding = RootView.onboardingNeeded()
     // v2.9.126：深链导入确认页（xosvi://import?...）
     @ObservedObject private var pendingImport = PendingImport.shared
     @State private var importResult: String?
     // v4.3.44：QuickLook 分享中间层状态（侧载环境分享面板安全路径）
     @ObservedObject private var shareCenter = ShareCenter.shared
-
-    private static func onboardingNeeded() -> Bool {
-        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-        return UserDefaults.standard.string(forKey: "xosvi.onboarding_last_version") != v
-    }
-
-    private func markOnboardingDone() {
-        let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-        UserDefaults.standard.set(v, forKey: "xosvi.onboarding_last_version")
-    }
 
     var body: some View {
         ZStack {
@@ -75,15 +63,6 @@ struct RootView: View {
             set: { ui.settingsPresented = $0 }
         )) {
             SettingsView()
-        }
-        // v2.9.78：引导页（v2.9.83：每个新版本展示一次）
-        .fullScreenCover(isPresented: $showOnboarding, onDismiss: {
-            markOnboardingDone()
-        }) {
-            OnboardingView {
-                markOnboardingDone()
-                showOnboarding = false
-            }
         }
         // v2.9.142：宏管理页（聊天输入框「🎬 宏」入口）
         .fullScreenCover(isPresented: Binding(

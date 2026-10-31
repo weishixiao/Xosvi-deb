@@ -31,6 +31,12 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         UITextView.appearance().textContainerInset = .zero
 
         CrashCatcher.install()  // v2.9.145c：最先注册崩溃捕获，闪退自动落盘 crash/ 可查
+
+        // v7.16.11：卸载即清空数据。
+        // 必须在任何 Store 单例读 UserDefaults **之前**执行，否则内存里会先加载旧值。
+        // 判定：沙盒标记消失但 Keychain 见证还在 = 卸载后重装 → 清空全部数据。
+        FreshInstallReset.runIfNeeded()
+
         Workspace.ensure()
         Workspace.ensureBundledTweaks()  // v2.9.62：把内置 dylib（MemoryTweak 等）复制到工作区，AI 可直接 artifact.find 定位
         ConfigMigration.migrateIfNeeded()  // v2.9.126：配置 schema 迁移（防模块脱节：升级后旧配置结构自动搬运）

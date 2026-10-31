@@ -126,10 +126,14 @@ final class SearchSettings {
     static let shared = SearchSettings()
 
     /// 默认开启哪个服务商（用户可在设置里选）
+    /// v7.16.11：默认固定为必应——它免费、无需 Key、开箱即用。
+    /// 只有用户显式改过才读 UserDefaults（原来 "" 会落到 .bing，行为一致，
+    /// 但这里显式写出来，避免以后有人把兜底改成需要 Key 的服务商）。
     var defaultProvider: SearchProvider {
         get {
             let raw = UserDefaults.standard.string(forKey: "websearch.provider") ?? ""
-            return SearchProvider(rawValue: raw) ?? .bing
+            if let p = SearchProvider(rawValue: raw) { return p }
+            return .bing
         }
         set { UserDefaults.standard.set(newValue.rawValue, forKey: "websearch.provider") }
     }
@@ -191,9 +195,12 @@ enum WebSearchService {
                        limit: Int) -> SearchResponse {
         let settings = SearchSettings.shared
         var order: [SearchProvider] = [preferred ?? settings.defaultProvider]
+        // v7.16.11：开箱可用（无需 Key）的引擎排在前面——用户没配任何 Key 时，
+        // 不应该先拿空 Key 去撞 Tavily/Exa 之类的接口，白等一轮超时。
+        let free: [SearchProvider] = [.bing, .duckduckgo]
+        for p in free where !order.contains(p) { order.append(p) }
         for p in settings.usableProviders() where !order.contains(p) { order.append(p) }
-        // 兜底：本地免费引擎始终排在最后
-        for p in [SearchProvider.bing, .duckduckgo] where !order.contains(p) { order.append(p) }
+        for p in free where !order.contains(p) { order.append(p) }
 
         var lastErr = ""
         // v7.13.2：必应改版后经常只给 1 条，不该就此打住——少于 2 条继续问下一个引擎，

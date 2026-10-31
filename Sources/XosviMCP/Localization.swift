@@ -126,18 +126,6 @@ enum L10n {
             "drawer_ready_short": ["zh": "环境就绪", "en": "Environment Ready"],
 
             // ===== 新手引导（v2.9.78）=====
-            "ob_skip": ["zh": "跳过", "en": "Skip"],
-            "ob_next": ["zh": "下一步", "en": "Next"],
-            "ob_done": ["zh": "开始使用", "en": "Get Started"],
-            "ob_welcome_title": ["zh": "欢迎使用 Xosvi 坦克版", "en": "Welcome to Xosvi Tank Edition"],
-            "ob_welcome_sub": ["zh": "TrollStore 上的 AI 实验与 QA 工作台：一句话描述目标，AI 自动完成诊断、操作、验证与报告。坦克版内置 r2 / LLVM / lua / pandas 全套原生逆向工具，无需联网即可分析二进制。", "en": "An AI lab for TrollStore: describe a goal, and AI handles diagnosis, actions, verification and reporting. Tank Edition bundles native r2 / LLVM / lua / pandas for offline binary analysis."],
-            "ob_cap_title": ["zh": "它能做什么", "en": "What it can do"],
-            "ob_cap1": ["zh": "线上编译 tweak / IPA 并下载注入", "en": "Cloud-build tweaks / IPAs, download & inject"],
-            "ob_cap2": ["zh": "H5GG 式内存搜索与修改", "en": "H5GG-style memory search & patch"],
-            "ob_cap3": ["zh": "读取界面树、点击输入，控制任意 App", "en": "Read UI tree, tap & type to drive any app"],
-            "ob_cap4": ["zh": "内置浏览器、审计、自动化与知识库", "en": "Built-in browser, audit, automation & KB"],
-            "ob_start_title": ["zh": "开始使用", "en": "Get Started"],
-            "ob_start_sub": ["zh": "先到「设置 → 模型 API」添加你的中转站配置，然后回来试试下方的快捷卡片。", "en": "Add your relay API config under Settings → Model API, then try the quick cards below."],
 
             // ===== 抽屉 =====
             "drawer_title": ["zh": "对话", "en": "Chats"],

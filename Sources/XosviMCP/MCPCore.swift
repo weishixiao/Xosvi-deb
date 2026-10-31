@@ -342,9 +342,12 @@ public final class ToolRegistry: ObservableObject {
     // v7.15.1：分两类补进来
     //   时效类 web —— 同 query 5 分钟后必须重抓，否则模型拿旧闻当"最新"复述；
     //   状态类 inject/app/rescue/engine —— 写操作成功后立刻读 status 必须看到新状态。
+    // v7.16.12：把 root 加进来——root 是「守护进程状态」查询，缓存 5 分钟会让
+    // 刚 kickstart 完的 daemon 仍报 daemon_alive:false，排障时把人带沟里。
     private var cacheBypassPrefixes: [String] = ["workspace", "browser", "control",
                                                  "device.fake", "injection.mem",
-                                                 "web", "inject", "app", "rescue", "engine"]
+                                                 "web", "inject", "app", "rescue", "engine",
+                                                 "root"]
     private let defaultCacheWindow: TimeInterval = 300.0  // 默认 5 分钟缓存窗口
     private let longCacheWindow: TimeInterval = 1800.0  // 30 分钟缓存窗口 (静态数据）
 
