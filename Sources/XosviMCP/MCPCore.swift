@@ -548,6 +548,8 @@ public final class ToolRegistry: ObservableObject {
         "ssh", "diagnose", "knowledge", "location", "macro", "app", "control",
         "inject", "automation", "network.capture", "server", "project", "workspace", "subagent", "ghost",
         "shell.exec", "reminder", "rescue",
+        // v7.16.7：rootd 桥——不默认启用的话 isEnabled 返回 false，AI 根本看不到这个工具
+        "root",
         // v4.3.65：统一工具安装闭环
         "tool.install", "env.setup_re",
         // v4.3.65：补齐"已注册但漏在白名单外"的分析工具——否则 AI 看不到 db/file/package，
