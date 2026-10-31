@@ -427,7 +427,7 @@ jobs:
     if: always() && needs.native-tools.result == 'success'
     runs-on: macos-latest
     env:
-      RELEASE_VERSION: 6.6.36
+      RELEASE_VERSION: 7.16.10
     steps:
       - uses: actions/checkout@v4
 

@@ -591,6 +591,15 @@ struct UpdateView: View {
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.trailing)
                 }
+                // v7.16.10：把更新源摆出来——旧版默认指向 zrrt/xosvi（别人的仓库），
+                // 用户看到"检测出来的不是我的包"却查不到原因。
+                HStack {
+                    Text("更新源")
+                    Spacer()
+                    Text(UpdateManager.shared.repoDisplay)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
                 Button(action: { updateManager.updateNow(currentVersion: currentVersion) }) {
                     HStack {
                         Image(systemName: "arrow.triangle.2.circlepath")

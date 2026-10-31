@@ -30,11 +30,23 @@ final class UpdateManager: ObservableObject {
     private var progressObserver: NSKeyValueObservation?
 
     // v2.9.108：仓库与工作流改为动态读取（对齐 GitHub 账号页配置）
+    /// v7.16.10：默认仓库改成本项目。旧版默认是上游 `zrrt/xosvi`，
+    /// 而「GitHub 账号」设置页在 v7.6.5 就被删了 → 没人能改 → 检查更新一直去查别人的仓库，
+    /// 表现就是「检测出来的不是我的安装包」。这里强制迁移，并把当前源显示在更新页。
+    static let defaultOwner = "weishixiao"
+    static let defaultName = "Xosvi"
+
     private var repo: String {
-        let owner = UserDefaults.standard.string(forKey: "xosvi.github_repo_owner") ?? "zrrt"
-        let name = UserDefaults.standard.string(forKey: "xosvi.github_repo_name") ?? "xosvi"
+        let d = UserDefaults.standard
+        var owner = (d.string(forKey: "xosvi.github_repo_owner") ?? "").trimmingCharacters(in: .whitespaces)
+        var name = (d.string(forKey: "xosvi.github_repo_name") ?? "").trimmingCharacters(in: .whitespaces)
+        if owner.isEmpty || owner == "zrrt" { owner = Self.defaultOwner }
+        if name.isEmpty || name == "xosvi" { name = Self.defaultName }
         return "\(owner)/\(name)"
     }
+
+    /// 更新页显示用
+    var repoDisplay: String { repo }
     private var workflow: String {
         UserDefaults.standard.string(forKey: "xosvi.github_workflow_id") ?? "build-xosvi-ios.yml"
     }
