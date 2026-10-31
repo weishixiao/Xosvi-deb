@@ -65,8 +65,12 @@ final class RootdTool: MCPTool {
         let exists: Bool
         let writeError: String?      // nil = 真写进去了
         let status: String
+        let inode: UInt64
+        let aliveAge: Int            // 心跳文件的年龄（秒），-1 = 没有心跳文件
 
         var writable: Bool { writeError == nil }
+        /// 心跳 5 秒内 = 这个目录与 daemon 是同一个视图（唯一可靠的共享判据）
+        var shared: Bool { aliveAge >= 0 && aliveAge <= 5 }
     }
 
     /// 真实写入探针：能不能在这个目录里建文件。比 isWritableFile 可信——
@@ -90,7 +94,14 @@ final class RootdTool: MCPTool {
         let werr = exists ? writeProbe(dir) : "目录不存在"
         let status = (try? String(contentsOfFile: dir + "/.status", encoding: .utf8))?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return DirState(path: dir, exists: exists, writeError: werr, status: status)
+        // 心跳：daemon 每秒往每个目录写 `<epoch> <pid>`
+        var age = -1
+        if let raw = try? String(contentsOfFile: dir + "/.alive", encoding: .utf8),
+           let first = raw.split(separator: " ").first, let ts = Int(first) {
+            age = Int(Date().timeIntervalSince1970) - ts
+        }
+        let ino = FSStat.lstat(dir)?.inode ?? 0
+        return DirState(path: dir, exists: exists, writeError: werr, status: status, inode: ino, aliveAge: age)
     }
 
     /// daemon 存活：pid 文件只在主目录，任一候选目录里有且进程活着就算活着
@@ -104,8 +115,12 @@ final class RootdTool: MCPTool {
         return nil
     }
 
+    /// 优先「能写 + 心跳新鲜」（= 与 daemon 同一个视图）；没有心跳时退回「能写」。
     private func usableDirs() -> [DirState] {
-        Self.candidateDirs.map(dirState).filter { $0.exists && $0.writable }
+        let all = Self.candidateDirs.map(dirState)
+        let shared = all.filter { $0.exists && $0.writable && $0.shared }
+        if !shared.isEmpty { return shared }
+        return all.filter { $0.exists && $0.writable }
     }
 
     // MARK: - 子命令
@@ -115,7 +130,9 @@ final class RootdTool: MCPTool {
         let pid = daemonPID()
         let dirs: [[String: Any]] = states.map {
             var m: [String: Any] = ["path": $0.path, "exists": $0.exists,
-                                    "writable": $0.writable, "status": $0.status]
+                                    "writable": $0.writable, "status": $0.status,
+                                    "shared": $0.shared, "alive_age": $0.aliveAge,
+                                    "inode": $0.inode]
             if let e = $0.writeError { m["write_error"] = e }
             return m
         }
@@ -132,6 +149,8 @@ final class RootdTool: MCPTool {
             out["hint"] = "rootd 未安装，或 App 完全看不到候选目录（看 dirs[].write_error）：安装 newterm-autoroot ≥1.3.2"
         } else if pid == nil {
             out["hint"] = "目录在但守护进程没跑：让用户执行 sh /var/mobile/.newterm-autoroot/selfcheck.sh 或 launchctl kickstart -k system/com.xosvi.rootd"
+        } else if !states.contains(where: { $0.shared }) {
+            out["hint"] = "daemon 活着但没有任何目录收到心跳（.alive 不新鲜）：App 与本机文件系统是两个视图。dirs[].inode 与终端 ls -di 对比可确认"
         } else if !states.contains(where: { $0.writable }) {
             out["hint"] = "daemon 活着但所有目录都写不进去：让用户 chmod 1777 对应目录（deb ≥1.3.2 会自动建 /var/mobile/Documents/Rootd）"
         }
