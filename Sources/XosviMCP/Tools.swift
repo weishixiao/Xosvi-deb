@@ -547,7 +547,7 @@ final class DiagnoseExecTool: MCPTool {
         name: "diagnose",
         summary: "Diagnose app/injection/environment issues. Subcommands: startup (app won't launch) / injection (inject failure) / spawn (bundled binaries fail with Bad executable) / toolchain (bundled tools signature self-check and self-sign) / lasttool (which tool ran before the last crash) / rootchain (full root privilege chain - spawnRoot/persona/setuid/entitlements, for iOS 17+ ENOSYS/85 failures). Use for: diagnose why app won't launch, why injection failed, why root operations fail. Don't use for: fix issues (use inject.*), restart app (use app restart). Example: startup → diagnose startup bundle_id:com.xxx; injection → diagnose injection bundle_id:com.xxx; rootchain → diagnose rootchain (no params).",
         parameters: [
-            "command": "Subcommand: startup / injection / spawn / toolchain / lasttool / rootchain",
+            "command": "Subcommand: startup / injection / spawn / toolchain / lasttool / rootchain / tools",
             "repair": "toolchain only: true = try re-signing bundled binaries with the bundled ldid",
             "bundle_id": "App bundle ID (required for startup/injection; ignore for rootchain)"
         ],
@@ -589,6 +589,23 @@ final class DiagnoseExecTool: MCPTool {
                 out["hint"] = "还没有记录（黑匣子从这一版开始记）"
             }
             return out
+
+        case "tools":
+            // v7.16.9：工具可见性自检——注册了但被 isEnabled 挡掉的工具，AI 是"看不见"的。
+            // 现场：root 工具写好了却没加进默认白名单，模型只能拿 diagnose/jb 硬凑，表现为"跑偏"。
+            let all = ToolRegistry.shared.allToolNames()
+            var off: [String] = []
+            for n in all where !ToolRegistry.shared.isEnabled(name: n) { off.append(n) }
+            var tmp: [String] = []
+            for d in ToolRegistry.shared.definitions where d.remoteOnly { tmp.append(d.name) }
+            return [
+                "registered": all.count,
+                "enabled": all.count - off.count,
+                "disabled": off,
+                "remote_only": tmp,
+                "names": all,
+                "hint": off.isEmpty ? "所有已注册工具都可见" : "这些工具注册了但不在默认白名单/被手动关闭 → AI 看不到，别用别的工具硬凑"
+            ]
 
         case "toolchain":
             // v7.7.0：内置工具链自检 + 自签（errno 85 排查）

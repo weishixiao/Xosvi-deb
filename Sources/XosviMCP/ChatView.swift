@@ -487,7 +487,18 @@ struct ChatView: View {
     @State private var visibleMessageLimit = 60
 
     private var visibleMessages: [ChatMessage] {
-        let all = store.currentMessages
+        // v7.16.9：渲染前按时间戳兜底排序（同时间戳再按 id 稳定），
+        // 不依赖"插入顺序恰好正确"——任何绕过 insertSorted 的写入路径
+        // （导入会话/重载/工具循环回写）都会造成「我的消息跑到回复下面」。
+        let raw = store.currentMessages
+        var all = raw
+        // 只在检测到乱序时才排序——O(n) 扫描，避免每个流式帧都 sort 整段历史
+        if zip(raw, raw.dropFirst()).contains(where: { $0.timestamp > $1.timestamp }) {
+            all = raw.sorted {
+                $0.timestamp == $1.timestamp ? $0.id.uuidString < $1.id.uuidString
+                                             : $0.timestamp < $1.timestamp
+            }
+        }
         guard all.count > visibleMessageLimit else { return all }
         return Array(all.suffix(visibleMessageLimit))
     }
