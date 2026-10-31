@@ -1465,6 +1465,7 @@ public final class ToolRegistry: ObservableObject {
         // v3.1.64: 删 ScanQRTool (AI 是文字对话，不能扫码）
         // v3.1.33: 删 ProcessListTool (用 shell ps 代替）
         register(ShellExecTool())   // v3.0.28：内置终端，执行 shell 命令
+        register(RootdTool())       // v7.16.6：rootd 桥——root 命令通道（走 deb 装的 LaunchDaemon，不新增 App 特权）
 
         // v7.5.0：内置浏览器已删除（用户要求）。联网能力改为「多服务商搜索 + 全文读取」，
         // 工作区能力（Kelivo workspace）新增。

@@ -22,11 +22,42 @@ enum JBEnvironment {
 
     private static let _kind: Kind = detectKind()
     private static let _rootPrefix: String = detectRootPrefix()
+    private static let _jbroot: String? = detectJbroot()
 
     static var kind: Kind { _kind }
     static var isJailbroken: Bool { _kind != .none }
     /// 越狱根前缀：越狱环境返回 "/var/jb"，否则返回 ""
     static var rootPrefix: String { _rootPrefix }
+
+    /// v7.16.6：bootstrap 的真实路径（roothide 会藏在容器里的 .jbroot-<hash>）。
+    /// 读/写越狱内的文件时应优先用它；`/var/jb` 在 roothide 下常常是断链。
+    static var jbrootPath: String? { _jbroot }
+
+    /// v7.16.6：`/rootfs` 真实根别名（rootful/部分 roothide 把真实系统挂在这里）。
+    static var rootfsPrefix: String {
+        FileManager.default.fileExists(atPath: "/rootfs/var/mobile") ? "/rootfs" : ""
+    }
+
+    /// v7.16.6：同一路径的多个可能写法——App 侧写一个、root 侧看另一个是常态。
+    /// 调用方可依次尝试，命中哪个就用哪个。
+    static func pathVariants(_ raw: String) -> [String] {
+        let p = (raw as NSString).standardizingPath
+        var out = [p]
+        let rf = rootfsPrefix
+        if !rf.isEmpty, !p.hasPrefix(rf + "/") { out.append(rf + p) }
+        if let jb = jbrootPath, jb != "/var/jb", !p.hasPrefix(jb) {
+            if p.hasPrefix("/usr/") || p.hasPrefix("/bin/") || p.hasPrefix("/etc/") || p.hasPrefix("/Library/") {
+                out.append(jb + p)
+            }
+        }
+        return out
+    }
+
+    /// v7.16.6：返回第一个真实存在的写法（POSIX access，不看 FileManager 的容器视图）
+    static func firstExistingPath(_ raw: String) -> String? {
+        for p in pathVariants(raw) where FSStat.exists(p) { return p }
+        return nil
+    }
 
     /// 是否为 rootHide/Relaxin 类型（persona spawn 必然失败）
     static var isRootHide: Bool { _kind == .rootHide }
@@ -51,11 +82,43 @@ enum JBEnvironment {
             || fm.fileExists(atPath: "/var/jb/Applications/Sileo.app") {
             return .rootless
         }
-        // ③ 通用 rootless 标志
+        // ③ v7.16.6：roothide 的**真实布局**——/var/jb 不存在（未注入 libroot 的进程看不到），
+        //    但 /basebin 在，或 bootstrap 藏在容器里的 .jbroot-<hash>。
+        //    之前只按 /var/jb 判断，这台机器把 roothide 误判成 "未越狱"，后续路径全错。
+        if fm.fileExists(atPath: "/basebin/jbctl")
+            || fm.fileExists(atPath: "/basebin/launchctl")
+            || hiddenJbrootCandidate() != nil {
+            return .rootHide
+        }
+        // ④ 通用 rootless 标志
         if fm.fileExists(atPath: "/var/jb") || fm.fileExists(atPath: "/private/preboot/jb") {
             return .rootless
         }
         return .none
+    }
+
+    /// roothide 把 bootstrap 藏在容器里的 `.jbroot-<hash>`（App 侧可见，未授权进程看不到 /var/jb）
+    private static func hiddenJbrootCandidate() -> String? {
+        let fm = FileManager.default
+        let bases = ["/var/containers/Bundle/Application",
+                     "/private/var/containers/Bundle/Application",
+                     "/var/mobile/Containers/Data/Application"]
+        for base in bases {
+            guard let items = try? fm.contentsOfDirectory(atPath: base) else { continue }
+            for it in items where it.hasPrefix(".jbroot-") {
+                let p = base + "/" + it
+                if FSStat.exists(p + "/usr/bin/dash") || FSStat.exists(p + "/usr") { return p }
+            }
+        }
+        return nil
+    }
+
+    private static func detectJbroot() -> String? {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: "/var/jb/usr/bin/dash") { return "/var/jb" }
+        if let hidden = hiddenJbrootCandidate() { return hidden }
+        if fm.fileExists(atPath: "/var/jb") { return "/var/jb" }
+        return nil
     }
 
     private static func detectRootPrefix() -> String {
@@ -119,8 +182,9 @@ enum JBEnvironment {
             "/usr/bin/sudoedit",
         ]
         for rel in candidates {
-            let p = rootPrefix + rel
-            if FileManager.default.isExecutableFile(atPath: p) { return p }
+            // v7.16.6：roothide 下 /var/jb 可能不存在，得同时试 /rootfs 与真实 bootstrap 路径
+            let paths = [rootPrefix + rel] + pathVariants(rel)
+            for p in paths where FSStat.isExecutable(p) { return p }
         }
         return nil
     }
@@ -142,7 +206,11 @@ enum JBEnvironment {
         ]
         var found: [String: Bool] = [:]
         for (name, path) in probes { found[name] = fm.fileExists(atPath: path) }
-        return ["probes": found, "root_prefix": rootPrefix]
+        return ["probes": found, "root_prefix": rootPrefix,
+                "kind": kind.rawValue,
+                "jbroot": jbrootPath ?? "",
+                "rootfs": rootfsPrefix.isEmpty ? "无" : rootfsPrefix,
+                "basebin_jbctl": FSStat.lstat("/basebin/jbctl")?.longLine ?? "无"]
     }
 
     /// v6.6.13：helper 属主诊断——setuid 只对 **root 属主** 的文件生效。
@@ -156,17 +224,17 @@ enum JBEnvironment {
         var samples: [String] = []
         for n in names where !n.hasPrefix(".") {
             let p = binDir + "/" + n
-            guard let attrs = try? fm.attributesOfItem(atPath: p) else { continue }
+            // v7.16.6：不再用 FileManager.attributesOfItem——容器/roothide 下返回的是假属主与假权限
+            guard let st = FSStat.lstat(p) else { continue }
             total += 1
-            let uid = (attrs[.ownerAccountID] as? Int) ?? -1
-            let mode = (attrs[.posixPermissions] as? Int) ?? 0
-            if (mode & 0o4000) != 0 { setuidCount += 1 }
+            let uid = Int(st.uid)
+            if st.isSetuid { setuidCount += 1 }
             switch uid {
             case 0:   rootOwned += 1
             case 501: mobileOwned += 1
             default:
                 otherOwned += 1
-                if samples.count < 5 { samples.append("\(n): uid=\(uid) mode=\(String(mode, radix: 8))") }
+                if samples.count < 5 { samples.append("\(n): uid=\(uid) mode=\(st.permOctal)") }
             }
         }
         return [
@@ -185,16 +253,16 @@ enum JBEnvironment {
     /// 越狱环境下 helper 是否具备 root 能力
     /// - 越狱的 amfid 已绕过签名校验，判定只看 setuid 位 + owner
     static func helperIsPrivileged(_ path: String) -> (ok: Bool, reason: String) {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: path) else {
+        // v7.16.6：改用 POSIX lstat —— FileManager 在容器/roothide 下会谎报属主与权限，
+        // 真机上把 root:wheel+setuid 的 helper 报成 mobile:mobile 0755，整条提权链被判死。
+        guard let st = FSStat.lstat(path) else {
             return (false, "文件不存在")
         }
-        let mode = (attrs[.posixPermissions] as? Int) ?? 0
-        let uid = (attrs[.ownerAccountID] as? Int) ?? -1
-        let hasSetuid = (mode & 0o4000) != 0
-        let rootOwned = (uid == 0)
+        let hasSetuid = st.isSetuid
+        let rootOwned = (st.uid == 0)
         if isJailbroken {
             if hasSetuid && rootOwned { return (true, "越狱环境：setuid + root 属主，可直接提权") }
-            if hasSetuid { return (true, "setuid 已置但属主非 root（uid=\(uid)），可能仍可提权") }
+            if hasSetuid { return (true, "setuid 已置但属主非 root（uid=\(st.uid)），可能仍可提权") }
             return (false, "缺 setuid 位（越狱环境需 chown root:wheel + chmod u+s）")
         }
         // 非越狱：TrollStore 的 TSRootBinaries 会给 setuid，但实际提权靠 persona
