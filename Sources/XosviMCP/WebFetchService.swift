@@ -21,6 +21,8 @@ struct WebPage {
     var content: String
     var via: String          // 实际用的通道：provider / jina / local
     var truncated: Bool = false
+    /// v7.16.11：被反爬/人机验证拦截——content 是错误说明，不是页面正文，**不要喂给模型当资料**
+    var blocked: Bool = false
 }
 
 enum WebFetchService {
@@ -147,6 +149,14 @@ enum WebFetchService {
         let title = h.firstCapture(pattern: "<title[^>]*>([\\s\\S]*?)</title>")?.stripHTMLTags() ?? ""
         let text = HTMLText.extract(h, maxChars: maxChars)
 
+        // v7.16.11：反爬/人机验证页——抓到的是验证脚本或"请稍候"，不是正文。
+        // 以前只按"正文不足 200 字"兜底，长度够的挑战页会当成正常内容喂给模型。
+        if let reason = HTMLText.challengeReason(html: h, text: text) {
+            return WebPage(url: url, title: title,
+                           content: "BLOCKED_BY_CHALLENGE：\(reason)。该页面需要浏览器验证或登录，抓回来的不是正文，已停止解析。",
+                           via: "local", blocked: true)
+        }
+
         // 空壳判定：JS 渲染 / 反爬的典型特征
         if text.count < 200 {
             let shell = """
@@ -193,6 +203,12 @@ enum HTMLText {
                      "<!--[\\s\\S]*?-->"] {
             s = s.replacingOccurrences(of: junk, with: " ", options: .regularExpression)
         }
+        // v7.16.11：常见遮挡/横幅容器（cookie、同意弹窗、订阅栏）。只按窄名单删，避免误伤正文。
+        for noise in ["cookie", "consent", "gdpr", "newsletter", "subscribe-popup",
+                      "modal-backdrop", "announcement-bar"] {
+            let pattern = "<div[^>]+(class|id)=\"[^\"]*" + noise + "[^\"]*\"[\\s\\S]*?</div>"
+            s = s.replacingOccurrences(of: pattern, with: " ", options: .regularExpression)
+        }
         // 优先正文容器
         if let art = s.firstCapture(pattern: "<article[^>]*>([\\s\\S]*?)</article>"),
            art.stripHTMLTags().count > 200 {
@@ -205,5 +221,34 @@ enum HTMLText {
         text = text.replacingOccurrences(of: "[ \\t]{2,}", with: " ", options: .regularExpression)
         text = text.replacingOccurrences(of: "\\n[ \\t]*\\n[ \\t]*\\n+", with: "\n\n", options: .regularExpression)
         return String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(maxChars))
+    }
+
+    /// v7.16.11：疑似提示注入特征。命中只做标注，绝不执行——网页文字永远是资料。
+    static func looksInjected(_ text: String) -> Bool {
+        let t = text.lowercased()
+        let pats = ["ignore previous", "ignore all previous", "disregard the above",
+                    "ignore the above", "system prompt", "you are now",
+                    "忽略之前", "忽略上面", "忽略以上", "你现在是", "从现在开始你"]
+        return pats.contains { t.contains($0) }
+    }
+
+    /// v7.16.11：识别 Cloudflare / 人机验证 / 限流页。命中就返回原因（给上层直接报错，不要当正文）。
+    static func challengeReason(html: String, text: String) -> String? {
+        let hay = (String(html.prefix(20000)) + "\n" + String(text.prefix(4000))).lowercased()
+        let markers: [(String, String)] = [
+            ("cf-browser-verification", "Cloudflare 浏览器验证"),
+            ("challenge-platform", "Cloudflare 挑战页"),
+            ("just a moment", "Cloudflare 挑战页"),
+            ("verify you are human", "人机验证"),
+            ("checking your browser", "浏览器验证中"),
+            ("attention required", "Cloudflare 拦截"),
+            ("enable javascript and cookies to continue", "需要 JS + Cookie 才能继续"),
+            ("请验证您是真人", "人机验证"),
+            ("人机验证", "人机验证"),
+            ("访问过于频繁", "限流"),
+            ("captcha", "验证码")
+        ]
+        for (k, v) in markers where hay.contains(k) { return v }
+        return nil
     }
 }
