@@ -109,10 +109,13 @@ static BOOL noadsIsAdClass(NSString *cls) {
 %hook GADBannerView
 - (void)loadRequest:(id)request {
     noads_log(@"blocked GADBannerView loadRequest");
-    // 只隐藏不缩放：改 frame 会打乱游戏自己算好的 banner 占位布局
+    // 只隐藏不缩放：改 frame 会打乱游戏自己算好的 banner 占位布局。
+    // 注意：GADBannerView 这里只是前置声明（没引 SDK 头），不能直接点属性，
+    // 必须先转成 UIView* —— 否则报 "property 'hidden' cannot be found in forward class"。
+    UIView *banner = (UIView *)self;
     dispatch_async(dispatch_get_main_queue(), ^{
-        self.hidden = YES;
-        self.alpha = 0;
+        banner.hidden = YES;
+        banner.alpha = 0;
     });
 }
 - (void)loadWithAdResponseString:(NSString *)s {
