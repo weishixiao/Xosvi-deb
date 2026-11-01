@@ -139,6 +139,20 @@ final class RootdTool: MCPTool {
     }
 
     /// 优先「能写 + 心跳新鲜」（= 与 daemon 同一个视图）；没有心跳时退回「能写」。
+    /// 心跳证据：daemon 每秒往每个目录写 `.alive`。即使 pid 文件不可见（跨视图），
+    /// 只要某个目录的心跳是新鲜的，就证明守护进程活着。
+    private func freshestHeartbeat() -> Int? {
+        var best: Int?
+        for d in Self.candidateDirs {
+            guard let raw = try? String(contentsOfFile: d + "/.alive", encoding: .utf8),
+                  let first = raw.split(separator: " ").first, let ts = Int(first) else { continue }
+            let age = Int(Date().timeIntervalSince1970) - ts
+            if age < 0 || age > 30 { continue }
+            if best == nil || age < best! { best = age }
+        }
+        return best
+    }
+
     private func usableDirs() -> [DirState] {
         let all = Self.candidateDirs.map(dirState)
         let shared = all.filter { $0.exists && $0.writable && $0.shared }
@@ -181,6 +195,9 @@ final class RootdTool: MCPTool {
     private func statusReport() -> [String: Any] {
         let states = Self.candidateDirs.map(dirState)
         let pid = daemonPID()
+        let hb = freshestHeartbeat()
+        let alive = pid != nil || (hb != nil && hb! <= 5)
+        let aliveSource = pid != nil ? "pid" : (alive ? "heartbeat" : "none")
         let dirs: [[String: Any]] = states.map {
             var m: [String: Any] = ["path": $0.path, "exists": $0.exists,
                                     "writable": $0.writable, "status": $0.status,
@@ -191,8 +208,10 @@ final class RootdTool: MCPTool {
         }
         var out: [String: Any] = [
             "installed": states.contains { $0.exists },
-            "daemon_alive": pid != nil,
+            "daemon_alive": alive,
             "daemon_pid": pid.map { Int($0) } ?? 0,
+            "alive_source": aliveSource,
+            "heartbeat_age": hb ?? -1,
             "dirs": dirs,
             "app_home": NSHomeDirectory(),
             "jb_kind": JBEnvironment.kind.rawValue,
@@ -209,7 +228,7 @@ final class RootdTool: MCPTool {
         }
         if !states.contains(where: { $0.exists }) {
             out["hint"] = "rootd 未安装，或 App 完全看不到候选目录（看 dirs[].write_error）：安装 newterm-autoroot ≥1.3.2"
-        } else if pid == nil {
+        } else if !alive {
             out["hint"] = "目录在但守护进程没跑：让用户执行 sh /var/mobile/.newterm-autoroot/selfcheck.sh 或 launchctl kickstart -k system/com.xosvi.rootd"
         } else if !states.contains(where: { $0.shared }) {
             out["hint"] = "daemon 活着但没有任何目录收到心跳（.alive 不新鲜）：App 与本机文件系统是两个视图。dirs[].inode 与终端 ls -di 对比可确认"
@@ -273,7 +292,8 @@ final class RootdTool: MCPTool {
         if let d = target?.path, d.hasPrefix(NSHomeDirectory()) {
             try? fm.createDirectory(atPath: d, withIntermediateDirectories: true)
         }
-        guard let dir = target, daemonPID() != nil else {
+        let aliveForRun = daemonPID() != nil || (freshestHeartbeat().map { $0 <= 5 } ?? false)
+        guard let dir = target, aliveForRun else {
             return ["completed": false, "error": "no_writable_dir",
                     "diagnosis": statusReport(),
                     "hint": "rootd 未安装 / 未运行 / 候选目录都写不进去；先看 diagnosis.dirs[].write_error"]
