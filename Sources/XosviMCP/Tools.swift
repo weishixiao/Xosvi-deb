@@ -363,7 +363,10 @@ final class ArtifactExecTool: MCPTool {
             // v4.0.0: 内联自 ArtifactReadTextTool（修复原委托调用传参 key 不一致的隐藏 bug）
             let url = try Workspace.resolve(filename)
             let text = try String(contentsOf: url, encoding: .utf8)
-            return ["content": text]
+            // v7.17.0：文件内容可能是被构造的指令，统一包装为外部资料（防提示注入）。
+            var out = ToolExternalContent.tag(text, source: "workspace:\(filename)")
+            out["path"] = url.path
+            return out
             
         case "write":
             guard let filename = params["filename"] as? String else {
@@ -693,7 +696,7 @@ final class VerifyExecTool: MCPTool {
             "path": "File path (for file)",
             "bundle_id": "App bundle ID (for app_running)"
         ],
-        verified: true, category: "system", prerequisites: ["app_running 前确认 bundle_id 已安装且曾启动过 (app.launch 后验证才有意义)", "path must be a real absolute path before file verification"])
+        verified: true, category: "system", prerequisites: ["app_running 前确认 bundle_id 已安装且曾启动过 (用 `app command:launch` 启动后验证才有意义)", "path must be a real absolute path before file verification"])
     
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let command = params["command"] as? String else {

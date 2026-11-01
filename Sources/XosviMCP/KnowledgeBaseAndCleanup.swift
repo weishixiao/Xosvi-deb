@@ -11,6 +11,9 @@ final class FailureKnowledgeBase {
     static let shared = FailureKnowledgeBase()
     private var db: OpaquePointer?
     private let dbPath: String
+    /// v7.17.0：dispatch 失败出口会自动查库（多会话并发），SQLite 句柄必须串行化。
+    /// 用递归锁：match() 内部会调 incrementHit()。
+    private let dbLock = NSRecursiveLock()
 
     init() {
         let docs = NSHomeDirectory().appending("/Documents/Workspace")
@@ -130,6 +133,7 @@ final class FailureKnowledgeBase {
     }
 
     func match(_ errorText: String) -> [(keyword: String, category: String, cause: String, fix: String)] {
+        dbLock.lock(); defer { dbLock.unlock() }
         guard let db = db else { return [] }
         var results: [(String, String, String, String)] = []
         var stmt: OpaquePointer?
@@ -159,6 +163,7 @@ final class FailureKnowledgeBase {
     }
 
     func addPattern(keyword: String, category: String, cause: String, fix: String) {
+        dbLock.lock(); defer { dbLock.unlock() }
         guard let db = db else { return }
         var stmt: OpaquePointer?
         sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO patterns (keyword, category, cause, fix) VALUES (?,?,?,?)", -1, &stmt, nil)
@@ -171,6 +176,7 @@ final class FailureKnowledgeBase {
     }
 
     func allPatterns() -> [[String: Any]] {
+        dbLock.lock(); defer { dbLock.unlock() }
         guard let db = db else { return [] }
         var results: [[String: Any]] = []
         var stmt: OpaquePointer?

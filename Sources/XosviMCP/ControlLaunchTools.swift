@@ -107,7 +107,7 @@ final class LocationFakeTool: MCPTool {
         summary: "Set simulated GPS location. Use for: fake location for location-based apps. Don't use for: check current location (use location.get), clear fake location (use location.clear). Note: only works if app has location hook injected. Example: user says 'set location to Beijing' → set fake location.",
         parameters: ["lat": "Latitude", "lon": "Longitude", "reason": "Why (optional)"], verified: true, category: "device")
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
-        guard let lat = params["lat"] as? Double, let lon = params["lon"] as? Double else {
+        guard let lat = params.num("lat"), let lon = params.num("lon") else {
             throw MCPError.invalidParams("lat, lon required")
         }
         let reason = params["reason"] as? String ?? ""

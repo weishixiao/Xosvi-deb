@@ -47,7 +47,10 @@ final class FileExecTool: MCPTool {
             let strs = Self.extractStrings(data, minLength: 6, limit: 80)
             var out = "file type: \(type)\nsize: \(data.count) bytes\n--- strings (first \(strs.count)) ---\n"
             out += strs.joined(separator: "\n")
-            return ["env": "native", "exit_code": 0, "output": out]
+            // v7.17.0：从二进制提取的字符串同样是外部内容（可被构造成指令）。
+            var res: [String: Any] = ["env": "native", "exit_code": 0, "path": norm]
+            res.merge(ToolExternalContent.tag(out, source: "file:\(norm)", field: "output")) { _, new in new }
+            return res
         default:
             throw MCPError.invalidParams("Unknown command: \(command). Available: inspect / analyze")
         }

@@ -248,6 +248,7 @@ final class PackageTool: MCPTool {
                             case .failed(let m): msg = m
                             case .invalidParams(let m): msg = m
                             case .unknownTool(let m): msg = m
+                            case .diagnosed(let m, _, _, _, _, _): msg = m
                             }
                         } else {
                             msg = "\(error)"

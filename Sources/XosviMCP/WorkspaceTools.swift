@@ -100,7 +100,7 @@ enum WorkspaceTools {
         if !WorkspaceStore.shared.fullAccess, isDestructive(cmd) {
             throw MCPError.failed("命令看起来会破坏系统（\(cmd.prefix(60))…）。当前未开启「完全访问」，已拒绝执行。")
         }
-        let timeout = min(max(params["timeout"] as? Double ?? 30, 1), 300)
+        let timeout = min(max(params.num("timeout") ?? 30, 1), 300)
         // 复用现有 shell 执行器（原生 busybox / 内置工具链），不再走已移除的 Alpine
         let r = try ShellExecTool().invoke(["command": cmd, "timeout": timeout])
         var out = r

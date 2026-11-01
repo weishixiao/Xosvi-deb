@@ -1,0 +1,41 @@
+name: lint
+
+# v7.17.0：轻量静态检查（不跑 iOS 构建）。
+# 之前唯一的校验脚本 check_tool_registration.py 硬编码了作者本机路径，
+# CI 里永远失效；现在参数化并在此执行。
+on:
+  push:
+    paths:
+      - 'Sources/**'
+      - 'scripts/**'
+      - 'docs/registry.snapshot.json'
+      - '.github/workflows/lint.yml'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  static-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Swift structural check (braces / parens / brackets)
+        run: python3 scripts/check_swift_braces.py --src Sources/Xosvi
+
+      - name: Tool registration consistency
+        run: python3 scripts/check_tool_registration.py --src Sources/Xosvi
+
+      - name: Tool description lint (P0 errors only)
+        run: python3 scripts/lint_tool_descriptions.py --src Sources/Xosvi
+
+      - name: Registry snapshot is up to date
+        run: |
+          python3 scripts/dump_registry.py --src Sources/Xosvi --out /tmp/registry.json
+          diff -u docs/registry.snapshot.json /tmp/registry.json
+
+      - name: Contract invariants
+        run: python3 tests/test_registry_contract.py

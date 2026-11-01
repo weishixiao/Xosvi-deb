@@ -430,7 +430,7 @@ final class SystemPrompts {
       `parent` + `command:` (e.g. `app` + command:decrypt, `inject` + command:enable, `control` + command:screenshot,
       `artifact` + command:read). This is the DEFAULT, reliable form. (2) A few NATURALLY-single tools that are
       registered as-is (real names): `shell.exec`, `web.search`, `web.fetch`, `network.capture`, `vpn.capture`,
-      `skills.read`, `env.setup_re` — call them directly.
+      `skills.list`, `skills.read`, `skills.set_enabled`, `system.overview`, `tools.audit`, `env.setup_re` — call them directly.
       Dotted names like `app.decrypt`, `injection.enable`, `control.screenshot` are NOT registered tool names — they
       are subcommands/implementation modules of a parent tool. Call the PARENT + `command` instead
       (`app` + command:decrypt). If unsure, prefer the parent + `command` form — it always works.

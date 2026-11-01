@@ -61,10 +61,10 @@ enum ToolParamHelp {
     /// 静态二进制检查的替代工具集（当模型想用 inject inspect 做加密检查时）
     static func binaryCheckAlternatives(pathHint: String = "<文件绝对路径>") -> [String] {
         [
-            "macho load path:\(pathHint)          → 查架构/UUID/加密状态(cryptid)",
-            "macho entitlements path:\(pathHint)  → 查权限 plist",
-            "macho codesign path:\(pathHint)      → 查签名/CDHash",
-            "macho symbols path:\(pathHint)       → 查导出符号",
+            "macho command:load path:\(pathHint)          → 查架构/UUID/加密状态(cryptid)",
+            "macho command:entitlements path:\(pathHint)  → 查权限 plist",
+            "macho command:codesign path:\(pathHint)      → 查签名/CDHash",
+            "macho command:symbols path:\(pathHint)       → 查导出符号",
         ]
     }
 

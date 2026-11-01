@@ -26,7 +26,7 @@ final class InjectionRestoreTool: MCPTool {
 /// rescue.scan：全机扫描——列出有注入痕迹/备份/损坏的 App，输出风险清单
 final class RescueScanTool: MCPTool {
     let definition = ToolDefinition(name: "rescue.scan",
-        summary: "Scan all apps for injection damage / broken state. Use for: check if any apps got damaged by injection, find apps that need restore. Don't use for: restore specific app (use rescue.restore_all), inject dylib (use injection.enable). Example: user says 'scan which apps have broken injection' → scan all apps.",
+        summary: "Scan all apps for injection damage / broken state. Use for: check if any apps got damaged by injection, find apps that need restore. Don't use for: restore specific app (use rescue.restore_all), inject dylib (use `inject command:enable`). Example: user says 'scan which apps have broken injection' → scan all apps.",
         parameters: ["query": "Filter by app name/bundle ID (optional)"], verified: true, category: "diagnose")
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         let q = (params["query"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -208,7 +208,7 @@ final class RescueCleanupTool: MCPTool {
 final class RescueExecTool: MCPTool {
     let definition = ToolDefinition(
         name: "rescue",
-        summary: "Emergency recovery for injected apps (scan/recover/cleanup). Use subcommand to specify action. Use for: fix broken injections, clean up orphan backups. Don't use for: normal injection (use injection.enable). Example: scan → rescue scan; recover_all → rescue recover_all. Subcommands: scan / recover_all / cleanup.",
+        summary: "Emergency recovery for injected apps (scan/recover/cleanup). Use subcommand to specify action. Use for: fix broken injections, clean up orphan backups. Don't use for: normal injection (use `inject command:enable`). Example: scan → rescue scan; recover_all → rescue recover_all. Subcommands: scan / recover_all / cleanup.",
         parameters: [
             "command": "Subcommand: scan / recover_all / cleanup",
             "bundle_id": "App bundle ID (optional)"

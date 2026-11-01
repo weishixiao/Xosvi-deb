@@ -265,7 +265,7 @@ final class AppStatsTool: MCPTool {
         guard let bundleId = params["bundle_id"] as? String, !bundleId.isEmpty else {
             throw MCPError.invalidParams("bundle_id required")
         }
-        let duration = (params["duration"] as? Int) ?? 10
+        let duration = params.intValue("duration") ?? 10
         let interval = (params["interval"] as? Int) ?? 1
 
         var samples: [[String: Any]] = []
@@ -549,7 +549,7 @@ func findPidByPsName(_ execName: String) -> Int32 {
 final class AppExecTool: MCPTool {
     let definition = ToolDefinition(
         name: "app",
-        summary: "Manage apps & analyze app internals (launch/stop/install/uninstall/diagnose/decrypt/entitlements). Subcommands: launch / stop / restart / status / stats / cache_inspect / cache_clear / open_and_input / deps / install / uninstall / duplicate / diagnose / encrypt_info / entitlements / decrypt / replace_decrypted / restore_binary / launch_options / inject_package. 加密App(cryptid=1)先砸壳: decrypt → replace_decrypted → restore_binary(失败可恢复); App Store原装就地替换无效→inject_package 改包名重装.",
+        summary: "Manage apps & analyze app internals (launch/stop/install/uninstall/diagnose/decrypt/entitlements). Subcommands: launch / stop / restart / status / stats / cache_inspect / cache_clear / open_and_input / deps / install / uninstall / duplicate / diagnose / encrypt_info / entitlements / decrypt / replace_decrypted / restore_binary / launch_options / inject_package. 加密App(cryptid=1)先砸壳: decrypt → replace_decrypted → restore_binary(失败可恢复); App Store原装就地替换无效→inject_package 改包名重装. Use for: 启动/停止/安装/卸载 App、砸壳、查依赖/权限/加密状态. Don't use for: dylib 注入 (use `inject command:enable`), UI 操作 (use control). Example: app command:status bundle_id:com.xingin.discover.",
         parameters: [
             "command": "Subcommand: launch / stop / restart / status / stats / cache_inspect / cache_clear / open_and_input / deps / install / uninstall / duplicate / diagnose / encrypt_info / entitlements / decrypt / replace_decrypted / restore_binary / launch_options / inject_package",
             "bundle_id": "App bundle ID (e.g. com.xingin.discover)",
@@ -578,7 +578,7 @@ final class AppExecTool: MCPTool {
             .s("new_bundle_id", "改包后的新包名（仅 inject_package 用）", example: "com.example.app.mod"),
             .s("new_name", "改包后的显示名（仅 inject_package 用）"),
             .b("auto_install", "打完后自动装（仅 inject_package 用）"),
-            .i("duration", "采样时长秒（仅 stats 用）", example: "10"),
+            .n("duration", "采样时长秒（仅 stats 用，可带小数）", example: "10"),
             .s("text", "要输入的文本（仅 open_and_input 用）"),
         ],
         // v6.9.2：子命令参数速查——明确区分 bundle_id（装好的 App）与 ipa_path（安装包文件）
@@ -592,7 +592,7 @@ final class AppExecTool: MCPTool {
             .init("cache_clear", requires: ["bundle_id"]),
             .init("open_and_input", requires: ["bundle_id"], accepts: ["text"], note: "拉起并输入"),
             .init("deps", requires: ["bundle_id"], note: "看依赖的 dylib"),
-            .init("install", requires: ["ipa_path 或 path（二选一）"], note: "装包，要 IPA 文件路径，不是 bundle_id"),
+            .init("install", requiresAny: ["ipa_path", "path"], note: "装包：ipa_path 或 path 二选一，不是 bundle_id"),
             .init("uninstall", requires: ["bundle_id"]),
             .init("duplicate", requires: ["bundle_id"], note: "复制成第二个 App"),
             .init("diagnose", requires: ["bundle_id"], note: "启动失败先跑这个"),
@@ -603,7 +603,14 @@ final class AppExecTool: MCPTool {
             .init("restore_binary", requires: ["bundle_id"], note: "替换后启动不了就回滚"),
             .init("launch_options", requires: ["bundle_id"]),
             .init("inject_package", requires: ["dylib_path"], accepts: ["ipa_path", "new_bundle_id", "new_name", "auto_install"], note: "改包+注入+重装"),
-        ])
+        ],
+        annotations: .destructiveWrite,
+        cache: .never,
+        related: [
+            .init("inject", command: "enable", when: "已经装好的 App 直接注入 dylib"),
+            .init("control", command: "inject", when: "需要对拉起后的 App 做 UI 自动化"),
+        ],
+        examples: ["app command:status bundle_id:com.xingin.discover"])
     
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let command = params["command"] as? String else {
@@ -641,7 +648,7 @@ final class AppExecTool: MCPTool {
             guard let bundleId = params["bundle_id"] as? String else {
                 throw MCPError.invalidParams("bundle_id required")
             }
-            let duration = (params["duration"] as? Double) ?? 5.0
+            let duration = params.num("duration") ?? 5.0
             return try AppStatsTool().invoke(["bundle_id": bundleId, "duration": duration])
             
         case "cache_inspect":

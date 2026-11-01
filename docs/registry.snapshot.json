@@ -1,0 +1,2249 @@
+{
+  "app_version": "7.17.0",
+  "generated_by": "scripts/dump_registry.py",
+  "schema": 1,
+  "tool_count": 49,
+  "tools": [
+    {
+      "annotations": {},
+      "category": "app_control",
+      "class": "AppExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "ProcessTools.swift",
+      "name": "app",
+      "params": [
+        {
+          "enum": [
+            "launch",
+            "stop",
+            "restart",
+            "status",
+            "stats",
+            "cache_inspect",
+            "cache_clear",
+            "open_and_input",
+            "deps",
+            "install",
+            "uninstall",
+            "duplicate",
+            "diagnose",
+            "encrypt_info",
+            "entitlements",
+            "decrypt",
+            "replace_decrypted",
+            "restore_binary",
+            "launch_options",
+            "inject_package"
+          ],
+          "example": "status",
+          "name": "command",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "example": "com.xingin.discover",
+          "name": "bundle_id",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "example": "/var/mobile/Downloads/App.ipa",
+          "name": "path",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "example": "/var/mobile/Downloads/App.ipa",
+          "name": "ipa_path",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "dylib_path",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "example": "com.example.app.mod",
+          "name": "new_bundle_id",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "new_name",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "auto_install",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "example": "10",
+          "name": "duration",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "name": "text",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "febd76df",
+      "variants": [
+        {
+          "accepts": [],
+          "command": "launch",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "stop",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "restart",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "status",
+          "note": "查运行状态",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [
+            "duration"
+          ],
+          "command": "stats",
+          "note": "CPU/内存采样",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "cache_inspect",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "cache_clear",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [
+            "text"
+          ],
+          "command": "open_and_input",
+          "note": "拉起并输入",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "deps",
+          "note": "看依赖的 dylib",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "install",
+          "note": "装包：ipa_path 或 path 二选一，不是 bundle_id",
+          "required": [],
+          "required_any": [
+            "ipa_path",
+            "path"
+          ]
+        },
+        {
+          "accepts": [],
+          "command": "uninstall",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "duplicate",
+          "note": "复制成第二个 App",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "diagnose",
+          "note": "启动失败先跑这个",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "encrypt_info",
+          "note": "查是否加密(cryptid)",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "entitlements",
+          "note": "查权限 plist",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "decrypt",
+          "note": "砸壳第一步",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "replace_decrypted",
+          "note": "砸壳第二步，就地替换",
+          "required": [
+            "bundle_id",
+            "ipa_path"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "restore_binary",
+          "note": "替换后启动不了就回滚",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "launch_options",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [
+            "ipa_path",
+            "new_bundle_id",
+            "new_name",
+            "auto_install"
+          ],
+          "command": "inject_package",
+          "note": "改包+注入+重装",
+          "required": [
+            "dylib_path"
+          ],
+          "required_any": []
+        }
+      ],
+      "verified": true
+    },
+    {
+      "annotations": {},
+      "category": "filesystem",
+      "class": "AppWriteFileTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "AppWriteFileTool.swift",
+      "name": "app_write_file",
+      "params": [
+        {
+          "name": "bundle_id",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "rel_path",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "content_b64",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "2dc1ddc0",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": false,
+        "openWorld": false,
+        "readOnly": false
+      },
+      "category": "fs",
+      "class": "ArtifactExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "Tools.swift",
+      "name": "artifact",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "filename",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "text",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "b6145916",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": false,
+        "openWorld": false,
+        "readOnly": false
+      },
+      "category": "knowledge",
+      "class": "MemoryExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "Tools.swift",
+      "name": "assistant_memory",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "key",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "value",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "840490ea",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": false,
+        "openWorld": false,
+        "readOnly": false
+      },
+      "category": "automation",
+      "class": "AutomationExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "AllMCPTools.swift",
+      "name": "automation",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "enabled",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "17acdb38",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": false,
+        "openWorld": false,
+        "readOnly": false
+      },
+      "category": "filesystem",
+      "class": "BindAppTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "BindAppTool.swift",
+      "name": "bind_app",
+      "params": [
+        {
+          "name": "bundle_id",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "b4967e64",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {},
+      "category": "filesystem",
+      "class": "BindAppWriteTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "BindAppTool.swift",
+      "name": "bind_app_write",
+      "params": [
+        {
+          "name": "bundle_id",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "14e7e143",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": true,
+        "openWorld": false,
+        "readOnly": true
+      },
+      "category": "fs",
+      "class": "ContainerExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "Tools.swift",
+      "name": "container",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "bundle_id",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "path",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "text",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "b7a2f93b",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {},
+      "category": "ui_control",
+      "class": "ControlExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "ControlTools.swift",
+      "name": "control",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "bundle_id",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "x",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "y",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "x1",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "y1",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "x2",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "y2",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "text",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "key",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "placeholder",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "f541f70e",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": false,
+        "openWorld": false,
+        "readOnly": false
+      },
+      "category": "data",
+      "class": "DbExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "FileDbTools.swift",
+      "name": "db",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "path",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "sql",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "d43ee7ef",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {},
+      "category": "device",
+      "class": "DeviceExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "Tools.swift",
+      "name": "device",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "ba003ec6",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": true,
+        "openWorld": false,
+        "readOnly": true
+      },
+      "category": "diagnose",
+      "class": "DiagnoseExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "Tools.swift",
+      "name": "diagnose",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "repair",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "bundle_id",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "0558adab",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": true,
+        "openWorld": false,
+        "readOnly": true
+      },
+      "category": "macho",
+      "class": "DisasmTool",
+      "default_enabled": false,
+      "environment": {},
+      "file": "DisasmTool.swift",
+      "name": "disasm",
+      "params": [
+        {
+          "name": "path",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "address",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "symbol",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "count",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "arch",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "a80aa834",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": false,
+        "openWorld": false,
+        "readOnly": false
+      },
+      "category": "config",
+      "class": "EnvTool",
+      "default_enabled": false,
+      "environment": {},
+      "file": "EnvVars.swift",
+      "name": "env",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "key",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "value",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "c566fe73",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": false,
+        "openWorld": false,
+        "readOnly": false
+      },
+      "category": "build",
+      "class": "EnvSetupRETool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "InstallTools.swift",
+      "name": "env.setup_re",
+      "params": [],
+      "summary_sha256_8": "076f3537",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": true,
+        "openWorld": false,
+        "readOnly": true
+      },
+      "category": "filesystem",
+      "class": "FileExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "FileDbTools.swift",
+      "name": "file",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "path",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "7b72fc66",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": true,
+        "idempotent": false,
+        "openWorld": true,
+        "readOnly": false
+      },
+      "category": "system",
+      "class": "GitNativeTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "GitNativeTool.swift",
+      "name": "git",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "token",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "repo",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "path",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "branch",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "message",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "files",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "build_red_ack",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "c283acb1",
+      "variants": [],
+      "verified": false
+    },
+    {
+      "annotations": {},
+      "category": "injection",
+      "class": "InjectionExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "AllMCPTools.swift",
+      "name": "inject",
+      "params": [
+        {
+          "enum": [
+            "enable",
+            "disable",
+            "static",
+            "enable_persisted",
+            "status",
+            "inspect",
+            "list",
+            "remove",
+            "restore",
+            "mem",
+            "diagnose",
+            "verify",
+            "ipa_inspect",
+            "dylib_inspect",
+            "binary_symbols",
+            "hook_apply",
+            "probe_inspect",
+            "plugin_list",
+            "keychain_wipe",
+            "load_dylib"
+          ],
+          "example": "status",
+          "name": "command",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "example": "com.xingin.discover",
+          "name": "bundle_id",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "example": "/var/containers/Bundle/Application/xxx/App.app/App",
+          "name": "path",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "dylib_path",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "example": "小红书",
+          "name": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "example": "20",
+          "name": "limit",
+          "required": false,
+          "type": "integer"
+        },
+        {
+          "name": "auto_launch",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "name": "restart",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "name": "config",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "class_name",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "prefix",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "example": "full",
+          "name": "detail",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "example": "all",
+          "name": "direction",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "603b6b0a",
+      "variants": [
+        {
+          "accepts": [],
+          "command": "enable",
+          "note": "注入 dylib，两个都要",
+          "required": [
+            "bundle_id",
+            "dylib_path"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "disable",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "static",
+          "note": "静态注入(改二进制)",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "enable_persisted",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "status",
+          "note": "查注入状态",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "inspect",
+          "note": "只认 bundle_id，不认 path",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [
+            "query",
+            "limit"
+          ],
+          "command": "list",
+          "note": "搜 App 拿 bundle_id",
+          "required": [],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "remove",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "restore",
+          "note": "还原原始二进制",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [
+            "dylib_path",
+            "auto_launch"
+          ],
+          "command": "mem",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [
+            "dylib_path"
+          ],
+          "command": "diagnose",
+          "note": "注入失败先跑这个",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "verify",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [
+            "detail"
+          ],
+          "command": "ipa_inspect",
+          "note": "看 IPA 包，用 path",
+          "required": [
+            "path"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "dylib_inspect",
+          "note": "看 dylib，用 path",
+          "required": [
+            "path"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [
+            "direction"
+          ],
+          "command": "binary_symbols",
+          "note": "提符号，用 path",
+          "required": [
+            "path"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [
+            "config",
+            "restart"
+          ],
+          "command": "hook_apply",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [
+            "query",
+            "class_name",
+            "prefix"
+          ],
+          "command": "probe_inspect",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "plugin_list",
+          "note": "无参数",
+          "required": [],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "keychain_wipe",
+          "required": [
+            "bundle_id"
+          ],
+          "required_any": []
+        },
+        {
+          "accepts": [],
+          "command": "load_dylib",
+          "required": [
+            "path"
+          ],
+          "required_any": []
+        }
+      ],
+      "verified": true
+    },
+    {
+      "annotations": {},
+      "category": "system",
+      "class": "JBPlotTool",
+      "default_enabled": true,
+      "environment": {
+        "requires_jailbreak": true
+      },
+      "file": "JBPlotTool.swift",
+      "name": "jb",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "subcommand",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "device",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "params",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "project",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "ssh_host",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "ssh_port",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "ssh_user",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "ssh_password",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "version",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "bundle_id",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "executable",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "timeout",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "dace988f",
+      "variants": [],
+      "verified": false
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": false,
+        "openWorld": false,
+        "readOnly": false
+      },
+      "category": "knowledge",
+      "class": "KnowledgeExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "Tools.swift",
+      "name": "knowledge",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "text",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "path",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "id",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "ea6888ce",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {},
+      "category": "device",
+      "class": "LocationExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "Tools.swift",
+      "name": "location",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "lat",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "lng",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "6dcbb946",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": true,
+        "openWorld": false,
+        "readOnly": true
+      },
+      "category": "misc",
+      "class": "MachoExecTool",
+      "default_enabled": false,
+      "environment": {},
+      "file": "MachoTools.swift",
+      "name": "macho",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "path",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "pid",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "keyword",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "section",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "offset",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "ca7e9917",
+      "variants": [],
+      "verified": false
+    },
+    {
+      "annotations": {},
+      "category": "automation",
+      "class": "MacroExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "Tools.swift",
+      "name": "macro",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "abab2b94",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {},
+      "category": "misc",
+      "class": "MemoryTweakTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "Tools.swift",
+      "name": "memory",
+      "params": [
+        {
+          "name": "action",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "backend",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "target",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "bundle_id",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "pid",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "value",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "value2",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "type",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "address",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "offset",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "mode",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "e1da819e",
+      "variants": [],
+      "verified": false
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": false,
+        "openWorld": true,
+        "readOnly": false
+      },
+      "category": "diagnose",
+      "class": "NetworkCaptureTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "QTTools.swift",
+      "name": "network.capture",
+      "params": [
+        {
+          "name": "action",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "bundle_id",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "d792e8db",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": true,
+        "openWorld": false,
+        "readOnly": true
+      },
+      "category": "package",
+      "class": "PackageTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "PackageTools.swift",
+      "name": "package",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "path",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "dest",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "b6724ebd",
+      "variants": [],
+      "verified": false
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": false,
+        "openWorld": false,
+        "readOnly": false
+      },
+      "category": "build",
+      "class": "ProjectTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "ProjectAndTasks.swift",
+      "name": "project",
+      "params": [
+        {
+          "name": "action",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "name",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "bundle_id",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "app_name",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "dylib_path",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "project_id",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "dce7c23c",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": true,
+        "openWorld": false,
+        "readOnly": true
+      },
+      "category": "misc",
+      "class": "PromptModeTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "MCPCore.swift",
+      "name": "prompt.read_mode",
+      "params": [
+        {
+          "name": "mode_id",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "list",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "a7b80cb3",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {},
+      "category": "terminal",
+      "class": "PyEvalTool",
+      "default_enabled": false,
+      "environment": {},
+      "file": "PyEvalTool.swift",
+      "name": "py",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "code",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "path",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "cbb040f2",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": false,
+        "openWorld": false,
+        "readOnly": false
+      },
+      "category": "system",
+      "class": "ReminderExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "ReminderExecTool.swift",
+      "name": "reminder",
+      "params": [],
+      "summary_sha256_8": "570a73ec",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {},
+      "category": "cleanup",
+      "class": "RescueExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "RescueTools.swift",
+      "name": "rescue",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "bundle_id",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "52e7fd62",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {},
+      "category": "shell",
+      "class": "RootdTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "RootdTool.swift",
+      "name": "root",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "cmd",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "timeout",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "a740e2d0",
+      "variants": [],
+      "verified": false
+    },
+    {
+      "annotations": {},
+      "category": "file",
+      "class": "SaveDataTool",
+      "default_enabled": false,
+      "environment": {},
+      "file": "SaveDataTool.swift",
+      "name": "save",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "bundle_id",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "path",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "sql",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "key",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "value",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "c61b6330",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": false,
+        "openWorld": false,
+        "readOnly": false
+      },
+      "category": "system",
+      "class": "ServerExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "DiagnoseAndServer.swift",
+      "name": "server",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "port",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "20c7e7ac",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {},
+      "category": "misc",
+      "class": "ShellExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "ShellTool.swift",
+      "name": "shell.exec",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "timeout",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "runtime",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "reset_cwd",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "full",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "offset",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "env",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "a9dfbb39",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": true,
+        "openWorld": false,
+        "readOnly": true
+      },
+      "category": "skills",
+      "class": "SkillsListTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "SkillStore.swift",
+      "name": "skills.list",
+      "params": [],
+      "summary_sha256_8": "ec5a5f17",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": true,
+        "openWorld": false,
+        "readOnly": true
+      },
+      "category": "skills",
+      "class": "SkillsReadTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "SkillStore.swift",
+      "name": "skills.read",
+      "params": [],
+      "summary_sha256_8": "ad38717d",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": false,
+        "openWorld": false,
+        "readOnly": false
+      },
+      "category": "skills",
+      "class": "SkillsSetEnabledTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "MissingTools.swift",
+      "name": "skills.set_enabled",
+      "params": [],
+      "summary_sha256_8": "5587cc5c",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": true,
+        "idempotent": false,
+        "openWorld": true,
+        "readOnly": false
+      },
+      "category": "system",
+      "class": "SshExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "Tools.swift",
+      "name": "ssh",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "cmd",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "local",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "remote",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "5a560f75",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": true,
+        "idempotent": false,
+        "openWorld": true,
+        "readOnly": false
+      },
+      "category": "automation",
+      "class": "SubagentTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "SubagentTool.swift",
+      "name": "subagent",
+      "params": [
+        {
+          "name": "task",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "context",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "tools",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "exclude",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "max_rounds",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "model",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "reasoning",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "cc133d79",
+      "variants": [],
+      "verified": false
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": true,
+        "openWorld": false,
+        "readOnly": true
+      },
+      "category": "system",
+      "class": "SystemOverviewTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "AllMCPTools.swift",
+      "name": "system.overview",
+      "params": [],
+      "summary_sha256_8": "c47f0d49",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": true,
+        "idempotent": false,
+        "openWorld": true,
+        "readOnly": false
+      },
+      "category": "build",
+      "class": "ToolInstallTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "InstallTools.swift",
+      "name": "tool.install",
+      "params": [
+        {
+          "name": "name",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "profile",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "source",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "47125afd",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": true,
+        "openWorld": false,
+        "readOnly": true
+      },
+      "category": "system",
+      "class": "AuditTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "AllMCPTools.swift",
+      "name": "tools.audit",
+      "params": [],
+      "summary_sha256_8": "071a06e9",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": true,
+        "openWorld": false,
+        "readOnly": true
+      },
+      "category": "system",
+      "class": "VerifyExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "Tools.swift",
+      "name": "verify",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "path",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "bundle_id",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "c26029af",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": true,
+        "idempotent": false,
+        "openWorld": true,
+        "readOnly": false
+      },
+      "category": "network",
+      "class": "VpnTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "VpnTools.swift",
+      "name": "vpn.capture",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "f383edac",
+      "variants": [],
+      "verified": false
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": false,
+        "openWorld": false,
+        "readOnly": true
+      },
+      "category": "browser",
+      "class": "WebFetchTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "MissingTools.swift",
+      "name": "web.fetch",
+      "params": [],
+      "summary_sha256_8": "5b63fea2",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": false,
+        "openWorld": false,
+        "readOnly": true
+      },
+      "category": "browser",
+      "class": "WebSearchTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "MissingTools.swift",
+      "name": "web.search",
+      "params": [],
+      "summary_sha256_8": "d686db98",
+      "variants": [],
+      "verified": true
+    },
+    {
+      "annotations": {},
+      "category": "net",
+      "class": "WifiProxyExecTool",
+      "default_enabled": false,
+      "environment": {
+        "requires_trollstore": true
+      },
+      "file": "WifiProxyTool.swift",
+      "name": "wifi",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "port",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "ba34c91a",
+      "variants": [],
+      "verified": false
+    },
+    {
+      "annotations": {
+        "destructive": false,
+        "idempotent": false,
+        "openWorld": false,
+        "readOnly": false
+      },
+      "category": "filesystem",
+      "class": "WorkspaceExecTool",
+      "default_enabled": true,
+      "environment": {},
+      "file": "WorkspaceTools.swift",
+      "name": "workspace",
+      "params": [
+        {
+          "name": "command",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "path",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "command_text",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "content",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "old",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "new",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "pattern",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "offset",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "limit",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "timeout",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "summary_sha256_8": "735186ab",
+      "variants": [],
+      "verified": true
+    }
+  ]
+}

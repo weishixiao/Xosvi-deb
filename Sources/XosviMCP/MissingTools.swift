@@ -98,7 +98,7 @@ final class DeviceSnapshotTool: MCPTool {
 
 final class WebSearchTool: MCPTool {
     let definition = ToolDefinition(name: "web.search",
-        summary: "Search the web. Providers: Bing / DuckDuckGo / SearXNG (free, no key) and Tavily / Exa / Brave / Serper / 博查 / 秘塔 / 智谱 / Jina / Firecrawl / Perplexity / LinkUp / You.com (need API key, set in Settings → 联网搜索). Use for: find information, look up facts/docs. Don't use for: read a specific page (use web.fetch), search local knowledge (use knowledge.search). Params: query, provider (optional), limit. Example: 'when was iPhone 16 released' → web.search.",
+        summary: "Search the web. Providers: Bing / DuckDuckGo / SearXNG (free, no key) and Tavily / Exa / Brave / Serper / 博查 / 秘塔 / 智谱 / Jina / Firecrawl / Perplexity / LinkUp / You.com (need API key, set in Settings → 联网搜索). Use for: find information, look up facts/docs. Don't use for: read a specific page (use web.fetch), search local knowledge (use `knowledge command:search`). Params: query, provider (optional), limit. Example: 'when was iPhone 16 released' → web.search.",
         parameters: ["query": "Search keywords",
                      "provider": "Optional provider name: bing/duckduckgo/searxng/tavily/exa/brave/serper/bocha/metaso/zhipu/jina/firecrawl/perplexity/linkup/you",
                      "limit": "Max results (default from settings, max 20)"],
@@ -408,7 +408,7 @@ enum BM25Tokenizer {
 
 final class KnowledgeImportTextTool: MCPTool {
     let definition = ToolDefinition(name: "knowledge.import_text",
-        summary: "Save text content to the knowledge base. Use for: store notes/reference material for later retrieval. Don't use for: write file to workspace (use artifact), search saved knowledge (use knowledge.search). Example: user says 'save this note' → import to knowledge base.",
+        summary: "Save text content to the knowledge base. Use for: store notes/reference material for later retrieval. Don't use for: write file to workspace (use artifact), search saved knowledge (use `knowledge command:search`). Example: user says 'save this note' → import to knowledge base.",
         parameters: ["name": "Entry name/title", "content": "Text content to save"], verified: true, category: "knowledge")
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let name = params["name"] as? String, let content = params["content"] as? String else {
@@ -424,7 +424,7 @@ final class KnowledgeImportTextTool: MCPTool {
 
 final class KnowledgeImportFileTool: MCPTool {
     let definition = ToolDefinition(name: "knowledge.import_file",
-        summary: "Import a file into the knowledge base. Use for: store documents for later search/retrieval. Don't use for: import text content directly (use knowledge.import_text), search knowledge (use knowledge.search). Example: user says 'store this PDF in knowledge base' → import file.",
+        summary: "Import a file into the knowledge base. Use for: store documents for later search/retrieval. Don't use for: import text content directly (use knowledge.import_text), search knowledge (use `knowledge command:search`). Example: user says 'store this PDF in knowledge base' → import file.",
         parameters: ["path": "File path (workspace-relative)", "name": "Entry name (optional)"], verified: true, category: "knowledge")
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let path = params["path"] as? String else { throw MCPError.invalidParams("path required") }
@@ -472,7 +472,7 @@ final class KnowledgeSearchTool: MCPTool {
 }
 
 final class KnowledgeDeleteTool: MCPTool {
-    let definition = ToolDefinition(name: "knowledge.delete", summary: "Delete an entry from knowledge base. Use for: remove outdated info you saved before. Don't use for: search knowledge (use knowledge.search), save new knowledge (use knowledge.import_text). Warning: irreversible! Example: user says 'delete the note I saved before' → delete knowledge entry.",
+    let definition = ToolDefinition(name: "knowledge.delete", summary: "Delete an entry from knowledge base. Use for: remove outdated info you saved before. Don't use for: search knowledge (use `knowledge command:search`), save new knowledge (use knowledge.import_text). Warning: irreversible! Example: user says 'delete the note I saved before' → delete knowledge entry.",
         parameters: ["name": "Entry name to delete"], verified: true)
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let name = params["name"] as? String else { throw MCPError.invalidParams("name required") }

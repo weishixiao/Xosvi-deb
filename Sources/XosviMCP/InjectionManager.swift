@@ -1836,7 +1836,7 @@ final class InjectionManager {
             "desisted": desist,
             "injected": injected,
             "status": injected ? "still_injected" : "reverted",
-            "hint": restored.isEmpty ? "no restorable backup found; if App still cannot launch, use rescue.cleanup to clear residue" : "restored original binary from backup"
+            "hint": restored.isEmpty ? "no restorable backup found; if App still cannot launch, use `rescue command:cleanup` to clear residue" : "restored original binary from backup"
         ]
     }
 

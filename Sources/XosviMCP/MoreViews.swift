@@ -713,6 +713,8 @@ struct DeveloperInstructionsView: View {
     @State private var creating = false
     // v2.9.24：一键复制提示
     @State private var copiedName: String?
+    // v7.17.0：实验性提示词包改为手动导入
+    @State private var showLegacyImport = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -726,16 +728,16 @@ struct DeveloperInstructionsView: View {
             .padding(.vertical, 8)
 
             List {
-                // 破甲测试说明卡
+                // 开发者指令说明卡（v7.17.0：默认不再播种破甲提示词）
                 Section {
                     VStack(alignment: .leading, spacing: 8) {
-                        Label("破甲测试专用", systemImage: "hammer.fill")
+                        Label("开发者指令", systemImage: "hammer.fill")
                             .font(.subheadline.weight(.semibold))
                             .foregroundColor(.orange)
-                        Text("这里的模型破甲提示词会作为补充提示词注入 AI，适合做破甲、越狱、注入、绕过等高级测试任务。")
+                        Text("这里是注入 AI 请求的补充提示词。默认只包含一份中性的《工具使用契约》。")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        Text("选「开发者模式」系统指令 + 这里的破甲提示词 = 最强的破甲测试组合。")
+                        Text("实验性提示词包（含破甲/越狱内容）已改为手动导入，导入后默认不启用。请逐条审阅后自行承担风险。")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -798,7 +800,13 @@ struct DeveloperInstructionsView: View {
                         }
                     }
                     Section {
-                        Text("所有开启的指令都会合并后注入 AI 请求。系统指令先注入，破甲指令后注入。")
+                        Button {
+                            showLegacyImport = true
+                        } label: {
+                            Label("导入实验性指令包（10 条，默认不启用）", systemImage: "exclamationmark.triangle")
+                                .foregroundColor(.orange)
+                        }
+                        Text("所有开启的指令都会合并后注入 AI 请求。系统指令先注入，开发者指令后注入。")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -815,6 +823,17 @@ struct DeveloperInstructionsView: View {
             }
             .sheet(isPresented: $creating) {
                 DevInstructionEditorView(name: "", initialContent: "", mode: .create)
+            }
+            .alert(isPresented: $showLegacyImport) {
+                Alert(
+                    title: Text("导入实验性指令包？"),
+                    message: Text("包含 10 条破甲/越狱提示词，可能与上游模型的安全策略冲突，导致回答被拒或行为不稳定。导入后默认不启用，请逐条审阅。"),
+                    primaryButton: .destructive(Text("导入")) {
+                        _ = DeveloperInstructionStore.shared.importLegacyPromptPack()
+                        reload()
+                    },
+                    secondaryButton: .cancel(Text("取消"))
+                )
             }
         }
         .background(Color(.systemGroupedBackground))

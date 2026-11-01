@@ -157,6 +157,11 @@ final class ControlAgentTools {
             if code == 200 {
                 var result = parseJSON(data)
                 if attempt > 0 { result["retries"] = attempt }
+                // v7.17.0：UI 文案来自目标 App，可被构造成指令——统一标为不可信资料。
+                let blob = (try? JSONSerialization.data(withJSONObject: result))
+                    .flatMap { String(data: $0, encoding: .utf8) } ?? ""
+                result.merge(ToolExternalContent.markUntrusted(
+                    HTMLText.looksInjected(blob), source: "target app UI tree")) { _, new in new }
                 return result
             }
             lastErr = error; lastCode = code
@@ -424,7 +429,7 @@ final class ControlTypeTextTool: MCPTool {
 final class ControlExecTool: MCPTool {
     let definition = ToolDefinition(
         name: "control",
-        summary: "Control target app UI. Subcommands: inject / status / ui_tree / screenshot / tap / swipe / type / key / tap_text / type_text. Params per subcommand: tap→x,y(Number); swipe→x1,y1,x2,y2(Number); type→text; tap_text→text; type_text→placeholder+text; key→key(home/back/enter); inject→bundle_id; others none. Use for: UI automation / app screen control. 先 inject 注入 ControlAgent 后再调其他子命令.",
+        summary: "Control target app UI. Subcommands: inject / status / ui_tree / screenshot / tap / swipe / type / key / tap_text / type_text. Params per subcommand: tap→x,y(Number); swipe→x1,y1,x2,y2(Number); type→text; tap_text→text; type_text→placeholder+text; key→key(home/back/enter); inject→bundle_id; others none. Use for: UI automation / app screen control. Don't use for: launching apps (use `app command:launch`), injecting dylib (use inject), reading raw files (use file/artifact). 先 `control command:inject bundle_id:...` 注入 ControlAgent 后再调其他子命令. Example: control command:ui_tree.",
         parameters: [
             "command": "Subcommand (required): inject / status / ui_tree / screenshot / tap / swipe / type / key / tap_text / type_text",
             "bundle_id": "App bundle ID — REQUIRED for inject only",
@@ -465,14 +470,14 @@ final class ControlExecTool: MCPTool {
             return ControlAgentTools.shared.screenshot()
             
         case "tap":
-            guard let x = params["x"] as? Double, let y = params["y"] as? Double else {
+            guard let x = params.num("x"), let y = params.num("y") else {
                 throw MCPError.invalidParams("x and y required. Usage: control tap x:100 y:200 (both Numbers)")
             }
             return ControlAgentTools.shared.tap(x: x, y: y)
             
         case "swipe":
-            guard let x1 = params["x1"] as? Double, let y1 = params["y1"] as? Double,
-                  let x2 = params["x2"] as? Double, let y2 = params["y2"] as? Double else {
+            guard let x1 = params.num("x1"), let y1 = params.num("y1"),
+                  let x2 = params.num("x2"), let y2 = params.num("y2") else {
                 throw MCPError.invalidParams("x1,y1,x2,y2 required. Usage: control swipe x1:100 y1:200 x2:300 y2:400 (all Numbers)")
             }
             return ControlAgentTools.shared.swipe(x1: x1, y1: y1, x2: x2, y2: y2, duration: 0.3)

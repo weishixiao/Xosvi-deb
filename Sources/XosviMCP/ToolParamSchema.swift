@@ -26,7 +26,8 @@ public struct ToolParam {
         public var jsonType: String {
             switch self {
             case .string, .enumeration: return "string"
-            case .int, .number: return "integer"
+            case .int: return "integer"
+            case .number: return "number"
             case .boolean: return "boolean"
             case .array: return "array"
             }
@@ -65,6 +66,10 @@ public struct ToolParam {
         ToolParam(name, .boolean, desc, required: required)
     }
 
+    public static func n(_ name: String, _ desc: String, required: Bool = false, example: String? = nil) -> ToolParam {
+        ToolParam(name, .number, desc, required: required, example: example)
+    }
+
     public static func e(_ name: String, _ desc: String, values: [String],
                   required: Bool = false, example: String? = nil) -> ToolParam {
         ToolParam(name, .enumeration(values), desc, required: required, example: example)
@@ -99,14 +104,18 @@ public struct ToolVariant {
     public let command: String
     /// 该子命令必填的参数
     public let requires: [String]
+    /// 该子命令「至少填一个」的参数组（如 install 的 ipa_path / path）
+    public let requiresAny: [String]
     /// 该子命令会用到（可空）的参数
     public let accepts: [String]
     /// 一句话说明
     public let note: String?
 
-    public init(_ command: String, requires: [String] = [], accepts: [String] = [], note: String? = nil) {
+    public init(_ command: String, requires: [String] = [], requiresAny: [String] = [],
+                accepts: [String] = [], note: String? = nil) {
         self.command = command
         self.requires = requires
+        self.requiresAny = requiresAny
         self.accepts = accepts
         self.note = note
     }
@@ -116,6 +125,9 @@ public struct ToolVariant {
         var s = command
         if !requires.isEmpty {
             s += " → 必填: " + requires.joined(separator: "+")
+        }
+        if !requiresAny.isEmpty {
+            s += (requires.isEmpty ? " → " : "；") + "必填其一: " + requiresAny.joined(separator: "|")
         }
         if !accepts.isEmpty {
             s += "，可选: " + accepts.joined(separator: "/")

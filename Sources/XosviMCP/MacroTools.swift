@@ -167,8 +167,8 @@ final class MacroRunner {
     }
 
     private static func execute(tool: String, params: [String: Any]) -> Bool {
-        let x = Float(params["x"] as? Double ?? 0)
-        let y = Float(params["y"] as? Double ?? 0)
+        let x = Float(params.num("x") ?? 0)
+        let y = Float(params.num("y") ?? 0)
         switch tool {
         case "ui.tap":
             return HIDTouchInjector.shared.tap(x: x, y: y)

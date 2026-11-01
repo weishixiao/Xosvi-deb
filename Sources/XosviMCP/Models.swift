@@ -1918,11 +1918,20 @@ final class ConversationStore: ObservableObject {
             // v2.9.125：failed也输出结构化 JSON (对齐 CLI 返回协议），AI 可直接解析分类与下一步
             var next = toolMessages
             let failureBody: [String: Any]
-            if case MCPError.classified(let m, let code, let reason, let nextStep) = err {
+            // v7.17.0：.diagnosed 优先——带 kb_fix / evidence，AI 可直接分支处理。
+            if case MCPError.diagnosed(let m, let code, let reason, let nextStep,
+                                       let kb, let evidence) = err {
+                var e: [String: Any] = ["code": code, "reason": reason, "next_step": nextStep]
+                if !kb.isEmpty { e["kb_fix"] = kb }
+                if !evidence.isEmpty { e["evidence"] = evidence }
+                failureBody = ["ok": false, "message": m, "error": e]
+            } else if case MCPError.classified(let m, let code, let reason, let nextStep) = err {
                 failureBody = ["ok": false, "message": m,
                                "error": ["code": code, "reason": reason, "next_step": nextStep]]
             } else {
-                failureBody = ["ok": false, "message": err.description]
+                // v7.17.0：unknownTool / invalidParams / failed 也给机器可读 code，
+                // 不再只有一段字符串。
+                failureBody = ["ok": false, "message": err.description, "error": err.structured]
             }
             let content = Self.jsonString(failureBody)
             var failMsg = ChatMessage(role: "tool", content: content, isError: true, toolCallId: call.id, toolName: call.name)

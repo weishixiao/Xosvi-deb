@@ -100,7 +100,7 @@ final class ShellExecTool: MCPTool {
         
         // v4.3.13: 默认超时 30→20s（收紧）。iSH(x86 模拟器) CPU 开销极高，后台长命令/死循环
         // 约 13s CPU 即触发系统 watchdog(Elapsed CPU time 超限)→ panic/重启/闪退。收紧默认超时 + ISH kill 兜底。
-        let timeout = min(max((params["timeout"] as? Double) ?? 20, 1), 120)
+        let timeout = min(max(params.num("timeout") ?? 20, 1), 120)
         
         // v6.0.28: 显式 runtime 参数（auto/ios/alpine），解决自动路由不透明的问题
         // auto（默认）：按命令类型自动判断；ios：强制原生；alpine：强制 Alpine Linux

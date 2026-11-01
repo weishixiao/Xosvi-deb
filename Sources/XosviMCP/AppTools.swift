@@ -280,7 +280,7 @@ final class AppOpenAndInputTool: MCPTool {
         }
 
         // 等待注入的 agent HTTP ready (目标 App 启动后 ~1s 起服务）
-        let wait = (params["wait"] as? Double) ?? 8
+        let wait = params.num("wait") ?? 8
         let ready = waitAgentReady(timeout: wait)
         var agentStatus = "no_agent"
         var agentResult: [String: Any]?
