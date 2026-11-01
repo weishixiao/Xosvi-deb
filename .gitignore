@@ -17,3 +17,7 @@ Xosvi.zip
 # build artifacts
 *.zip
 build_out/
+
+# python
+__pycache__/
+*.pyc

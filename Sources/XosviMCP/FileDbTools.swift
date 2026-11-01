@@ -10,7 +10,7 @@ final class FileExecTool: MCPTool {
         parameters: [
             "command": "Subcommand (required): inspect / analyze",
             "path": "iOS absolute file path (required)"
-        ], verified: true, category: "filesystem")
+        ], verified: true, category: "filesystem", annotations: .readOnlyLocal, cache: ToolCachePolicy.short)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let command = params["command"] as? String else {
@@ -160,7 +160,7 @@ final class DbExecTool: MCPTool {
             "command": "Subcommand (required): list / schema / query",
             "path": "iOS absolute db path (required)",
             "sql": "SQL for query (required when command=query)"
-        ], verified: true, category: "data")
+        ], verified: true, category: "data", annotations: .destructiveLocal, cache: ToolCachePolicy.none)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let command = params["command"] as? String else {

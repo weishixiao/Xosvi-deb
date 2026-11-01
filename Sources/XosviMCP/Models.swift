@@ -1921,6 +1921,11 @@ final class ConversationStore: ObservableObject {
             if case MCPError.classified(let m, let code, let reason, let nextStep) = err {
                 failureBody = ["ok": false, "message": m,
                                "error": ["code": code, "reason": reason, "next_step": nextStep]]
+            } else if case MCPError.classifiedData(let m, let code, let reason, let nextStep, let extra) = err {
+                var errorDict: [String: Any] = ["code": code, "reason": reason, "next_step": nextStep]
+                if let kb = extra["kb_fix"] { errorDict["kb_fix"] = kb }
+                if let unmet = extra["unmet_prerequisites"] { errorDict["unmet_prerequisites"] = unmet }
+                failureBody = ["ok": false, "message": m, "error": errorDict]
             } else {
                 failureBody = ["ok": false, "message": err.description]
             }

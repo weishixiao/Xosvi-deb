@@ -126,9 +126,14 @@ public final class RemoteAgent: ObservableObject {
 
     private func executeAndReport(cmdID: Int, tool: String, params: [String: Any]) {
         guard Self.safeTools.contains(tool) else {
+            // v8（PR-F-43）：远程指令审计——被拒绝的也留痕
+            AuditLog.shared.log("remote", detail: "DENIED id=\(cmdID) tool=\(tool)")
             reportResult(cmdID: cmdID, ok: false, result: "[\"remote_denied\":\"工具不在远程只读白名单，禁止远程执行\"]")
             return
         }
+        // v8（PR-F-43）：远程指令审计——记录 id / 工具 / 参数键（不含值，避免泄露敏感数据）
+        let paramKeys = params.keys.filter { !$0.hasPrefix("_") }.sorted().joined(separator: ",")
+        AuditLog.shared.log("remote", detail: "EXEC id=\(cmdID) tool=\(tool) params=[\(paramKeys)]")
         var ok = true
         var result: [String: Any] = [:]
         do {
@@ -142,6 +147,7 @@ public final class RemoteAgent: ObservableObject {
             ok = false
             result = ["error": "\(error)"]
         }
+        AuditLog.shared.log("remote", detail: "DONE id=\(cmdID) tool=\(tool) ok=\(ok)")
         let data = (try? JSONSerialization.data(withJSONObject: result, options: [])) ?? Data()
         let str = String(data: data, encoding: .utf8) ?? ""
         reportResult(cmdID: cmdID, ok: ok, result: str)

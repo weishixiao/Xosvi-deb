@@ -22,7 +22,7 @@ final class PackageTool: MCPTool {
             "path must be a real file (use shell.exec / shell to locate it first)",
             "unpack writes to dest; ensure enough free space for extracted size",
             "after unpack, read inner files with artifact read"
-        ])
+        ], annotations: .writeLocal, cache: ToolCachePolicy.none)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let command = params["command"] as? String else {
@@ -245,6 +245,7 @@ final class PackageTool: MCPTool {
                         if let e = error as? MCPError {
                             switch e {
                             case .classified(let m, _, _, _): msg = m
+                            case .classifiedData(let m, _, _, _, _): msg = m
                             case .failed(let m): msg = m
                             case .invalidParams(let m): msg = m
                             case .unknownTool(let m): msg = m

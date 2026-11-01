@@ -86,7 +86,7 @@ final class MemoryTweakTool: MCPTool {
             "legacy 后端：目标游戏已注入 MemoryTweak.dylib 且 127.0.0.1:8765 可达",
             "search/fuzzy 是首扫，结果可能上万条；先 results 看几条，再用 refine 缩小，最后 write"
         ]
-    )
+    , annotations: .destructiveSystem, cache: ToolCachePolicy.none)
 
     private let port = 8765
 
@@ -442,7 +442,7 @@ final class DeviceExecTool: MCPTool {
         parameters: [
             "command": "Subcommand: info / probe / fake / restore / advertising / idfv / snapshot"
         ],
-        verified: true, category: "device")
+        verified: true, category: "device", annotations: .destructiveSystem, cache: ToolCachePolicy.none)
     
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let command = params["command"] as? String else {
@@ -943,7 +943,7 @@ final class LocationExecTool: MCPTool {
             "lat": "Latitude (for fake)",
             "lng": "Longitude (for fake)"
         ],
-        verified: true, category: "device")
+        verified: true, category: "device", annotations: .readOnlyNetwork, cache: ToolCachePolicy.none)
     
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let command = params["command"] as? String else {

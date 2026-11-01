@@ -14,7 +14,7 @@ final class DiagnoseStartupTool: MCPTool {
             "bundle_id": "Target App bundle ID (required)",
             "auto_fix": "Auto try to fix (default false, just diagnose)"
         ],
-        verified: true, category: "diagnose")
+        verified: true, category: "diagnose", annotations: .systemControl, cache: ToolCachePolicy.none)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let bundleId = params["bundle_id"] as? String, !bundleId.isEmpty else {
@@ -145,7 +145,7 @@ final class DiagnoseCrashTool: MCPTool {
             "bundle_id": "Target App bundle ID (required)",
             "count": "How many recent crashes to analyze (default 1)"
         ],
-    verified: true, category: "diagnose")
+    verified: true, category: "diagnose", annotations: .readOnlyLocal, cache: ToolCachePolicy.long)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let bundleId = params["bundle_id"] as? String, !bundleId.isEmpty else {

@@ -142,7 +142,11 @@ if rc != 0 { exit(rc) }
             let s5 = Socks5Server.shared.isRunning ? "socks5:running:\(Socks5Server.shared.port)" : "socks5:stopped"
             var txp: UInt = 0, txb: UInt = 0, rxp: UInt = 0, rxb: UInt = 0
             hev_socks5_tunnel_stats(&txp, &txb, &rxp, &rxb)
-            completionHandler?(Data("\(s5);up=\(txb)B;down=\(rxb)B".utf8))
+            // v8（PR-C3）：回显 LAN 排除与运行时长，主 App 用于核对「8790 保命路由」是否生效
+            let lan = Self.localSubnet()
+            let lanStr = lan.net.map { "\($0)/\(lan.mask ?? "?")" } ?? "none"
+            let uptime = Int(Date().timeIntervalSince(Self.startedAt))
+            completionHandler?(Data("\(s5);up=\(txb)B;down=\(rxb)B;lan_excluded=\(lanStr);uptime_s=\(uptime)".utf8))
             return
         }
         completionHandler?(Data("unknown cmd".utf8))
@@ -180,6 +184,9 @@ if rc != 0 { exit(rc) }
     }
 
     // MARK: - 本机 LAN 子网（getifaddrs 读 en0，excludedRoutes 保 8790 用）
+
+    /// v8：进程内启动时间（status 计算 uptime_s）
+    private static let startedAt = Date()
 
     private static func localSubnet() -> (net: String?, mask: String?, ip6: String?) {
         var ifaddr: UnsafeMutablePointer<ifaddrs>?

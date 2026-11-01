@@ -1,5 +1,132 @@
 import Foundation
 
+// MARK: - v8（PR-B2）：工具注解（对齐 MCP annotations）
+
+/// 操作语义注解——客户端与内置 AI 据此决定自动放行 / 二次确认 / 备份策略。
+///
+/// 默认值是**保守值**（与 MCP 规范对「未标注工具」的默认一致）。
+/// 但强制层（Gateway 只读拦截、重型信号量、破坏性确认）必须先看
+/// `ToolDefinition.isAnnotated`：未显式标注的工具维持今天的行为，避免一次迁移打挂全部工具。
+public struct ToolAnnotations {
+    public let readOnly: Bool      // 不修改任何状态
+    public let destructive: Bool   // 可能造成破坏性变更（删除/覆盖/注入/改写）
+    public let idempotent: Bool    // 相同参数重复调用与一次调用等效
+    public let openWorld: Bool     // 与外部世界交互（网络/其他 App/系统服务）
+
+    public init(readOnly: Bool = false,
+                destructive: Bool = true,     // 保守默认
+                idempotent: Bool = false,
+                openWorld: Bool = true) {     // 保守默认
+        self.readOnly = readOnly
+        // v8 修正：只读不可能破坏——归一，避免 ToolAnnotations(readOnly: true) 产生自相矛盾
+        self.destructive = readOnly ? false : destructive
+        self.idempotent = readOnly ? true : idempotent
+        self.openWorld = openWorld
+    }
+
+    // MARK: 常用预设（迁移时优先选中）
+
+    public static let readOnlyLocal = ToolAnnotations(
+        readOnly: true, destructive: false, idempotent: true, openWorld: false)
+    public static let readOnlyNetwork = ToolAnnotations(
+        readOnly: true, destructive: false, idempotent: true, openWorld: true)
+    public static let writeLocal = ToolAnnotations(
+        readOnly: false, destructive: false, idempotent: false, openWorld: false)
+    public static let writeLocalIdempotent = ToolAnnotations(
+        readOnly: false, destructive: false, idempotent: true, openWorld: false)
+    public static let destructiveLocal = ToolAnnotations(
+        readOnly: false, destructive: true, idempotent: false, openWorld: false)
+    public static let destructiveSystem = ToolAnnotations(
+        readOnly: false, destructive: true, idempotent: false, openWorld: true)
+    public static let systemControl = ToolAnnotations(
+        readOnly: false, destructive: false, idempotent: false, openWorld: true)
+
+    /// MCP tools/list 的 annotations 投影
+    public var jsonObject: [String: Any] {
+        [
+            "readOnlyHint": readOnly,
+            "destructiveHint": destructive,
+            "idempotentHint": idempotent,
+            "openWorldHint": openWorld,
+        ]
+    }
+}
+
+// MARK: - v8：缓存策略
+
+/// 结果缓存策略。
+/// - `cache == nil`（工具未设置）→ 回落到旧的前缀白名单逻辑（渐进迁移）。
+/// - `cache == .none` → 显式不缓存（覆盖 legacy：状态类工具用它）。
+public struct ToolCachePolicy {
+    /// nil = 不缓存；数值 = 缓存秒数
+    public let ttl: TimeInterval?
+    /// 这些**写操作**成功后应使本工具缓存失效（精准失效）
+    public let invalidatedBy: [String]
+
+    public init(ttl: TimeInterval?, invalidatedBy: [String] = []) {
+        self.ttl = ttl
+        self.invalidatedBy = invalidatedBy
+    }
+
+    public static let none  = ToolCachePolicy(ttl: nil)
+    public static let short = ToolCachePolicy(ttl: 300)
+    public static let long  = ToolCachePolicy(ttl: 1800)
+
+    public static func invalidated(by writes: [String], ttl: TimeInterval = 300) -> ToolCachePolicy {
+        ToolCachePolicy(ttl: ttl, invalidatedBy: writes)
+    }
+
+    public var jsonObject: [String: Any] {
+        var d: [String: Any] = ["ttl": ttl.map { Int($0) } as Any]
+        if !invalidatedBy.isEmpty { d["invalidated_by"] = invalidatedBy }
+        return d
+    }
+}
+
+// MARK: - v8：结构化交叉引用（替代描述里的裸点分名）
+
+public struct RelatedTool {
+    public let tool: String
+    public let command: String?
+    public let when: String
+
+    public init(tool: String, command: String? = nil, when: String) {
+        self.tool = tool
+        self.command = command
+        self.when = when
+    }
+
+    /// 统一渲染：`inject` command:enable —— 需要永久注入 dylib 时
+    public var rendered: String {
+        if let c = command { return "`\(tool)` command:\(c) —— \(when)" }
+        return "`\(tool)` —— \(when)"
+    }
+
+    public var jsonObject: [String: Any] {
+        var d: [String: Any] = ["tool": tool, "when": when]
+        if let c = command { d["command"] = c }
+        return d
+    }
+}
+
+// MARK: - v8：结构化示例
+
+public struct ToolExample {
+    public let say: String
+    public let args: [String: Any]?
+
+    public init(say: String, args: [String: Any]? = nil) {
+        self.say = say
+        self.args = args
+    }
+
+    public var jsonObject: [String: Any] {
+        var d: [String: Any] = ["say": say]
+        if let a = args { d["args"] = a }
+        return d
+    }
+}
+
 // MARK: - 工具定义
 
 public struct ToolDefinition {
@@ -39,7 +166,22 @@ public struct ToolDefinition {
     /// 子命令级参数要求——让模型知道「inspect 只要 bundle_id」「enable 要 bundle_id+dylib_path」。
     public let variants: [ToolVariant]
 
-    public init(name: String, summary: String, parameters: [String: String] = [:], returns: [String: String] = [:], verified: Bool = false, category: String = "misc", uiSummary: String = "", minIOSMajor: Int? = nil, maxIOSMajor: Int? = nil, requiresJailbreak: Bool = false, requiresTrollStore: Bool = false, remoteOnly: Bool = false, prerequisites: [String] = [], paramSpecs: [ToolParam] = [], variants: [ToolVariant] = []) {
+    // MARK: v8（PR-B2）新增
+
+    /// 操作语义注解（默认保守值 = 未迁移状态）
+    public let annotations: ToolAnnotations
+    /// 是否**显式**标注过注解。false 时强制层不启用（维持旧行为），迁移一个生效一个。
+    public let isAnnotated: Bool
+    /// 缓存策略（nil = 回落旧前缀逻辑，迁移期语义）
+    public let cache: ToolCachePolicy?
+    /// 结构化交叉引用（替代描述里手写的 "(use xxx)"）
+    public let related: [RelatedTool]
+    /// 结构化示例
+    public let examples: [ToolExample]
+    /// 旧名别名（迁移期声明；dispatch 对未命中名做兜底解析）
+    public let deprecatedAliases: [String]
+
+    public init(name: String, summary: String, parameters: [String: String] = [:], returns: [String: String] = [:], verified: Bool = false, category: String = "misc", uiSummary: String = "", minIOSMajor: Int? = nil, maxIOSMajor: Int? = nil, requiresJailbreak: Bool = false, requiresTrollStore: Bool = false, remoteOnly: Bool = false, prerequisites: [String] = [], paramSpecs: [ToolParam] = [], variants: [ToolVariant] = [], annotations: ToolAnnotations? = nil, cache: ToolCachePolicy? = nil, related: [RelatedTool] = [], examples: [ToolExample] = [], deprecatedAliases: [String] = []) {
         self.name = name
         self.summary = summary
         self.parameters = parameters
@@ -55,6 +197,13 @@ public struct ToolDefinition {
         self.prerequisites = prerequisites
         self.paramSpecs = paramSpecs
         self.variants = variants
+        // v8：nil 表示"未声明"——既保留保守默认展示，又让强制层知道不该启用
+        self.isAnnotated = (annotations != nil)
+        self.annotations = annotations ?? ToolAnnotations()
+        self.cache = cache
+        self.related = related
+        self.examples = examples
+        self.deprecatedAliases = deprecatedAliases
     }
 
     /// UI 显示用：优先 uiSummary (中文），否则 fallback 到 summary
@@ -76,6 +225,30 @@ public struct ToolDefinition {
         if sanitized.first?.isNumber ?? false { sanitized = "t_\(sanitized)" }
         return sanitized
     }
+
+    /// v8：MCP annotations 投影
+    public var annotationsJSON: [String: Any] { annotations.jsonObject }
+
+    /// v8：related 的统一自然语言渲染
+    public var relatedSentence: String {
+        guard !related.isEmpty else { return "" }
+        return "相关：" + related.map { $0.rendered }.joined(separator: "；")
+    }
+
+    /// v8：给模型看的完整描述（JSONRPC 与 OpenAI 两条投影路径共用，避免双份真相）
+    public var projectedDescription: String {
+        var desc = summary
+        if !prerequisites.isEmpty {
+            desc += " 前置条件: " + prerequisites.joined(separator: "; ") + "。不满足时先执行前置步骤再调用本工具，不要直接调用。"
+        }
+        if !variants.isEmpty {
+            desc += " 子命令参数速查: "
+            desc += variants.map { $0.cheatsheet }.joined(separator: " | ")
+            desc += "。按所选子命令只传它需要的参数。"
+        }
+        if !related.isEmpty { desc += " " + relatedSentence }
+        return desc
+    }
 }
 
 // MARK: - 工具协议
@@ -92,6 +265,8 @@ public enum MCPError: Error, CustomStringConvertible {
     /// v2.9.125：CLI 式failed分类——code + 四分类原因 + 下一步建议。
     /// description 输出为一行：tool failed: [CODE] 原因 (分类）下一步：xxx
     case classified(String, code: String, reason: String, nextStep: String)
+    /// v8（PR-B3/B4）：结构化失败 + 附加数据（kb_fix / unmet_prerequisites / evidence）
+    case classifiedData(String, code: String, reason: String, nextStep: String, data: [String: Any])
 
     public var description: String {
         switch self {
@@ -100,7 +275,32 @@ public enum MCPError: Error, CustomStringConvertible {
         case .failed(let m): return "tool failed: \(m)"
         case .classified(let m, let code, let reason, let nextStep):
             return "tool failed: [\(code)] \(m) (category: \(reason)) next: \(nextStep)"
+        case .classifiedData(let m, let code, let reason, let nextStep, _):
+            return "tool failed: [\(code)] \(m) (category: \(reason)) next: \(nextStep)"
         }
+    }
+
+    /// v8（PR-B4）：把知识库修复建议挂到错误上（没有命中时原样返回）
+    public func withKBFix(_ kb: [[String: Any]]) -> MCPError {
+        guard !kb.isEmpty else { return self }
+        switch self {
+        case let .classifiedData(m, code, reason, next, data):
+            var merged = data
+            merged["kb_fix"] = kb
+            return .classifiedData(m, code: code, reason: reason, nextStep: next, data: merged)
+        case let .classified(m, code, reason, next):
+            return .classifiedData(m, code: code, reason: reason, nextStep: next, data: ["kb_fix": kb])
+        default:
+            let f = FailureKind.classify(description)
+            return .classifiedData(description, code: f.code, reason: f.reason,
+                                   nextStep: f.nextStep, data: ["kb_fix": kb])
+        }
+    }
+
+    /// v8：结构化附加数据（Models 层序列化用）
+    public var structuredData: [String: Any]? {
+        if case let .classifiedData(_, _, _, _, data) = self { return data }
+        return nil
     }
 }
 
@@ -232,6 +432,30 @@ enum FailureKind {
     }
 }
 
+// MARK: - v8（PR-B4）：前置条件预检（只做「机器可判定」的部分）
+
+/// 只拦截「必然失败」的调用；文档型前置条件不阻断（由 projectedDescription 提示）。
+/// 设计原则：预检失败必须返回可执行的 how，而不是让工具内部抛模糊错误。
+enum Prerequisites {
+    static func check(tool: String, params: [String: Any]) -> [[String: Any]] {
+        switch tool {
+        case "memory":
+            let cmd = (params["action"] as? String) ?? (params["command"] as? String) ?? "status"
+            let noAttach: Set<String> = ["selfcheck", "attach", "status", "clear", "help", ""]
+            guard !noAttach.contains(cmd.lowercased()) else { return [] }
+            if VansonMemoryBridge.shared.attachedPid == 0 {
+                return [[
+                    "need": "尚未 attach 到目标进程（memory \(cmd) 需要先绑定）",
+                    "how": "先调用 `process` 工具列出进程拿 pid，再 `memory` action:attach pid:<pid>（或 bundle_id:<id>），成功后重试本命令",
+                ]]
+            }
+            return []
+        default:
+            return []
+        }
+    }
+}
+
 // MARK: - v7.15.2：按 run 作用域的熔断标志
 
 /// 熔断只应终止**触发它的那一轮 run**，不应波及其它会话/后台任务。
@@ -302,6 +526,11 @@ public final class ToolRegistry: ObservableObject {
     public static let shared = ToolRegistry()
 
     private var tools: [String: MCPTool] = [:]
+    /// v8（PR-B2）：旧名别名表（迁移期兼容；register 时构建，dispatch 只读，与 tools 同锁）
+    private var aliasMap: [String: String] = [:]
+    /// v8（PR-C2）：单 run 工具调用预算
+    private var runToolCalls: [String: Int] = [:]
+    private let runBudgetLimit = 80
     /// v3.1.8：公开工具总数
     // v7.15.1：register() 加锁而读取不加锁，Swift Dictionary 并发读写是未定义行为
     // （BackgroundRunManager 多会话并发调工具时实测 SIGSEGV）。读取一律加锁。
@@ -344,8 +573,9 @@ public final class ToolRegistry: ObservableObject {
     //   状态类 inject/app/rescue/engine —— 写操作成功后立刻读 status 必须看到新状态。
     // v7.16.12：把 root 加进来——root 是「守护进程状态」查询，缓存 5 分钟会让
     // 刚 kickstart 完的 daemon 仍报 daemon_alive:false，排障时把人带沟里。
+    // v8（PR-A2）：删除两个从未命中注册表的死条目（"device.fake" / "injection.mem"——
+    // 真实工具名是 device + command:fake、inject；前缀匹配对子命令不生效）。
     private var cacheBypassPrefixes: [String] = ["workspace", "browser", "control",
-                                                 "device.fake", "injection.mem",
                                                  "web", "inject", "app", "rescue", "engine",
                                                  "root"]
     private let defaultCacheWindow: TimeInterval = 300.0  // 默认 5 分钟缓存窗口
@@ -357,7 +587,7 @@ public final class ToolRegistry: ObservableObject {
         "device.info", "device.probe",  // 设备信息
         "injection.list", "process.list",  // 进程列表
         "artifact.list", "macro.list",  // 列表类
-        "skill.list", "skill.read",  // 技能列表
+        "skills.list", "skills.read",  // v8（PR-A2）：注册名是 skills.*（旧名 skill.* 永不命中）
     ]
 
     /// v6.9.0：熔断报错——不只说「停」，还给出可执行的替代方案。
@@ -420,19 +650,40 @@ public final class ToolRegistry: ObservableObject {
 
     /// v6.9.0：记录失败并返回是否应该熔断。
     /// 只有「同一 callKey + 同一错误签名」连续累计才计数；错误变了说明在推进，重置。
+    // MARK: - v8（PR-C1）：锁纪律
+
+    /// 唯一入口：短临界区 + 同线程重入断言。
+    /// NSLock 非递归——锁内调用 public 访问器会静默死锁，这里把它变成 debug 断言。
+    private static let lockDepthKey = "xosvi.registry.lock.depth"
+
+    @inline(__always)
+    private func withLock<T>(_ body: () -> T) -> T {
+        let depth = (Thread.current.threadDictionary[Self.lockDepthKey] as? Int) ?? 0
+        assert(depth == 0, "ToolRegistry 锁重入：检查是否在锁内调用了 tool(named:)/cacheWindow()/definitions")
+        Thread.current.threadDictionary[Self.lockDepthKey] = depth + 1
+        lock.lock()
+        defer {
+            lock.unlock()
+            Thread.current.threadDictionary[Self.lockDepthKey] = depth
+        }
+        return body()
+    }
+
     private func noteFailure(callKey: String, errorMessage: String) -> (count: Int, blocked: Bool) {
         let sig = ToolParamHelp.errorSignature(errorMessage)
-        if let prev = failureStreak[callKey], prev.signature == sig {
-            let next = prev.count + 1
-            failureStreak[callKey] = (sig, next)
-            return (next, next >= loopThreshold)
+        return withLock {
+            if let prev = failureStreak[callKey], prev.signature == sig {
+                let next = prev.count + 1
+                failureStreak[callKey] = (sig, next)
+                return (next, next >= loopThreshold)
+            }
+            failureStreak[callKey] = (sig, 1)
+            return (1, false)
         }
-        failureStreak[callKey] = (sig, 1)
-        return (1, false)
     }
 
     private func clearFailure(callKey: String) {
-        failureStreak.removeValue(forKey: callKey)
+        withLock { failureStreak.removeValue(forKey: callKey) }
     }
 
     private func callKey(name: String, params: [String: Any]) -> String {
@@ -441,55 +692,134 @@ public final class ToolRegistry: ObservableObject {
         return "\(name):\(paramStr)"
     }
 
-    /// 根据工具名决定缓存窗口
+    /// 根据工具名决定缓存窗口。
+    /// v8（PR-C2）：工具级 cache 字段优先（显式 policy 说话，含 ttl==nil 的"不缓存"）；
+    /// nil 才回落旧前缀逻辑（迁移期保留）。
     private func cacheWindow(for toolName: String) -> TimeInterval {
-        if longCacheTools.contains(toolName) {
-            return longCacheWindow
-        }
+        let policy = tool(named: toolName)?.definition.cache
+        if let policy = policy { return policy.ttl ?? 0 }
+        return legacyCacheWindow(for: toolName)
+    }
+
+    /// 已持锁时使用的窗口计算（禁止在锁内再调 tool(named:)）
+    private func cacheWindowLocked(for toolName: String) -> TimeInterval {
+        if let policy = tools[toolName]?.definition.cache { return policy.ttl ?? 0 }
+        return legacyCacheWindow(for: toolName)
+    }
+
+    private func legacyCacheWindow(for toolName: String) -> TimeInterval {
+        if cacheBypassPrefixes.contains(where: { toolName.hasPrefix($0) }) { return 0 }
+        if longCacheTools.contains(toolName) { return longCacheWindow }
         return defaultCacheWindow
     }
 
     private func recordCall(name: String, params: [String: Any]) -> Int {
         let key = callKey(name: name, params: params)
         let now = Date()
-        // 清理过期记录
-        recentCalls[key] = (recentCalls[key] ?? []).filter { now.timeIntervalSince($0) < loopWindow }
-        recentCalls[key]?.append(now)
-        if recentCalls[key] == nil { recentCalls[key] = [now] }
-        return recentCalls[key]?.count ?? 1
+        return withLock {
+            recentCalls[key] = (recentCalls[key] ?? []).filter { now.timeIntervalSince($0) < loopWindow }
+            recentCalls[key, default: []].append(now)
+            return recentCalls[key]?.count ?? 1
+        }
     }
 
-    /// v3.0.90：查缓存——5 分钟内同样的调用直接返回缓存结果
+    /// v8（PR-C2）：run 级预算——返回本 run 已调用次数（超限只提示，不阻断）
+    private func bumpRunBudget() -> Int {
+        withLock {
+            guard let token = RunScope.currentToken else { return 0 }
+            let n = (runToolCalls[token.uuidString] ?? 0) + 1
+            runToolCalls[token.uuidString] = n
+            if runToolCalls.count > 200 { runToolCalls.removeAll(keepingCapacity: true) }
+            return n
+        }
+    }
+
+    /// v3.0.90：查缓存
     private func getCachedResult(name: String, params: [String: Any]) -> [String: Any]? {
         let key = callKey(name: name, params: params)
-        guard let cached = resultCache[key] else { return nil }
-        // 过期了
-        let window = cacheWindow(for: name)
-        if Date().timeIntervalSince(cached.time) > window {
-            resultCache.removeValue(forKey: key)
-            return nil
+        return withLock {
+            guard let cached = resultCache[key] else { return nil }
+            let window = cacheWindowLocked(for: name)
+            if window <= 0 || Date().timeIntervalSince(cached.time) > window {
+                resultCache.removeValue(forKey: key)
+                return nil
+            }
+            return cached.result
         }
-        return cached.result
     }
 
     /// v3.0.90：存缓存
     private func cacheResult(name: String, params: [String: Any], result: [String: Any]) {
         let key = callKey(name: name, params: params)
-        resultCache[key] = (result, Date())
-        // 清理过期缓存
-        let now = Date()
-        for (k, v) in resultCache {
-            let window = cacheWindow(for: k.components(separatedBy: ":").first ?? "")
-            if now.timeIntervalSince(v.time) > window {
+        guard cacheWindow(for: name) > 0 else { return }
+        withLock {
+            resultCache[key] = (result, Date())
+            let now = Date()
+            for (k, v) in resultCache {
+                let w = cacheWindowLocked(for: k.components(separatedBy: ":").first ?? "")
+                if w <= 0 || now.timeIntervalSince(v.time) > w {
+                    resultCache.removeValue(forKey: k)
+                }
+            }
+        }
+    }
+
+    // MARK: - v8（PR-C2）：缓存命中计数（全部加锁）
+
+    private func bumpCacheHit(_ key: String) -> Int {
+        withLock {
+            let hits = (cacheHitCounts[key] ?? 0) + 1
+            cacheHitCounts[key] = hits
+            return hits
+        }
+    }
+    private func cacheHitValue(_ key: String) -> Int { withLock { cacheHitCounts[key] ?? 1 } }
+    private func resetCacheHits(_ key: String) { withLock { cacheHitCounts[key] = 0 } }
+    private func dropCache(_ key: String) {
+        withLock {
+            resultCache.removeValue(forKey: key)
+            cacheHitCounts.removeValue(forKey: key)
+        }
+    }
+    private func cacheAge(_ key: String) -> TimeInterval {
+        withLock {
+            guard let entry = resultCache[key] else { return 0 }
+            return Date().timeIntervalSince(entry.time)
+        }
+    }
+
+    /// v8（PR-C2）：写操作成功后按 invalidatedBy 精准失效相关读缓存。
+    /// - 别名先归一（经 deprecatedAliases 调用的写操作也要能失效）
+    /// - 破坏性写操作直接清全表（缓存外的写操作无法追踪，安全优先）
+    private func invalidateCaches(after writeToolName: String) {
+        let canonical = withLock { aliasMap[writeToolName] ?? writeToolName }
+        let destructive = tool(named: canonical)?.definition.annotations.destructive ?? false
+        withLock {
+            if destructive {
+                resultCache.removeAll(keepingCapacity: true)
+                cacheHitCounts.removeAll(keepingCapacity: true)
+                return
+            }
+            let dropKeys = resultCache.keys.filter { key in
+                guard let namePart = key.split(separator: ":", maxSplits: 1).first.map(String.init),
+                      let policy = tools[namePart]?.definition.cache else { return false }
+                return policy.invalidatedBy.contains(canonical)
+            }
+            for k in dropKeys {
                 resultCache.removeValue(forKey: k)
+                cacheHitCounts.removeValue(forKey: k)
             }
         }
     }
 
     public func register(_ tool: MCPTool) {
-        lock.lock()
-        tools[tool.definition.name] = tool
-        lock.unlock()
+        withLock {
+            let def = tool.definition
+            tools[def.name] = tool
+            for alias in def.deprecatedAliases where aliasMap[alias] == nil {
+                aliasMap[alias] = def.name
+            }
+        }
     }
 
     /// v3.0.71：外部 dylib 注册工具 (AI 自我进化——AI 写 dylib 注入自己，注册新工具）
@@ -560,6 +890,7 @@ public final class ToolRegistry: ObservableObject {
         // skills.* 让技能系统真正按需加载生效
         "file", "db", "package", "vpn.capture",
         "skills.list", "skills.read", "skills.set_enabled",
+        "ish.doctor", "health.summary", "gateway",
         // v4.3.65：恢复注册的联网检索工具（多引擎回退 + 多 query 并行 + 正文抽取）
         "web.search", "web.fetch",
         // v4.3.66：按需绑定 App 数据容器（bind_app 只读安全，bind_app_write 可写先备份，
@@ -617,8 +948,7 @@ public final class ToolRegistry: ObservableObject {
     /// 供跨消息持久注入——AI 每轮新消息都能看到调用过的工具 schema，
     /// 根治"调用过 app.decrypt 但下一轮够不到"。
     public func approvedToolNames() -> [String] {
-        // v3.0.90：去掉锁——只读操作
-        return Array(sessionApproved).filter { tools[$0] != nil }
+        withLock { Array(sessionApproved).filter { tools[$0] != nil } }
     }
 
     /// v2.9.22：清空会话授权 (新会话时调用）。
@@ -629,8 +959,34 @@ public final class ToolRegistry: ObservableObject {
     }
 
     public func isSessionApproved(_ name: String) -> Bool {
-        // v3.0.90：去掉锁——只读操作
-        return sessionApproved.contains(name)
+        withLock { sessionApproved.contains(name) }
+    }
+
+    // MARK: - v8（PR-A6）：环境可用性矩阵（机器可判定部分）
+
+    public func availability(of def: ToolDefinition) -> (available: Bool, reason: String?) {
+        let iosMajor = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+        if let minMajor = def.minIOSMajor, iosMajor < minMajor {
+            return (false, "requires iOS \(minMajor)+ (current iOS \(iosMajor))")
+        }
+        if let maxMajor = def.maxIOSMajor, iosMajor > maxMajor {
+            return (false, "supports up to iOS \(maxMajor) (current iOS \(iosMajor))")
+        }
+        let jailbroken = JBEnvironment.isJailbroken
+        if def.requiresJailbreak && !jailbroken {
+            return (false, "requires jailbreak (current environment: TrollStore only)")
+        }
+        if def.requiresTrollStore && !jailbroken && !Self.trollStoreInstalled {
+            return (false, "requires TrollStore (not installed)")
+        }
+        return (true, nil)
+    }
+
+    public static var trollStoreInstalled: Bool {
+        ["/Applications/TrollStore.app",
+         "/var/mobile/Library/TrollStore",
+         "/var/containers/Bundle/Application/TrollStore.app"]
+            .contains { FileManager.default.fileExists(atPath: $0) }
     }
 
     public func setEnabled(name: String, enabled: Bool) {
@@ -921,24 +1277,34 @@ public final class ToolRegistry: ObservableObject {
 
     /// 返回单个工具的完整 OpenAI function schema (供模型按名动态注入）
     public func openAISchema(for name: String) -> [String: Any]? {
-        // v3.0.90：去掉锁——只读操作
-        guard let tool = tools[name] else { return nil }
+        let tool = withLock { tools[name] ?? aliasMap[name].flatMap { tools[$0] } }
+        guard let tool = tool else { return nil }
         let def = tool.definition
-        var props: [String: [String: String]] = [:]
-        for (k, v) in def.parameters {
-            props[k] = ["type": "string", "description": v]
+        var props: [String: Any] = [:]
+        var required: [String] = []
+        if !def.paramSpecs.isEmpty {
+            for spec in def.paramSpecs {
+                props[spec.name] = spec.schemaFragment()
+                if spec.required { required.append(spec.name) }
+            }
+        } else {
+            for (k, v) in def.parameters {
+                props[k] = ["type": "string", "description": v]
+            }
         }
-        // v3.1.69：显式找 command/action 键 (见 enabledOpenAIToolSchema 注释——哈希顺序问题）
-        let selectorKey = def.parameters.keys.first { $0 == "command" || $0 == "action" }
+        let selectorCandidates = def.paramSpecs.isEmpty ? Array(def.parameters.keys) : def.paramSpecs.map(\.name)
+        if let k = selectorCandidates.first(where: { $0 == "command" || $0 == "action" }), !required.contains(k) {
+            required.append(k)
+        }
         return [
             "type": "function",
             "function": [
                 "name": def.apiName,
-                "description": def.summary,
+                "description": def.projectedDescription,
                 "parameters": [
                     "type": "object",
                     "properties": props,
-                    "required": selectorKey.map { [$0] } ?? []
+                    "required": required
                 ]
             ]
         ]
@@ -946,6 +1312,144 @@ public final class ToolRegistry: ObservableObject {
 
     @discardableResult
     public func dispatch(name: String, params: [String: Any]) throws -> [String: Any] {
+        // MARK: v8（PR-B2/B4/C2）：别名解析 + 前置校验 → 主执行管线 → 结果信封
+        let resolved: (tool: MCPTool, name: String, alias: String?)? = withLock {
+            if let t = tools[name] { return (t, name, nil) }
+            if let canonical = aliasMap[name], let t = tools[canonical] { return (t, canonical, name) }
+            if let t = tools.values.first(where: { $0.definition.apiName == name }) {
+                return (t, t.definition.name, nil)
+            }
+            return nil
+        }
+        guard let r = resolved else { throw MCPError.unknownTool(name) }
+
+        var aliasInfo: [String: Any] = [:]
+        if let a = r.alias { aliasInfo = ["resolved_from_alias": a, "resolved_to": r.name] }
+
+        // ① 参数契约（B1）：只对声明了 variants 的工具做机器校验
+        if let issue = Self.validateParams(params, def: r.tool.definition) {
+            AuditLog.shared.logTool(r.name, status: .failure, elapsedMs: 0, dataBytes: 0,
+                                    permission: Self.permissionLabel(r.name),
+                                    detail: issue.message, code: "PARAM_INVALID",
+                                    reason: "parameter", nextStep: issue.usage)
+            var body: [String: Any] = [
+                "ok": false, "code": "PARAM_INVALID",
+                "message": issue.message,
+                "_meta": ["next_step": issue.usage, "usage": issue.usage],
+            ]
+            body.merge(aliasInfo) { _, new in new }
+            return body
+        }
+
+        // ② 前置条件预检（B4）：只做机器可判定的部分
+        let unmet = Prerequisites.check(tool: r.name, params: params)
+        if !unmet.isEmpty {
+            var body: [String: Any] = [
+                "ok": false, "code": "PREREQ_UNMET",
+                "message": "前置条件未满足：\((unmet.first?["need"] as? String) ?? "")",
+                "_meta": [
+                    "unmet_prerequisites": unmet,
+                    "next_step": (unmet.first?["how"] as? String) ?? "先完成前置步骤后重试",
+                ],
+            ]
+            body.merge(aliasInfo) { _, new in new }
+            return body
+        }
+
+        // ③ 执行主管线（保留原有超时/重试/熔断/审计/压缩逻辑）
+        do {
+            var result = try dispatchCore(name: r.name, params: params)
+            result.merge(aliasInfo) { _, new in new }
+            return Self.applyEnvelope(result, tool: r.tool.definition)
+        } catch {
+            if let mcp = error as? MCPError {
+                throw mcp.withKBFix(Self.attachKB("\(mcp)"))
+            }
+            throw error
+        }
+    }
+
+    /// v8（PR-B1/B2）：参数契约校验——只校验「声明了 variants 且命令匹配」的必填参数
+    private static func validateParams(_ params: [String: Any], def: ToolDefinition)
+        -> (message: String, usage: String)? {
+        guard !def.variants.isEmpty else { return nil }
+        let cmd = (params["command"] as? String) ?? (params["action"] as? String) ?? ""
+        guard !cmd.isEmpty else { return nil }
+        guard let variant = def.variants.first(where: { $0.command == cmd }) else { return nil }
+        for key in variant.requires {
+            let v = params[key]
+            let missing = (v == nil) || (v is NSNull)
+            let empty = (v as? String)?.trimmingCharacters(in: .whitespaces).isEmpty ?? false
+            if missing || empty {
+                let usage = "`\(def.name)` command:\(cmd) "
+                    + variant.requires.map { "\($0)=<value>" }.joined(separator: " ")
+                    + (variant.accepts.isEmpty ? "" : " 可选: " + variant.accepts.map { "\($0)=<value>" }.joined(separator: " "))
+                return ("缺少必填参数 \(key)（子命令 \(cmd)）", usage)
+            }
+        }
+        return nil
+    }
+
+    /// v8（PR-B3）：成功结果信封——`code` + `_meta`，只增不改。
+    /// 工具自身的 message/next_step 优先，信封只在缺省时补位（避免覆盖工具结论）。
+    private static func applyEnvelope(_ result: [String: Any], tool: ToolDefinition) -> [String: Any] {
+        var out = result
+        let data = (out["data"] as? [String: Any]) ?? [:]
+        let name = tool.name
+        out["code"] = "OK"
+
+        var meta: [String: Any] = (out["_meta"] as? [String: Any]) ?? [:]
+        if meta["message"] == nil {
+            meta["message"] = (out["message"] as? String)
+                ?? FailureKind.defaultSuccessMessage(name: name, result: data)
+        }
+        if meta["next_step"] == nil, let next = Self.inferNextStep(name: name, data: data) {
+            meta["next_step"] = next
+        }
+        let evidence = Self.inferEvidence(data: data, tool: name)
+        if !evidence.isEmpty { meta["evidence"] = evidence }
+        if let age = out["cache_age"] { meta["cache_age"] = age }
+        if meta["truncated"] == nil, (data["truncated"] as? Bool) == true { meta["truncated"] = true }
+        out["_meta"] = meta
+        return out
+    }
+
+    private static func inferEvidence(data: [String: Any], tool: String) -> [[String: Any]] {
+        var ev: [[String: Any]] = []
+        for k in ["path", "file", "output", "spill_path", "screenshot", "dylib_path", "backup_path"] {
+            if let p = data[k] as? String, p.hasPrefix("/") {
+                ev.append(["kind": "path", "value": p])
+                if ev.count >= 3 { break }
+            }
+        }
+        for k in ["sha256", "hash", "md5"] {
+            if let h = data[k] as? String, !h.isEmpty { ev.append(["kind": "hash", "value": "\(k):\(h)"]) }
+        }
+        for k in ["bytes", "size", "total_bytes"] {
+            if let n = data[k] as? Int { ev.append(["kind": "bytes", "value": n]); break }
+        }
+        return ev
+    }
+
+    private static func inferNextStep(name: String, data: [String: Any]) -> String? {
+        if let s = data["next_step"] as? String, !s.isEmpty { return s }
+        if let s = data["hint"] as? String, !s.isEmpty, s.count < 200 { return s }
+        return nil
+    }
+
+    /// v8（PR-B4）：知识库自动挂载——只对非参数类错误（参数错不需要修复方案）
+    private static func attachKB(_ errorText: String) -> [[String: Any]] {
+        let lowered = errorText.lowercased()
+        if lowered.contains("param_invalid") || lowered.contains("invalid params")
+            || lowered.contains("缺少必填") { return [] }
+        let hits = FailureKnowledgeBase.shared.match(errorText)
+        guard !hits.isEmpty else { return [] }
+        return hits.prefix(3).map {
+            ["keyword": $0.keyword, "category": $0.category, "cause": $0.cause, "fix": $0.fix]
+        }
+    }
+
+    public func dispatchCore(name: String, params: [String: Any]) throws -> [String: Any] {
         // v3.0.90：去掉锁——只读操作 (查工具）
         var tool = tools[name]
         if tool == nil, let original = apiNameToOriginal[name] {
@@ -986,19 +1490,15 @@ public final class ToolRegistry: ObservableObject {
                 // v4.3.26：有状态工具 (web./workspace/browser./control./device.fake/injection.mem）绕过缓存；
                 // 其余工具连续第 2 次命中缓存也强制重取 (命中计数归零后真实执行)。
                 let cacheKey = callKey(name: originalName, params: params)
-                let bypassCache = cacheBypassPrefixes.contains { originalName.hasPrefix($0) }
                 var cached: [String: Any]? = nil
-                if !bypassCache {
+                // v8（PR-C2）：窗口由 ToolDefinition.cache 决定；ttl==0 时连命中计数都不碰
+                if cacheWindow(for: originalName) > 0 {
                     cached = getCachedResult(name: originalName, params: params)
                     if cached != nil {
-                        let hits = (cacheHitCounts[cacheKey] ?? 0) + 1
+                        let hits = bumpCacheHit(cacheKey)
                         if hits >= 2 {
-                            // 连续第 2 次命中 → 强制重取：删缓存、清计数、真实执行
-                            resultCache.removeValue(forKey: cacheKey)
-                            cacheHitCounts[cacheKey] = 0
+                            dropCache(cacheKey)   // 连续第 2 次命中 → 强制重取
                             cached = nil
-                        } else {
-                            cacheHitCounts[cacheKey] = hits
                         }
                     }
                 }
@@ -1008,14 +1508,14 @@ public final class ToolRegistry: ObservableObject {
                     cachedData.removeValue(forKey: "message")
                     cachedData["_call_count"] = callCount
                     cachedData["_cached"] = true
-                    cachedData["_cache_hits"] = cacheHitCounts[cacheKey] ?? 1
+                    cachedData["_cache_hits"] = cacheHitValue(cacheKey)
                     // v7.15.1：告诉模型这是缓存，避免把旧结果当实时数据引用
-                    let ageSec = Int(Date().timeIntervalSince(resultCache[cacheKey]?.time ?? Date()))
+                    let ageSec = Int(cacheAge(cacheKey))
                     cachedData["_cached_age_seconds"] = ageSec
                     cachedData["_cached_note"] = "缓存结果（\(ageSec)s 前），非实时抓取。涉及时效信息（价格/新闻/版本号）请勿直接引用，必要时换参数重新获取。"
-                    return ["ok": true, "data": cachedData]
+                    return ["ok": true, "data": cachedData, "cache_age": ageSec]
                 }
-                cacheHitCounts[cacheKey] = 0   // 真实执行前清零命中计数
+                resetCacheHits(cacheKey)   // 真实执行前清零命中计数
 
                 // v3.0.90：工具执行超时保护——15 秒没返回就报错，防止一直卡着
                 var timedOut = false
@@ -1113,6 +1613,20 @@ public final class ToolRegistry: ObservableObject {
                 if !timedOut {
                     cacheResult(name: originalName, params: params, result: result)
                 }
+                // v8（PR-C2）：写操作后精准失效（未显式标注的工具默认非只读 → 保守处理）
+                if !t.definition.isAnnotated || !t.definition.annotations.readOnly {
+                    invalidateCaches(after: originalName)
+                }
+                // v8（PR-C2）：run 级预算提示
+                let budgetUsed = bumpRunBudget()
+                if budgetUsed > 0 {
+                    result["_run_tool_calls"] = budgetUsed
+                    if budgetUsed >= runBudgetLimit {
+                        result["_budget_hint"] = "⚠️ 本轮已调用工具 \(budgetUsed) 次（预算 \(runBudgetLimit)）。停止继续调用，先把当前结论向用户汇报。"
+                    } else if budgetUsed >= Int(Double(runBudgetLimit) * 0.8) {
+                        result["_budget_hint"] = "⚠️ 本轮已调用工具 \(budgetUsed)/\(runBudgetLimit) 次，接近预算。只做必要的下一步。"
+                    }
+                }
 
                 // v2.9.125：CLI 式统一返回——顶层只留 ok/message，细节收进 data。
                 // AI 读 message 一眼判成败；需要排障才展开 data。
@@ -1180,6 +1694,8 @@ public final class ToolRegistry: ObservableObject {
                 let classified: MCPError
                 if case MCPError.classified(_, code: let c, reason: let r, nextStep: let n) = error {
                     classified = MCPError.classified(errDesc, code: c, reason: r, nextStep: n)
+                } else if case MCPError.classifiedData(_, code: let c, reason: let r, nextStep: let n, data: let d) = error {
+                    classified = MCPError.classifiedData(errDesc, code: c, reason: r, nextStep: n, data: d)
                 } else {
                     let info = FailureKind.classify(errDesc)
                     classified = MCPError.classified(errDesc, code: info.code, reason: info.reason, nextStep: info.nextStep)
@@ -1201,6 +1717,9 @@ public final class ToolRegistry: ObservableObject {
     // v2.9.128：解包 classified 的 code/reason/nextStep (审计记录用）
     private static func unpack(_ err: MCPError) -> (String, String, String) {
         if case MCPError.classified(_, code: let c, reason: let r, nextStep: let n) = err {
+            return (c, r, n)
+        }
+        if case MCPError.classifiedData(_, code: let c, reason: let r, nextStep: let n, _) = err {
             return (c, r, n)
         }
         let info = FailureKind.classify(err.description)
@@ -1470,6 +1989,9 @@ public final class ToolRegistry: ObservableObject {
         // v3.1.64: 删 ScanQRTool (AI 是文字对话，不能扫码）
         // v3.1.33: 删 ProcessListTool (用 shell ps 代替）
         register(ShellExecTool())   // v3.0.28：内置终端，执行 shell 命令
+        register(ISHDoctorTool())   // v8（PR-C4）：iSH 运行时自检（锁/源/DNS/桥接/spawn）
+        register(HealthSummaryTool()) // v8（PR-F-40）：工具健康度自查
+        register(GatewayTool())      // v8（PR-D1a/b）：外部 MCP 客户端网关
         register(RootdTool())       // v7.16.6：rootd 桥——root 命令通道（走 deb 装的 LaunchDaemon，不新增 App 特权）
 
         // v7.5.0：内置浏览器已删除（用户要求）。联网能力改为「多服务商搜索 + 全文读取」，

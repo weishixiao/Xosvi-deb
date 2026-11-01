@@ -13,7 +13,7 @@ final class AppDepsTool: MCPTool {
         name: "app.deps",
         summary: "Show what dylibs an app links to (dependencies). Use for: analyze app structure, see if a dylib is already injected, check binary linkage. Don't use for: inject dylib (use injection.enable), check if encrypted (use app.encrypt_info). Example: user says 'what dylibs does 小红书 depend on' → show app deps.",
         parameters: ["bundle_id": "Target App bundle_id (e.g. com.xingin.discover)"],
-        verified: true, category: "app_control")
+        verified: true, category: "app_control", annotations: .readOnlyLocal, cache: ToolCachePolicy.long)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let bundleId = params["bundle_id"] as? String else {
@@ -89,8 +89,8 @@ private func openURLSync(_ url: URL) -> Bool {
 final class AppCacheInspectTool: MCPTool {
     let definition = ToolDefinition(
         name: "apps.cache_inspect",
-        summary: "Check how much cache space each app uses. Use for: see which apps take up the most cache, find big cache users. Don't use for: actually clearing cache (use cleanup.scan/cleanup.execute), check free disk space (use device.snapshot). Example: user says 'which app has the biggest cache' → inspect cache sizes.",
-        verified: true, category: "app_control")
+        summary: "Check how much cache space each app uses. Use for: see which apps take up the most cache, find big cache users. Don't use for: actually clearing cache (use `app` command:cache_inspect / command:cache_clear), check free disk space (use device.snapshot). Example: user says 'which app has the biggest cache' → inspect cache sizes.",
+        verified: true, category: "app_control", annotations: .readOnlyLocal, cache: ToolCachePolicy.long)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         let limit = params["limit"] as? Int ?? 50
@@ -135,7 +135,7 @@ final class AppCacheClearTool: MCPTool {
     let definition = ToolDefinition(
         name: "apps.cache_clear",
         summary: "Clear an app's cache files (Caches/tmp directories). Use for: free up space, clear app cache. Don't use for: reset all app data (use device.refresh_container), wipe login state (use device.keychain_wipe). Example: user says 'clear 小红书 cache' → clear app cache.",
-        parameters: ["bundle_id": "Target App bundle_id (e.g. com.xingin.discover)", "dry_run": "If true, just calculate how much would be freed (don't actually delete)"], verified: true, category: "app_control")
+        parameters: ["bundle_id": "Target App bundle_id (e.g. com.xingin.discover)", "dry_run": "If true, just calculate how much would be freed (don't actually delete)"], verified: true, category: "app_control", annotations: .destructiveLocal, cache: ToolCachePolicy.none)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let bid = params["bundle_id"] as? String else {
@@ -254,7 +254,7 @@ private func waitAgentReady(timeout: TimeInterval = 8) -> Bool {
 final class AppOpenAndInputTool: MCPTool {
     let definition = ToolDefinition(
         name: "apps.open_and_input",
-        summary: "Open app and automatically input text into it. Use for: launch app and fill in text (like search). Don't use for: just open app (use apps.open), type into already open app (use control.type_text). Example: user says 'open Baidu and search iPhone 15' → open and input text.",
+        summary: "Open app and automatically input text into it. Use for: launch app and fill in text (like search). Don't use for: just open app (use `app` command:launch), type into already open app (use control.type_text). Example: user says 'open Baidu and search iPhone 15' → open and input text.",
         parameters: [
             "bundle_id": "Target App bundle ID",
             "text": "Text to input",

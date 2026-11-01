@@ -1,0 +1,18 @@
+{
+  "name": "smoke_injection",
+  "vars": {"BUNDLE_ID": "com.apple.Preferences"},
+  "cases": [
+    {"id": "inject_status", "method": "tools/call",
+     "params": {"name": "inject", "arguments": {"command": "status"}},
+     "expect": {"result.content.0.text": {"contains": "\"ok\""}}},
+    {"id": "inject_list", "method": "tools/call",
+     "params": {"name": "inject", "arguments": {"command": "list"}},
+     "expect": {"result.content.0.text": {"contains": "\"ok\""}}},
+    {"id": "inject_inspect", "method": "tools/call",
+     "params": {"name": "inject", "arguments": {"command": "inspect", "bundle_id": "${BUNDLE_ID}"}},
+     "expect": {"result.content.0.text": {"contains": "\"ok\""}}},
+    {"id": "missing_param_contract", "method": "tools/call",
+     "params": {"name": "inject", "arguments": {"command": "enable"}},
+     "expect": {"result.content.0.text": {"contains": "PARAM_INVALID"}}}
+  ]
+}

@@ -5,7 +5,7 @@ import Foundation
 final class DebugDumpConversationsTool: MCPTool {
     let definition = ToolDefinition(
         name: "debug.dump_conversations",
-        summary: "Debug: export list of chat conversations. Use for: debug conversation issues, see what chats exist internally. Don't use for: read a specific conversation (use debug.dump_messages), list skills (use skills.list). Example: user says 'export conversation list' → dump conversations.",
+        summary: "Debug: export list of chat conversations. Use for: debug conversation issues, see what chats exist internally. Don't use for: read a specific conversation (use `debug.dump_conversation`), list skills (use skills.list). Example: user says 'export conversation list' → dump conversations.",
         parameters: ["limit": "How many conversations to export (default: 5, max: 30)"], verified: true, category: "debug")
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
@@ -34,7 +34,7 @@ final class DebugDumpConversationsTool: MCPTool {
 final class DebugDumpConversationTool: MCPTool {
     let definition = ToolDefinition(
         name: "debug.dump_conversation",
-        summary: "Debug: export full messages of one conversation. Use for: debug AI behavior, see how AI thinks and calls tools. Don't use for: list all conversations (use debug.dump_conversations), send a message (use chat.send). Example: user says 'see the recent conversation' → dump conversation messages.",
+        summary: "Debug: export full messages of one conversation. Use for: debug AI behavior, see how AI thinks and calls tools. Don't use for: list all conversations (use debug.dump_conversations), send a message (send messages from the chat UI). Example: user says 'see the recent conversation' → dump conversation messages.",
         parameters: ["title": "Conversation title to export (e.g. 'Hello')", "limit": "Max messages to return (default: 50, max: 200)"], verified: true, category: "debug", remoteOnly: true)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
@@ -72,7 +72,7 @@ final class DebugDumpConversationTool: MCPTool {
 final class ModelListTool: MCPTool {
     let definition = ToolDefinition(
         name: "model.list",
-        summary: "List all AI model configurations. Use for: see what models are available, debug model switching. Don't use for: change model (use model.switch), dump debug info (use debug.dump_model_configs). Example: user says 'which models are available' → list models.",
+        summary: "List all AI model configurations. Use for: see what models are available, debug model switching. Don't use for: change model (use `model` command:switch), dump debug info (use `model` command:list). Example: user says 'which models are available' → list models.",
         parameters: [:], verified: true, category: "debug", remoteOnly: true)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {

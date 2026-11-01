@@ -603,7 +603,7 @@ final class AppExecTool: MCPTool {
             .init("restore_binary", requires: ["bundle_id"], note: "替换后启动不了就回滚"),
             .init("launch_options", requires: ["bundle_id"]),
             .init("inject_package", requires: ["dylib_path"], accepts: ["ipa_path", "new_bundle_id", "new_name", "auto_install"], note: "改包+注入+重装"),
-        ])
+        ], annotations: .destructiveSystem, cache: ToolCachePolicy.none)
     
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let command = params["command"] as? String else {
