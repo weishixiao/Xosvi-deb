@@ -1,0 +1,9 @@
+Package: com.xosvi.noadslslot
+Name: NoAdsSlot
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: 水果老虎机 (com.flyfish.Slot) 去广告 —— 拦截 AdMob/Pangle 全屏与 banner 展示
+Maintainer: weishixiao
+Author: weishixiao
+Section: Tweaks
+Depends: mobilesubstrate

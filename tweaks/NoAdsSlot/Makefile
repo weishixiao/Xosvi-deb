@@ -1,7 +1,7 @@
 THEOS_PACKAGE_SCHEME=rootless
 TARGET = iphone:clang:latest:14.0
 ARCHS = arm64
-INSTALL_TARGET_PROCESSES = SpringBoard
+INSTALL_TARGET_PROCESSES = FruitSlot-mobile
 
 TWEAK_NAME = NoAdsSlot
 NoAdsSlot_FILES = Tweak.x
