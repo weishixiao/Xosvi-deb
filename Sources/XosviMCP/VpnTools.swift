@@ -3,6 +3,7 @@
 
 import Foundation
 import CFNetwork
+import MitmCore
 
 final class VpnTool: MCPTool {
     let definition = ToolDefinition(
@@ -223,6 +224,27 @@ final class VpnTool: MCPTool {
         task.resume()
         _ = sem.wait(timeout: .now() + 10)
         return (state, detail)
+    }
+
+    /// v8（PR-C3）：Appex 日志常见失败分类
+    static func classifyAppexLog(_ text: String) -> [String: Any]? {
+        let t = text.lowercased()
+        if t.contains("utun") && (t.contains("not ready") || t.contains("failed")) {
+            return ["code": "utun_not_ready", "hint": "utun fd 未就绪：确认 VPN 描述文件已安装且 appex 有 NetworkExtension 权限"]
+        }
+        if t.contains("yaml") || t.contains("config") {
+            return ["code": "config_error", "hint": "hev 配置解析失败：检查 Resources 里的 yaml 是否随包带齐"]
+        }
+        if t.contains("necp") || t.contains("trust") {
+            return ["code": "trust_cache_missing", "hint": "NECP 不认可 appex 签名；需 kfd trust 注入或越狱 trust cache"]
+        }
+        if t.contains("address already in use") {
+            return ["code": "port_in_use", "hint": "端口被占用：换端口或先停旧实例"]
+        }
+        if t.contains("error") || t.contains("failed") {
+            return ["code": "appex_error", "hint": "读取 appex_tail 原文定位；常见为签名/权限/内核退出"]
+        }
+        return nil
     }
 
     static func classifyDegraded(_ note: String) -> String {

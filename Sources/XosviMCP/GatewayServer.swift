@@ -17,8 +17,8 @@ import Security
 //   - 默认只绑 127.0.0.1；settings 里显式开启 LAN 才绑 0.0.0.0。
 //   - 只读范围：`read` 令牌只能调用 isAnnotated && readOnly 的工具（未标注工具维持旧行为）。
 
-final class GatewayServer {
-    static let shared = GatewayServer()
+final class MCPGatewayServer {
+    static let shared = MCPGatewayServer()
 
     struct Config {
         var port: UInt16 = 8765
@@ -352,8 +352,6 @@ final class GatewayTool: MCPTool {
         ],
         returns: ["running": "Bool", "port": "Int", "token": "full token", "read_token": "只读 token", "pairing_code": "6 位配对码"],
         verified: false, category: "system",
-        annotations: .systemControl,
-        cache: ToolCachePolicy.none,
         paramSpecs: [
             .e("command", "子命令", values: ["status", "start", "stop", "rotate", "pair_code"], required: true),
             .i("port", "端口", required: false, example: "8765"),
@@ -366,12 +364,13 @@ final class GatewayTool: MCPTool {
             ToolVariant("rotate", requires: [], accepts: []),
             ToolVariant("pair_code", requires: [], accepts: []),
         ],
-        related: [RelatedTool(tool: "server", command: "status", when: "查看本地 HTTP 服务状态时")]
-    )
+        annotations: .systemControl,
+        cache: ToolCachePolicy.none,
+        related: [RelatedTool(tool: "server", command: "status", when: "查看本地 HTTP 服务状态时")])
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         let cmd = (params["command"] as? String) ?? "status"
-        let gw = GatewayServer.shared
+        let gw = MCPGatewayServer.shared
         switch cmd {
         case "status":
             return gw.status()

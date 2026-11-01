@@ -21,17 +21,16 @@ final class HealthSummaryTool: MCPTool {
             "recent_failures": "最近失败条目",
         ],
         verified: false, category: "diagnose",
-        annotations: .readOnlyLocal,
-        cache: ToolCachePolicy.short,
         paramSpecs: [
             .i("hours", "回看小时数", required: false, example: "24"),
             .i("top", "返回条数", required: false, example: "5"),
         ],
+        annotations: .readOnlyLocal,
+        cache: ToolCachePolicy.short,
         related: [
             RelatedTool(tool: "tools.audit", when: "需要逐条审计记录时"),
             RelatedTool(tool: "diagnose", when: "需要单次失败的系统级诊断时"),
-        ]
-    )
+        ])
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         let hours = max(1, (params["hours"] as? Int) ?? 24)

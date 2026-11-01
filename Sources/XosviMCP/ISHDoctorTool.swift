@@ -26,8 +26,6 @@ final class ISHDoctorTool: MCPTool {
             "fixes_applied": "auto_fix 实际执行的动作",
         ],
         verified: false, category: "diagnose",
-        annotations: .destructiveLocal,   // auto_fix=true 时会删/改文件
-        cache: ToolCachePolicy.none,
         paramSpecs: [
             .b("auto_fix", "自动修复 apk 死锁与 https 源", required: false),
             .b("deep", "追加 HTTP/HTTPS 网络探测", required: false),
@@ -35,11 +33,12 @@ final class ISHDoctorTool: MCPTool {
         variants: [
             ToolVariant("run", requires: [], accepts: ["auto_fix", "deep"], note: "默认只读自检"),
         ],
+        annotations: .destructiveLocal,   // auto_fix=true 时会删/改文件
+        cache: ToolCachePolicy.none,
         related: [
             RelatedTool(tool: "shell.exec", when: "需要直接跑 iSH 命令时"),
             RelatedTool(tool: "diagnose", command: "toolchain", when: "检查签名与 spawn 能力时"),
-        ]
-    )
+        ])
 
     /// rootfs 宿主侧路径（ISH_RUNTIME_NOTES §1 实测值；运行时以 ISH.dataPath 为准）
     private static var rootfsDataPath: String { ISH.dataPath }
@@ -66,7 +65,7 @@ final class ISHDoctorTool: MCPTool {
         guard rootfsOK else { return Self.verdict(checks, fixes, deep: deep) }
 
         func exec(_ cmd: String, _ timeout: Double = 8) -> String {
-            let r = ISHManager.exec(cmd, timeout: timeout)
+            let r = ISHEngine.exec(cmd, timeout: timeout)
             return r.output
         }
 

@@ -122,7 +122,8 @@ final class SkillStore {
             [
                 "name": "注入闭环 Injection Flow",
                 "summary": "从选目标到验证生效的完整注入流程（含砸壳判断、降级路径、回滚）。Use for: 用户要求给某个 App 注入 dylib / 让 AI 控制某个 App。Example: '把小红书注入一下'。",
-                "instruction": """# 注入闭环
+                "instruction": """
+# 注入闭环
 ## 前置
 - 先 `inject` command:list 看目标是否已注入；已注入不要重复注入。
 ## 步骤
@@ -142,7 +143,8 @@ final class SkillStore {
             [
                 "name": "抓包闭环 Capture Flow",
                 "summary": "HTTPS 抓包从证书信任到读日志的完整流程（network.capture 与 vpn.capture 两条路径）。Use for: 用户要看某 App 的网络请求。Example: '抓一下这个 App 的接口'。",
-                "instruction": """# 抓包闭环
+                "instruction": """
+# 抓包闭环
 ## 选路径
 - 只要 NSURLSession 栈：`network.capture`（start 会自动注入 NetworkTweak）。
 - 要覆盖自定义栈/全系统：`vpn.capture`（MITM，需装 CA）。
@@ -161,7 +163,8 @@ final class SkillStore {
             [
                 "name": "取证闭环 Forensics Flow",
                 "summary": "App 数据取证：定位容器、SQLite 只读查询、文件类型识别、导出证据。Use for: 查 App 数据库/缓存/配置。Example: '看看这个 App 的数据库里有什么'。",
-                "instruction": """# 取证闭环
+                "instruction": """
+# 取证闭环
 1. 定位容器：`container` command:resolve bundle_id:<id>（或 `bind_app` 拿 /ios_data_<app>）。
 2. 列文件：`workspace` command:list_dir path:<容器>/Documents；大目录用 `shell.exec` + find。
 3. 识别类型：`file` command:inspect path:<绝对路径>。
@@ -176,7 +179,8 @@ final class SkillStore {
             [
                 "name": "换机迁移 Migration Flow",
                 "summary": "把某 App 的数据/配置从一台设备迁到另一台（备份、导出、校验、恢复）。Use for: 换机、备份 App 数据。Example: '把这个 App 的数据导出来备份'。",
-                "instruction": """# 换机迁移
+                "instruction": """
+# 换机迁移
 1. 停目标 App：`app` command:stop bundle_id:<id>，避免写一半。
 2. 定位容器：`container` command:resolve bundle_id:<id>。
 3. 打包：`shell.exec` 在 Alpine 侧 tar（绑定目录内），输出到 Workspace/migration/<bundle>-<日期>.tar.gz。
