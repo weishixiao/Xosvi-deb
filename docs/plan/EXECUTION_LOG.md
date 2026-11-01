@@ -39,22 +39,30 @@
 | C2 | 缓存字段化 + 精准失效 | DONE | feat/v8-ai-seamless | 写后读不再旧值；ttl==0 不计数 | policy 优先；别名归一；破坏性清全表；run 预算 |
 | C3 | VPN 抓包闭环 | DONE | feat/v8-ai-seamless | `vpn.capture command:verify` → TRUSTED/NOT_TRUSTED/PROXY_DOWN；start 失败返回 mode:fallen_back | cert_status / serve_profile / verify + Appex lan_excluded/uptime |
 | C4 | ish.doctor | DONE | feat/v8-ai-seamless | 10 项检查 + verdict + auto_fix | ISHDoctorTool.swift 已注册 |
-| C5 | 技能系统落地 | TODO | — | skills.list/read 跑通 4 条种子 | — |
-| C6 | HID 验证矩阵（文档） | DOING | — | docs/runbooks/hid-matrix.md 可填表 | 已有初稿 |
-| D1a | Gateway 核心（WS+TCP+鉴权） | TODO | — | WS initialize/tools_list 通 | — |
-| D1b | Gateway SSE + POST | TODO | — | SSE endpoint 事件 + POST JSON | — |
-| D1c | Mac stdio 桥 | TODO | — | 桥脚本完成 initialize | — |
+| C5 | 技能系统落地 | DONE | feat/v8-ai-seamless | skills.list 返回 primary/why；4 条种子技能 | 内置技能 ta 前缀已全部改为真实工具名 |
+| C6 | 真机 Runbook 三份 | DONE | feat/v8-ai-seamless | hid-matrix / injection-smoke / cert-install 可执行 | 已落盘 |
+| D1a | Gateway 核心（HTTP+SSE+配对鉴权） | DONE | feat/v8-ai-seamless | POST / 与 GET /sse；/pair 发 token；read token 拦截写工具 | MCPGatewayServer |
+| D1b | Gateway SSE + POST | DONE | feat/v8-ai-seamless | SSE 先发 endpoint 事件；POST 返回 JSON-RPC | 同文件实现 |
+| D1c | Mac stdio 桥 | DONE | feat/v8-ai-seamless | tools/mcp_bridge_stdio.py 可配对并转发 | — |
 | T1 | 测试体系（runner/cases/stress） | DONE | feat/v8-ai-seamless | `tests/contract/run_all.py` 全绿 | L1 全绿；L3 runner + 3 份用例 + stress_mcp |
 | H3 | 文档即代码（快照对比） | DONE | — | `dump_registry.py --check` | 已入 CI |
 | H4 | 高危链路冒烟 runbook | DOING | — | injection-smoke 可执行 | 待补文件 |
 | F-40 | health.summary 工具 | TODO | — | 列出失败率最高工具 | — |
 | F-41 | 内存 attach 失败分类细化 | TODO | — | 区分进程不存在 / task_for_pid 被拒 | — |
-| F-42 | 工程卫生（死引用清理） | TODO | — | `rg GhostRunner` 仅剩兼容壳 | — |
-| F-43 | 远程通道审计与白名单 | TODO | — | 远程指令入审计日志 | — |
-| F-44 | 知识库隐私开关 | TODO | — | session_memory 可关闭/清理 | — |
+| F-42 | 工程卫生（死引用清理） | DONE | feat/v8-ai-seamless | 内置技能 ta 前缀清零；lint L5 = 0 | GhostRunner 仅剩兼容 enum |
+| F-43 | 远程通道审计与白名单 | DONE | feat/v8-ai-seamless | EXEC/DONE/DENIED 入 AuditLog（只记参数键） | 白名单沿用 safeTools |
+| F-44 | 知识库隐私开关 | DONE | feat/v8-ai-seamless | session_memory_enabled 关闭后不写入 | 清理入口已有 |
 
 ## 下一步
 
 1. B5 ExternalContent 接入（web.fetch / shell.exec / file / ui_tree / 剪贴板）。
 2. T1 测试体系三件套。
 3. C4 ish.doctor → C3 VPN → C5 技能 → D1 接入层。
+
+
+## 构建记录
+
+| 时间 | 分支 | run | 结果 | 备注 |
+|---|---|---|---|---|
+| 2026-11-01 18:35 | feat/v8-ai-seamless | 41337388513 | FAILURE | 首批编译错误（多行字符串/GatewayServer 重名/参数顺序/ISHManager/MitmProxy） |
+| 2026-11-01 22:39 | feat/v8-ai-seamless | 41358256548 | SUCCESS | Xosvi artifact 100,188,049 bytes；发布步骤按设计仅 main 执行 |
