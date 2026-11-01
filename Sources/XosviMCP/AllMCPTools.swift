@@ -106,7 +106,7 @@ final class VerifyFileTool: MCPTool {
             "expect_size": "Expected file size in bytes (optional)",
             "expect_contains": "Expected string in file content (optional)"
         ],
-        verified: true, category: "verify")
+        verified: true, category: "verify", annotations: .readOnlyLocal, cache: ToolCachePolicy.short)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let path = params["path"] as? String else {
@@ -157,7 +157,7 @@ final class VerifyAppRunningTool: MCPTool {
         parameters: [
             "bundle_id": "App bundle_id to check (required)"
         ],
-        verified: true, category: "verify")
+        verified: true, category: "verify", annotations: .readOnlyLocal, cache: ToolCachePolicy.short)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let bid = params["bundle_id"] as? String else {
@@ -185,7 +185,7 @@ final class InjectionEnableTool: MCPTool {
         verified: true,
         category: "injection",
         maxIOSMajor: 17  // ct_bypass 只支持到 iOS 17.0
-    )
+    , annotations: .destructiveSystem, cache: ToolCachePolicy.none)
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let bid = params["bundle_id"] as? String else { throw MCPError.invalidParams("bundle_id required") }
         let dylibPath = params["dylib_path"] as? String
@@ -379,7 +379,7 @@ final class ContainerResolveTool: MCPTool {
 // MARK: - M4 Gateway 工具
 
 final class CronFireTool: MCPTool {
-    let definition = ToolDefinition(name: "cron.fire", summary: "Manually trigger a scheduled/cron task. Use for: test automation task works, run scheduled task right now instead of waiting. Don't use for: create new automation task (use automation.create), list tasks (use automation.list). Example: user says 'run the scheduled task now' → fire the task.",
+    let definition = ToolDefinition(name: "cron.fire", summary: "Manually trigger a scheduled/cron task. Use for: test automation task works, run scheduled task right now instead of waiting. Don't use for: create new automation task (create tasks in the Automation UI; this tool only triggers existing ones), list tasks (use automation.list). Example: user says 'run the scheduled task now' → fire the task.",
         parameters: ["task": "Name of the scheduled task to trigger"], verified: true)
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         let task = params["task"] as? String ?? "unnamed"
@@ -391,7 +391,7 @@ final class CronFireTool: MCPTool {
 // MARK: - M4 自动化工具 (真实 UNUserNotificationCenter 调度）
 
 final class AutomationRunNowTool: MCPTool {
-    let definition = ToolDefinition(name: "automation.run_now", summary: "Run an automation task immediately (right now, don't wait for schedule). Use for: execute a saved automation task manually. Don't use for: create new task (use automation.create), list all tasks (use automation.list). Example: user says 'run that scheduled task' → run it now.",
+    let definition = ToolDefinition(name: "automation.run_now", summary: "Run an automation task immediately (right now, don't wait for schedule). Use for: execute a saved automation task manually. Don't use for: create new task (create tasks in the Automation UI; this tool only triggers existing ones), list all tasks (use automation.list). Example: user says 'run that scheduled task' → run it now.",
         parameters: ["name": "Task name or ID to run immediately"], verified: true)
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let name = params["name"] as? String else { throw MCPError.invalidParams("name required") }
@@ -486,7 +486,7 @@ func AutomationSchedulerStatus() -> String {
 // MARK: - M5 系统能力工具
 
 final class ContactsSearchTool: MCPTool {
-    let definition = ToolDefinition(name: "contacts.search", summary: "Search iPhone contacts by name. Use for: find someone's phone number, look up a contact. Don't use for: send message (use other tools), read calendar (use calendar.list). Example: user says 'what is Zhang San phone number' → search contacts.",
+    let definition = ToolDefinition(name: "contacts.search", summary: "Search iPhone contacts by name. Use for: find someone's phone number, look up a contact. Don't use for: send message (use other tools), read calendar (use `calendar` command:list). Example: user says 'what is Zhang San phone number' → search contacts.",
         parameters: ["query": "Name keyword to search (e.g. 'Zhang San' / 'Bob')"], verified: true)
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         let query = params["query"] as? String ?? ""
@@ -562,7 +562,7 @@ final class ProcessListTool: MCPTool {
 // MARK: - M6 编译模式工具
 
 final class BuildRunnerTokenTool: MCPTool {
-    let definition = ToolDefinition(name: "build.runner.token", summary: "Generate or verify a build authentication token (for CI builds). Use for: authenticate with build system. Don't use for: check network status (use device.status). Example: user says 'generate build token' → generate token.",
+    let definition = ToolDefinition(name: "build.runner.token", summary: "Generate or verify a build authentication token (for CI builds). Use for: authenticate with build system. Don't use for: check network status (use `device` command:info). Example: user says 'generate build token' → generate token.",
         parameters: ["action": "generate (create new token) or verify (check token validity)"], verified: true)
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         let action = params["action"] as? String ?? "generate"
@@ -853,7 +853,7 @@ final class InjectionExecTool: MCPTool {
             .init("plugin_list", note: "无参数"),
             .init("keychain_wipe", requires: ["bundle_id"]),
             .init("load_dylib", requires: ["path"]),
-        ])
+        ], annotations: .destructiveSystem, cache: ToolCachePolicy.none)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let command = params["command"] as? String else {

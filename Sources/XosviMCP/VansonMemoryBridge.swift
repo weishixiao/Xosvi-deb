@@ -92,11 +92,20 @@ enum VansonEngineError: LocalizedError {
         switch self {
         case .notAttached:
             return "尚未附加到任何进程，请先 memory attach"
-        case .pidNotFound(let pid):
-            return "进程不存在或已退出 (pid=\(pid))"
         case .attachDenied(let pid, let kr):
-            return "task_for_pid 被拒绝 (pid=\(pid), kr=\(kr))："
-                 + "需 task_for_pid-allow entitlement；越狱环境还要求目标进程未被加固"
+            // v8（PR-F-41）：按 kern_return 细分原因，别都笼统说"被拒绝"
+            let why: String
+            switch kr {
+            case 5:  why = "KERN_FAILURE：目标进程可能已加固/反调试（PT_DENY_ATTACH）"
+            case 4:  why = "KERN_INVALID_ARGUMENT：pid 无效或进程正在退出"
+            case 2:  why = "KERN_PROTECTION_FAILURE：进程受保护（platform binary / 加固）"
+            default: why = "kern_return=\(kr)"
+            }
+            return "task_for_pid 被拒绝 (pid=\(pid), kr=\(kr))：\(why)。"
+                 + "需要 task_for_pid-allow entitlement，且越狱环境下目标进程未被加固；"
+                 + "可先用 `process` 确认进程仍在，再试 `memory` action:selfcheck"
+        case .pidNotFound(let pid):
+            return "进程不存在或已退出 (pid=\(pid))：先用 `process` 重新取 pid（App 可能被杀/重启）"
         case .timeout(let op):
             return "引擎操作超时：\(op)"
         case .invalidValue(let msg):

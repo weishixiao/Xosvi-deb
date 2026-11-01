@@ -27,7 +27,7 @@ final class RootdTool: MCPTool {
             "diagnosis": "失败时的现场诊断"
         ],
         verified: false, category: "shell",
-        prerequisites: ["需要先安装 newterm-autoroot deb（≥1.3.2，含 rootd LaunchDaemon）；status 返回 daemon_alive:false 时让用户在终端跑 sh /var/mobile/.newterm-autoroot/selfcheck.sh"])
+        prerequisites: ["需要先安装 newterm-autoroot deb（≥1.3.2，含 rootd LaunchDaemon）；status 返回 daemon_alive:false 时让用户在终端跑 sh /var/mobile/.newterm-autoroot/selfcheck.sh"], annotations: .readOnlyLocal, cache: ToolCachePolicy.none)
 
     /// 候选目录，**App 侧可写的排前面**。
     /// v7.16.8：Library 在真机上对 App 不可见（写入探针会报 ENOENT/EACCES），Documents 侧才是通的。

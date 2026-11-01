@@ -11,6 +11,8 @@ final class FailureKnowledgeBase {
     static let shared = FailureKnowledgeBase()
     private var db: OpaquePointer?
     private let dbPath: String
+    /// v8（PR-C1）：dispatch 失败路径会并发调用 match——SQLite handle 与 hit_count 自增必须串行
+    private let kbLock = NSRecursiveLock()
 
     init() {
         let docs = NSHomeDirectory().appending("/Documents/Workspace")
@@ -130,6 +132,7 @@ final class FailureKnowledgeBase {
     }
 
     func match(_ errorText: String) -> [(keyword: String, category: String, cause: String, fix: String)] {
+        kbLock.lock(); defer { kbLock.unlock() }
         guard let db = db else { return [] }
         var results: [(String, String, String, String)] = []
         var stmt: OpaquePointer?
@@ -202,7 +205,7 @@ final class KnowledgeBaseTool: MCPTool {
             "cause": "Cause description (when adding)",
             "fix": "Fix solution (when adding)"
         ],
-    verified: true, category: "knowledge")
+    verified: true, category: "knowledge", annotations: .writeLocal, cache: ToolCachePolicy.none)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         let action = (params["action"] as? String) ?? "query"
@@ -237,14 +240,14 @@ final class KnowledgeBaseTool: MCPTool {
 final class WorkspaceCleanupTool: MCPTool {
     let definition = ToolDefinition(
         name: "workspace.cleanup",
-        summary: "Clean up workspace temporary files. Use for: free up workspace space, remove old downloads/logs/reports. Don't use for: clean app cache (use cleanup.scan/execute), delete specific file (use fs.rm). Example: user says 'clean temp files in workspace' → cleanup.",
+        summary: "Clean up workspace temporary files. Use for: free up workspace space, remove old downloads/logs/reports. Don't use for: clean app cache (use `app` command:cache_inspect / command:cache_clear), delete specific file (use `workspace` command:shell with an absolute path). Example: user says 'clean temp files in workspace' → cleanup.",
         parameters: [
             "dry_run": "Preview only, don't actually delete (default: true)",
             "max_age_days": "Delete files older than N days (default: 7)",
             "max_size_mb": "Clean when folder exceeds N MB (default: 500)",
             "targets": "What to clean: downloads/logs/reports/all (default: all)"
         ],
-    verified: true, category: "cleanup")
+    verified: true, category: "cleanup", annotations: .destructiveLocal, cache: ToolCachePolicy.none)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         let dryRun = (params["dry_run"] as? Bool) ?? true

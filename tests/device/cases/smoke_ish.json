@@ -1,0 +1,14 @@
+{
+  "name": "smoke_ish",
+  "cases": [
+    {"id": "ish_doctor", "method": "tools/call",
+     "params": {"name": "ish.doctor", "arguments": {"deep": false}},
+     "expect": {"result.content.0.text": {"contains": "verdict"}}},
+    {"id": "shell_echo", "method": "tools/call",
+     "params": {"name": "shell.exec", "arguments": {"command": "echo SMOKE_OK"}},
+     "expect": {"result.content.0.text": {"contains": "SMOKE_OK"}}},
+    {"id": "shell_wrapped", "method": "tools/call",
+     "params": {"name": "shell.exec", "arguments": {"command": "echo HELLO"}},
+     "expect": {"result.content.0.text": {"contains": "external_content"}}}
+  ]
+}

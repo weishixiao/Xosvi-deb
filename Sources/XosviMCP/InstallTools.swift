@@ -20,7 +20,7 @@ final class ToolInstallTool: MCPTool {
             "profile": "Optional curated batch: re(逆向工具链) / dev(开发环境) / network(网络工具)",
             "source": "Optional GitHub repo URL for native iOS CI build (e.g. https://github.com/Neurotycho/jtool2)"
         ],
-        verified: true, category: "build")
+        verified: true, category: "build", annotations: .destructiveSystem, cache: ToolCachePolicy.none)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         // 1. profile 批量安装

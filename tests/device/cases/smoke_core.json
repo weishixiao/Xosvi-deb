@@ -1,0 +1,16 @@
+{
+  "name": "smoke_core",
+  "cases": [
+    {"id": "initialize", "method": "initialize", "params": {},
+     "expect": {"result.serverInfo.name": "Xosvi", "result.protocolVersion": {"min_len": 5}}},
+    {"id": "ping", "method": "ping", "params": {}, "expect": {"result": {}}},
+    {"id": "tools_list", "method": "tools/list", "params": {},
+     "expect": {"result.tools": {"min_len": 20}}},
+    {"id": "device_info", "method": "tools/call",
+     "params": {"name": "device", "arguments": {"command": "info"}},
+     "expect": {"result.content.0.text": {"contains": "\"ok\""}}},
+    {"id": "unknown_tool", "method": "tools/call",
+     "params": {"name": "no.such.tool", "arguments": {}},
+     "expect": {"error.data.mcp_code": "UNKNOWN_TOOL"}}
+  ]
+}

@@ -273,7 +273,7 @@ final class ControlInjectTool: MCPTool {
 final class ControlScreenshotTool: MCPTool {
     let definition = ToolDefinition(
         name: "control.screenshot",
-        summary: "PREREQUISITE: call control.inject first. Screenshot target app screen. Use for: capture screen, see what's on screen. Don't use for: recognize text in screenshot (use ocr.image), tap by coordinates (use control.tap).",
+        summary: "PREREQUISITE: call `control` command:inject first. Screenshot target app screen. Use for: capture screen, see what's on screen. Don't use for: recognize text in screenshot (use ocr.image), tap by coordinates (use `control` command:tap).",
         parameters: [:],
         verified: true, category: "ui_control")
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
@@ -287,7 +287,7 @@ final class ControlScreenshotTool: MCPTool {
 final class ControlTapTextTool: MCPTool {
     let definition = ToolDefinition(
         name: "control.tap_text",
-        summary: "PREREQUISITE: call control.inject first. Tap an element by its visible text label. Use for: tap a button/link by its text (e.g. \"搜索\", \"登录\"). Don't use for: tap by coordinates (use control.tap), swipe gesture (use control.swipe).",
+        summary: "PREREQUISITE: call `control` command:inject first. Tap an element by its visible text label. Use for: tap a button/link by its text (e.g. \"搜索\", \"登录\"). Don't use for: tap by coordinates (use `control` command:tap), swipe gesture (use `control` command:swipe).",
         parameters: [
             "text": "Visible text label of the element to tap (REQUIRED)",
             "partial": "If true, match partial text (default true) (optional)"
@@ -376,7 +376,7 @@ final class ControlTapTextTool: MCPTool {
 final class ControlTypeTextTool: MCPTool {
     let definition = ToolDefinition(
         name: "control.type_text",
-        summary: "PREREQUISITE: call control.inject first. Find an input field by its placeholder text, tap it, then type. Use for: fill a form field by its label (e.g. \"搜索框\", \"手机号\"). Don't use for: type into already-focused field (use control.type), tap a button by text (use control.tap_text).",
+        summary: "PREREQUISITE: call `control` command:inject first. Find an input field by its placeholder text, tap it, then type. Use for: fill a form field by its label (e.g. \"搜索框\", \"手机号\"). Don't use for: type into already-focused field (use `control` command:type), tap a button by text (use `control` command:tap_text).",
         parameters: [
             "placeholder": "Placeholder or label of the input field (e.g. \"搜索\", \"请输入手机号\") (REQUIRED)",
             "text": "Text to type into the field (REQUIRED)",
@@ -439,7 +439,7 @@ final class ControlExecTool: MCPTool {
             "placeholder": "Field placeholder (for type_text)"
         ],
         verified: true, category: "ui_control",
-        prerequisites: ["inject ControlAgent into target App and launch it (control inject) before UI control", "take control screenshot to confirm coordinates before tap/swipe"])
+        prerequisites: ["inject ControlAgent into target App and launch it (control inject) before UI control", "take control screenshot to confirm coordinates before tap/swipe"], annotations: .systemControl, cache: ToolCachePolicy.none)
     
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let command = params["command"] as? String else {

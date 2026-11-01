@@ -32,9 +32,9 @@ final class AssistantMemoryStore: ObservableObject {
 final class AssistantMemorySetTool: MCPTool {
     let definition = ToolDefinition(
         name: "assistant.memory_set",
-        summary: "Save a memory note (key-value pair). Use for: remember facts across sessions, store user preferences. Don't use for: save file (use artifact.write_text), search memory (use assistant.memory_get). Example: user says 'remember my name is Zhang San' → save memory.",
+        summary: "Save a memory note (key-value pair). Use for: remember facts across sessions, store user preferences. Don't use for: save file (use `artifact` command:write), search memory (use `assistant_memory` command:list). Example: user says 'remember my name is Zhang San' → save memory.",
         parameters: ["key": "Memory key name", "value": "Memory value to save"],
-    verified: true, category: "knowledge")
+    verified: true, category: "knowledge", annotations: .writeLocalIdempotent, cache: ToolCachePolicy.none)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let key = params["key"] as? String,
@@ -52,7 +52,7 @@ final class AssistantMemoryListTool: MCPTool {
         name: "assistant.memory_list",
         summary: "List all saved memory notes. Use for: see what you've remembered, search memory by keyword. Don't use for: save new memory (use assistant.memory_set), delete memory (use assistant.memory_delete). Example: user says 'what do you remember' → list all memories.",
         parameters: ["query": "Search keyword (optional, filter by)"],
-        verified: true, category: "knowledge")
+        verified: true, category: "knowledge", annotations: .readOnlyLocal, cache: ToolCachePolicy.short)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         let query = params["query"] as? String ?? ""
@@ -72,7 +72,7 @@ final class AssistantMemoryDeleteTool: MCPTool {
         name: "assistant.memory_delete",
         summary: "Delete a saved memory note. Use for: forget a fact you remembered, remove outdated info. Don't use for: save new memory (use assistant.memory_set), list all memories (use assistant.memory_list). Example: user says 'forget the name I just said' → delete memory.",
         parameters: ["key": "Memory key to delete"],
-    verified: true, category: "knowledge")
+    verified: true, category: "knowledge", annotations: .destructiveLocal, cache: ToolCachePolicy.none)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let key = params["key"] as? String else {

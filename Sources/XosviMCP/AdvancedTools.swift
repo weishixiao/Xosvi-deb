@@ -38,7 +38,7 @@ final class BinarySymbolsTool: MCPTool {
 
         ],
 
-    verified: true, category: "analysis")
+    verified: true, category: "analysis", annotations: .readOnlyLocal, cache: ToolCachePolicy.long)
 
 
 
@@ -964,7 +964,7 @@ final class InjectionMemTool: MCPTool {
 final class ProbeInspectTool: MCPTool {
     let definition = ToolDefinition(
         name: "probe.inspect",
-        summary: "Inspect running app internals: list ObjC classes, see class methods/properties, read UserDefaults. Use for: reverse engineer an app, understand how it works internally, find classes to hook. Don't use for: static binary analysis (use binary.symbols), AI-powered analysis (use ai.analyze_app). Prerequisite: inject ProbeAgent first. Example: user says 'what ViewController classes does 小红书 have' → probe classes.",
+        summary: "Inspect running app internals: list ObjC classes, see class methods/properties, read UserDefaults. Use for: reverse engineer an app, understand how it works internally, find classes to hook. Don't use for: static binary analysis (use binary.symbols), AI-powered analysis (use `subagent` for AI-assisted analysis). Prerequisite: inject ProbeAgent first. Example: user says 'what ViewController classes does 小红书 have' → probe classes.",
         parameters: [
             "bundle_id": "Target App bundle ID (required)",
             "query": "What to inspect: classes (list all) / class (details of one) / userdefaults / info",
@@ -1467,7 +1467,7 @@ final class AppEntitlementsTool: MCPTool {
 final class KeychainWipeTool: MCPTool {
     let definition = ToolDefinition(
         name: "device.keychain_wipe",
-        summary: "Wipe an app's keychain (login tokens/passwords). Use for: reset app login state, force re-login. Don't use for: clear app cache (use cleanup.execute), uninstall app (use app.uninstall). Warning: this will log the user out! Example: user says 'log out of 小红书' → wipe keychain.",
+        summary: "Wipe an app's keychain (login tokens/passwords). Use for: reset app login state, force re-login. Don't use for: clear app cache (use `app` command:cache_clear), uninstall app (use app.uninstall). Warning: this will log the user out! Example: user says 'log out of 小红书' → wipe keychain.",
         parameters: ["bundle_id": "Target App bundle_id (required). e.g. com.xingin.discover"]
     )
     func invoke(_ params: [String: Any]) throws -> [String: Any] {

@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tool-contract:
+    name: 工具契约检查（注册一致性 / 描述引用 / 快照）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 注册一致性（类定义 ↔ register 调用 + 工具名唯一）
+        run: python3 scripts/check_tool_registration.py --src Sources/Xosvi
+
+      - name: 描述引用有效性（L2 失效引用 = 0）
+        run: python3 scripts/lint_tool_descriptions.py --src Sources/Xosvi --fail-on-refs
+
+      - name: 描述三段式盘点（L1 存量，暂不阻断）
+        run: python3 scripts/lint_tool_descriptions.py --src Sources/Xosvi --warn-only
+
+      - name: 注册表快照校验
+        run: |
+          if [ -f docs/registry.snapshot.json ]; then
+            python3 scripts/dump_registry.py --src Sources/Xosvi --check docs/registry.snapshot.json
+          else
+            echo "::warning::docs/registry.snapshot.json 尚未提交，跳过快照校验"
+          fi
+
+      - name: Python 语法自检
+        run: python3 -m py_compile scripts/*.py tests/**/*.py 2>/dev/null || python3 -m py_compile scripts/*.py
+
+  brace-sanity:
+    name: 括号/结构 sanity（存量脚本，暂不阻断）
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: python3 scripts/check_swift_braces.py
+      - run: python3 scripts/check_braces.py
+      - run: python3 scripts/check_tweak_braces.py
+
+  ios-build:
+    name: iOS 构建（手动触发）
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: 预编译依赖
+        run: |
+          bash scripts/build-openssl.sh
+          bash scripts/build-vanson.sh
+      - name: 构建
+        run: bash scripts/build-ipa.sh

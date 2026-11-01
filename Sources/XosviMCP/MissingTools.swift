@@ -7,8 +7,8 @@ import UserNotifications
 
 final class CalendarCreateEventTool: MCPTool {
     let definition = ToolDefinition(name: "calendar.create_event",
-        summary: "Create a new calendar event (meeting/appointment). Use for: schedule a meeting, add event to iPhone Calendar. Don't use for: list upcoming events (use calendar.list), create reminder (use reminder.create). Example: user says 'add a meeting at 3pm tomorrow' → create calendar event.",
-        parameters: ["title": "Event title (e.g. 'Team Meeting')", "start": "Start time (ISO8601 format)", "end": "End time (optional, default +1 hour)", "notes": "Optional notes for the event"], verified: true, category: "system")
+        summary: "Create a new calendar event (meeting/appointment). Use for: schedule a meeting, add event to iPhone Calendar. Don't use for: list upcoming events (use `calendar` command:list), create reminder (use `reminder` action:create). Example: user says 'add a meeting at 3pm tomorrow' → create calendar event.",
+        parameters: ["title": "Event title (e.g. 'Team Meeting')", "start": "Start time (ISO8601 format)", "end": "End time (optional, default +1 hour)", "notes": "Optional notes for the event"], verified: true, category: "system", annotations: .writeLocal, cache: ToolCachePolicy.none)
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let title = params["title"] as? String else { throw MCPError.invalidParams("title required") }
         guard let startStr = params["start"] as? String,
@@ -51,8 +51,8 @@ final class CalendarCreateEventTool: MCPTool {
 
 final class ReminderScheduleRecurringTool: MCPTool {
     let definition = ToolDefinition(name: "reminder.schedule_recurring",
-        summary: "Schedule a repeating reminder. Use for: periodic alerts (hourly/daily/etc). Don't use for: one-time reminder (use reminder.schedule), create calendar event (use calendar.create_event). Example: user says 'remind me to drink water every hour' → recurring reminder.",
-        parameters: ["title": "Reminder title", "body": "Reminder content", "interval_seconds": "Repeat interval in seconds"], verified: true, category: "system")
+        summary: "Schedule a repeating reminder. Use for: periodic alerts (hourly/daily/etc). Don't use for: one-time reminder (use `reminder` action:schedule), create calendar event (use calendar.create_event). Example: user says 'remind me to drink water every hour' → recurring reminder.",
+        parameters: ["title": "Reminder title", "body": "Reminder content", "interval_seconds": "Repeat interval in seconds"], verified: true, category: "system", annotations: .writeLocal, cache: ToolCachePolicy.none)
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let title = params["title"] as? String else { throw MCPError.invalidParams("title required") }
         let interval = max(params["interval_seconds"] as? Int ?? 3600, 1)
@@ -72,7 +72,7 @@ final class ReminderScheduleRecurringTool: MCPTool {
 // MARK: - 设备快照 (电池/存储/系统）
 
 final class DeviceSnapshotTool: MCPTool {
-    let definition = ToolDefinition(name: "device.snapshot", summary: "Quick device status snapshot: battery level, memory usage, disk space, iOS version. Use for: check device health, see how much free space, monitor performance. Don't use for: detailed device info (use device.info), spoof device info (use device.fake). Example: user says 'how much memory is left' → device snapshot.")
+    let definition = ToolDefinition(name: "device.snapshot", summary: "Quick device status snapshot: battery level, memory usage, disk space, iOS version. Use for: check device health, see how much free space, monitor performance. Don't use for: detailed device info (use device.info), spoof device info (use device.fake). Example: user says 'how much memory is left' → device snapshot.", annotations: .readOnlyLocal, cache: ToolCachePolicy.short)
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         UIDevice.current.isBatteryMonitoringEnabled = true
         let battery = UIDevice.current.batteryLevel
@@ -103,7 +103,7 @@ final class WebSearchTool: MCPTool {
                      "provider": "Optional provider name: bing/duckduckgo/searxng/tavily/exa/brave/serper/bocha/metaso/zhipu/jina/firecrawl/perplexity/linkup/you",
                      "limit": "Max results (default from settings, max 20)"],
         verified: true, category: "browser",
-        uiSummary: "联网检索（多服务商，本地引擎免费可用）")
+        uiSummary: "联网检索（多服务商，本地引擎免费可用）", annotations: .readOnlyNetwork, cache: ToolCachePolicy.short)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let q = (params["query"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -153,7 +153,7 @@ final class WebFetchTool: MCPTool {
         returns: ["url": "Final URL", "title": "Page title", "text": "Full text",
                   "via": "Which channel produced it: provider / jina / local"],
         verified: true, category: "browser",
-        uiSummary: "读网页全文（三级回退，JS 页面走 reader）")
+        uiSummary: "读网页全文（三级回退，JS 页面走 reader）", annotations: .readOnlyNetwork, cache: ToolCachePolicy.none)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let urlString = params["url"] as? String, !urlString.isEmpty else {
@@ -308,6 +308,10 @@ final class KnowledgeStore {
     /// 供后续会话用 knowledge.search (BM25）检索。行数上限 300，自动滚动。
     func appendSessionMemory(user: String, reply: String, tools: [String]) {
         ensure()
+        // v8（PR-F-44）：隐私开关——设置里可关闭自动记录（默认开）
+        guard UserDefaults.standard.object(forKey: "xosvi.session_memory_enabled") as? Bool ?? true else {
+            return
+        }
         let url = dir.appendingPathComponent("session_memory.md")
         let formatter = DateFormatter()
         formatter.dateFormat = "MM-dd HH:mm"
@@ -409,7 +413,7 @@ enum BM25Tokenizer {
 final class KnowledgeImportTextTool: MCPTool {
     let definition = ToolDefinition(name: "knowledge.import_text",
         summary: "Save text content to the knowledge base. Use for: store notes/reference material for later retrieval. Don't use for: write file to workspace (use artifact), search saved knowledge (use knowledge.search). Example: user says 'save this note' → import to knowledge base.",
-        parameters: ["name": "Entry name/title", "content": "Text content to save"], verified: true, category: "knowledge")
+        parameters: ["name": "Entry name/title", "content": "Text content to save"], verified: true, category: "knowledge", annotations: .writeLocal, cache: ToolCachePolicy.none)
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let name = params["name"] as? String, let content = params["content"] as? String else {
             throw MCPError.invalidParams("name, content required")
