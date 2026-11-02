@@ -27,6 +27,17 @@ enum ShellDiag {
 
 /// 内置终端工具：执行 shell 命令 (iSH 引擎）
 final class ShellExecTool: MCPTool {
+    /// v8（R⑤）：工具链优先 JB 侧——越狱设备把 /var/jb 下的 bin/sbin 提到 PATH 前面，
+    /// 这样 ldid/insert_dylib/apt 等优先命中 JB 版本，避免 App 容器内第三方二进制被拦（EBADEXEC 85）。
+    static var effectivePATH: String {
+        if ExecutionStrategy.preferJBToolchain {
+            let jb = JBEnvironment.jbrootPath ?? JBEnvironment.rootPrefix
+            let prefix = jb.isEmpty ? "/var/jb" : jb
+            return [prefix + "/usr/bin", prefix + "/bin", prefix + "/usr/sbin", prefix + "/sbin",
+                    "/usr/bin", "/bin", "/usr/sbin", "/sbin"].joined(separator: ":")
+        }
+        return "/usr/bin:/bin:/usr/sbin:/sbin"
+    }
     let definition = ToolDefinition(
         name: "shell.exec",
         summary: "Run shell command (terminal/CLI). Params: command(必填), timeout(默认20s/max120), runtime(auto/ios/alpine). 自动路由(auto默认): 装包/解包/工具链/复杂脚本→Alpine(自动apk add, bind /ios_workspace /ios_containers); 纯文件/系统/网络→iOS原生. Use for: file ops, system info, network, text processing.",
@@ -667,6 +678,16 @@ final class ShellExecTool: MCPTool {
     /// agent 不再手动传 env 切环境——凡 iOS 原生工具链缺失的命令
     /// (装包/解包 deb/完整 shell 脚本/需要 python 等) 自动进 Alpine；
     /// 其余(文件操作/系统信息/网络/分析)默认走 iOS 原生。
+    /// v8（R⑫）：JB 侧是否存在该可执行文件（/var/jb、/rootfs 视图）
+    static func jbSideHas(_ name: String) -> Bool {
+        let cands = ["/usr/bin/\(name)", "/bin/\(name)", "/usr/sbin/\(name)", "/sbin/\(name)"]
+        for c in cands {
+            if let p = JBEnvironment.firstExistingPath(c),
+               FileManager.default.isExecutableFile(atPath: p) { return true }
+        }
+        return false
+    }
+
     static func autoRouteNeedsAlpine(_ command: String) -> Bool {
         let c = command.trimmingCharacters(in: .whitespacesAndNewlines)
         // 明确的 Alpine 需求标记：装包/解包/完整工具链/复杂脚本结构
@@ -685,7 +706,17 @@ final class ShellExecTool: MCPTool {
             #"<<\s*[A-Za-z_][A-Za-z0-9_]*"#,  // heredoc
         ]
         for m in alpineMarkers {
-            if c.range(of: m, options: .regularExpression) != nil { return true }
+            if c.range(of: m, options: .regularExpression) != nil {
+                // v8（R⑫）：越狱档优先 JB 侧原生工具链——若 /var/jb 有同名二进制，不送 Alpine，
+                // 避免 x86 模拟（更慢且 iSH 历史上段错误）；App 容器内第三方二进制被拦也绕开。
+                if ExecutionStrategy.preferJBToolchain {
+                    let first = c.split(separator: " ").first.map(String.init) ?? ""
+                    if !first.isEmpty && Self.jbSideHas(first) {
+                        return false
+                    }
+                }
+                return true
+            }
         }
         // v6.0.30: python代码里要开子进程(subprocess/os.system/popen)，原生python不支持，自动切Alpine
         if c.hasPrefix("python3") || c.hasPrefix("python") {
@@ -2533,7 +2564,18 @@ final class ShellExecTool: MCPTool {
     /// fix3q: 内置原生工具链通用执行——lua/node/r2/cstool（native-tools 交叉编译进 App bin/）。
     /// 直接探测 Bundle bin/<name>（TSRootBinaries 注册），不存在则明确提示改用 Alpine 或 tool.install。
     private static func runIOSBundled(_ name: String, _ command: String) -> [String: Any] {
-        let binPath = Bundle.main.bundlePath + "/bin/" + name
+        // v8（R⑤）：越狱档优先 JB 侧工具链（/var/jb/usr/bin/<name>），其次 App 内置；
+        // 内置二进制在 rootHide 容器内可能被 EBADEXEC 拦，JB 侧不受此限。
+        var binPath = Bundle.main.bundlePath + "/bin/" + name
+        if ExecutionStrategy.preferJBToolchain {
+            for cand in ["/usr/bin/\(name)", "/bin/\(name)", "/usr/sbin/\(name)", "/sbin/\(name)"] {
+                if let jb = JBEnvironment.firstExistingPath(cand),
+                   FileManager.default.isExecutableFile(atPath: jb) {
+                    binPath = jb
+                    break
+                }
+            }
+        }
         guard FileManager.default.isExecutableFile(atPath: binPath) else {
             return ["command": command, "exit_code": 1,
                     "stdout": "\(name): 内置原生 \(name) 未就绪（此构建未集成 native-tools）— 可试 Alpine：sh -c '\(name) ...'，或用 tool.install 安装。",

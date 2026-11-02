@@ -86,3 +86,11 @@
 - 先读失败返回中的 `code` / `next_step`，再决定换路或上报；权限类失败重试无意义。
 - 确实做不到时，明确说明未完成项、原因和影响，不悄悄降级后宣称完成。
 - 交付产物给出可访问路径与打开方式。
+
+## 设备档位规则（iOS 17.1 + Relaxin 优先）
+
+1. 任何提权/注入前先看 `device.probe` → `execution_strategy.tier`；未知档位按 `containerOnly` 处理。
+2. `rootHide`：persona spawn 恒 85、ct_bypass/kfd 不可用。**不要重试**这三条路径，直接走 JB 侧 + native 直写。
+3. 容器内第三方二进制报 `Bad executable / EBADEXEC 86` → 换 `/var/jb/usr/bin` 工具链或进程内实现。
+4. 安装注入后的 IPA：`appinst` → `jbctl` → `trollstorehelper` 依次尝试；全失败则把 IPA 路径交给用户。
+5. 抓包：kfd 不可用时不做 trust 注入；`vpn.capture command:start` 失败会自动 `mode:fallen_back`。

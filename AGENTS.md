@@ -16,6 +16,20 @@ Shell 分为 **iOS 原生**（直接读写真实文件系统）与 **iSH Alpine*
 工具总数与可用性不写死：**以 `system.overview` 的 `total_tools` 或 `tools/list` 的实时输出为准**（当前默认启用 49 个，源码注册表共 166 个，含未启用的历史工具）。
 
 ## 工具调用规范（先读这段）
+## 执行档位（探测驱动，禁止假设）
+
+| 档位 | 判定 | 提权 | 注入 | 工具链 |
+|---|---|---|---|---|
+| `trollStore` | 未越狱且 iOS ≤17.0 | persona / setuid | 静态（ct_bypass ≤17.0） | App 内置 |
+| `jailbroken` | rootless 越狱 | JB 侧二进制 + native 直写 | 静态重打包 + appinst/jbctl | **/var/jb 优先** |
+| `rootHide` | Relaxin / rootHide | JB 侧 + native 直写；**persona 恒 85** | 静态；容器内 spawn 可能 EBADEXEC 86 | **/var/jb 优先** |
+| `containerOnly` | 无提权路径 | 仅 native 直写 | 不可 | App 内置 |
+
+- 任何时候先读 `device.probe` 的 `execution_strategy`（tier / spawn_probe 四类 / prefer_jb_toolchain），再决定路径。
+- **不要**在 iOS 17.1+ 上尝试 persona、ct_bypass、kfd；不要从 App 容器 spawn 第三方 Mach-O（EBADEXEC）。
+- 控制类优先 HID（`control` command:status 的 `control_path` 会说明）；HID 不可用才回退 ControlAgent 注入。
+- 内存修改只用 native 引擎；`backend:legacy` 在 rootHide 上直接拒绝。
+
 
 1. **只调用真实存在的工具名**。下表是当前**默认启用**的工具名（49 个），也是唯一可信的调用名清单；不在表里的名字会直接报 `unknownTool`。
 2. **大工具 + 子命令**：子命令用 `command:`（少数工具用 `action:`）参数传。

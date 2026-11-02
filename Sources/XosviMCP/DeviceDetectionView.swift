@@ -1,6 +1,17 @@
 import SwiftUI
 
 struct DeviceDetectionView: View {
+    /// v8（R⑯）：能力徽标
+    @ViewBuilder
+    private func badge(_ title: String, _ on: Bool) -> some View {
+        Text("\(title) \(on ? "✓" : "✕")")
+            .font(.caption2)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background((on ? Color.green : Color.gray).opacity(0.15))
+            .foregroundColor(on ? .green : .secondary)
+            .cornerRadius(5)
+    }
+
     @Environment(\.presentationMode) var presentationMode
     // v2.9.76：从抽屉 sheet 打开时显示"完成"；从设置 push 时只显示返回箭头
     var showsDismissButton = false
@@ -62,6 +73,39 @@ struct DeviceDetectionView: View {
                     }
                     .padding(.horizontal)
                     .padding(.top, 8)
+
+                    // v8（R⑯）：执行档位卡片——探测驱动的 tier / spawn_probe 一目了然
+                    let strategy = ExecutionStrategy.report()
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Image(systemName: "cpu")
+                            Text("执行档位").font(.headline)
+                            Spacer()
+                            Text((strategy["tier"] as? String) ?? "-")
+                                .font(.system(.caption, design: .monospaced))
+                                .padding(.horizontal, 8).padding(.vertical, 4)
+                                .background(Color.blue.opacity(0.12))
+                                .cornerRadius(6)
+                        }
+                        if let probe = strategy["spawn_probe"] as? [String: Any],
+                           let summary = probe["summary"] as? String {
+                            Text(summary)
+                                .font(.system(.caption2, design: .monospaced))
+                                .foregroundColor(.secondary)
+                        }
+                        if let note = strategy["note"] as? String, !note.isEmpty {
+                            Text(note).font(.caption).foregroundColor(.orange)
+                        }
+                        HStack(spacing: 12) {
+                            badge("JB 工具链", (strategy["prefer_jb_toolchain"] as? Bool) == true)
+                            badge("静态注入", (strategy["static_injection"] as? Bool) == true)
+                            badge("kfd", (strategy["kfd"] as? Bool) == true)
+                        }
+                    }
+                    .padding(14)
+                    .background(Color(.secondarySystemBackground))
+                    .cornerRadius(14)
+                    .padding(.horizontal)
 
                     // 环境自检卡片
                     VStack(alignment: .leading, spacing: 0) {

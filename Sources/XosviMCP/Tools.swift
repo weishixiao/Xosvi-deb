@@ -15,6 +15,8 @@ final class DeviceInfoTool: MCPTool {
             "model": UIDevice.current.model,
             "appVersion": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "-",
             "workspace": Workspace.root.path,
+            // v8（R①/R③/R⑯）：探测驱动的执行档位（container-ok / jb-only / locked）
+            "execution_strategy": ExecutionStrategy.report(),
         ]
     }
 }
@@ -46,6 +48,8 @@ final class DeviceProbeTool: MCPTool {
             ],
             "trollStore": r.trollStore,
             "jailbreakEnv": r.jailbreakEnv,
+            // v8（R①）：spawn 四类探针 + 档位
+            "execution_strategy": ExecutionStrategy.report(),
             "jailbreakRoot": r.jailbreakRoot,
             "trollFools": r.trollFools,
             "task_for_pid": r.taskForPid,
@@ -98,6 +102,15 @@ final class MemoryTweakTool: MCPTool {
 
         // 旧的 dylib 后端保持原样（用户显式指定 legacy 时走这里）
         if backend == "legacy" {
+            // v8（R⑧）：iOS 17.1 + Relaxin 上，legacy 依赖把 MemoryTweak.dylib 注入目标进程；
+            // 注入在 rootHide 下只能走静态重打包，成本高且常失败 → 直接引导用原生直连引擎。
+            if ExecutionStrategy.preferJBToolchain || !ExecutionStrategy.memoryInjectionUsable {
+                throw MCPError.classified(
+                    "legacy 后端不可用：当前档位 \(ExecutionStrategy.tier().rawValue) 不支持 dylib 注入式内存后端",
+                    code: "ENV_PERMISSION",
+                    reason: "iOS 17.1+Relaxin：MemoryTweak 需静态注入目标 App，rootHide 下不可行",
+                    nextStep: "移除 backend:legacy，使用默认 native 引擎（进程内 VansonMod，attach 用 pid/bundle_id）")
+            }
             return try legacyInvoke(action: action, params: params)
         }
         return try nativeInvoke(action: action, params: params)

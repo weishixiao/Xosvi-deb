@@ -6,6 +6,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+
+# v8（R⑱）：--jb 产出越狱侧安装包（Xosvi-jb.tar.gz）
+for arg in "$@"; do
+  case "$arg" in
+    --jb) BUILD_JB=1 ;;
+  esac
+done
+export BUILD_JB
 echo ">>> iphoneos SDK: $SDK"
 
 # P1 Step A (fix3cy26c)：默认走 Xcode app-extension 形态（Xcode 自动 -e _NSExtensionMain，
@@ -584,3 +592,35 @@ echo ">>> built: $IPA ($(du -h "$IPA" | cut -f1))"
 # TrollStore 对自家格式签名/entitlements 处理最完整）。tipa 即 zip（内含 Payload）。
 cp "$IPA" Xosvi.tipa
 echo ">>> built: Xosvi.tipa ($(du -h "Xosvi.tipa" | cut -f1))"
+
+# v8（R⑱）：--jb 档打包——输出越狱侧可直接解压安装的布局（/var/jb/Applications/Xosvi.app）
+# 17.1 + Relaxin 上 TrollStore 不可用，App 需装到 JB 侧；此包配合 appinst/jbctl 或手工 cp+Respring。
+if [ "${BUILD_JB:-0}" = "1" ]; then
+    echo ">>> JB variant: building Xosvi-jb.tar.gz"
+    JBDIR="build-jb/var/jb/Applications"
+    rm -rf build-jb
+    mkdir -p "$JBDIR"
+    cp -R "$APP" "$JBDIR/"
+    # 生成安装脚本：优先 appinst → jbctl → 手工布局
+    cat > build-jb/install.sh <<'INSTALL'
+#!/bin/sh
+# Xosvi JB 安装脚本（在设备上以 root 执行：sh install.sh）
+set -e
+TARGET=/var/jb/Applications/Xosvi.app
+SRC="$(cd "$(dirname "$0")" && pwd)/var/jb/Applications/Xosvi.app"
+rm -rf "$TARGET"
+mkdir -p /var/jb/Applications
+cp -a "$SRC" "$TARGET"
+chown -R root:wheel "$TARGET" 2>/dev/null || true
+chmod -R 755 "$TARGET"
+if command -v jbctl >/dev/null 2>&1; then
+  jbctl respring 2>/dev/null || true
+elif command -v sbreload >/dev/null 2>&1; then
+  sbreload
+fi
+echo "installed: $TARGET"
+INSTALL
+    chmod +x build-jb/install.sh
+    tar -czf Xosvi-jb.tar.gz -C build-jb .
+    echo ">>> built: Xosvi-jb.tar.gz ($(du -h Xosvi-jb.tar.gz | cut -f1))"
+fi

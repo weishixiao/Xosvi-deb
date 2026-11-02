@@ -94,6 +94,14 @@ final class FailureKnowledgeBase {
         ("Permission denied", "权限", "目标路径只读或未以 root 运行", "确认 TrollStore 已开编辑 Entitlements、setuid 已打；Bundle 目录需 root 写入"),
         ("No space left on device", "存储", "沙盒空间已满", "用 workspace.cleanup 清旧文件/日志，或在系统设置清理 App 存储"),
         ("Connection refused", "网络", "目标端口无服务/代理未起", "确认 server 已 start、端口正确；本地代理/抓包工具要先启动"),
+        // v8（R⑬）：iOS 17.1 + Relaxin（rootHide）专项——这些是本机最高频的「看起来像工具坏了」的坑
+        ("ENOSYS", "环境", "iOS 17+ AMFI 拒绝 persona-mgmt，persona spawn 恒返回 85", "不要重试 persona 路径：改用 JB 侧二进制（/var/jb）或 native 直写；执行档位见 device.probe.execution_strategy"),
+        ("persona", "环境", "persona spawn 在 17.1 不可用（85 ENOSYS）", "跳过 persona：注入走静态重打包 + JB 侧安装器（appinst/jbctl），提权走 setuid 或 native 直写"),
+        ("Bad executable", "环境", "rootHide 拦截 App 容器内第三方二进制执行（EBADEXEC 86）", "改用 JB 侧 /var/jb 工具链；或走进程内实现（CPyEmbed / 原生 Mach-O 工具）"),
+        ("EBADEXEC", "环境", "容器内第三方二进制被 AMFI/rootHide 拦截", "把工具链切到 /var/jb/usr/bin；禁止从 App 容器直接 spawn 第三方 Mach-O"),
+        ("NECP", "网络", "VPN appex 未被 NECP 认可（假签名/无 trust cache）", "越狱档靠 amfid/trust cache；kfd 在 17.1 不可用 → 自动降级 local proxy（mode:fallen_back）"),
+        ("kfd", "环境", "kfd 仅支持 ≤16.6.1，17.1 不可用", "不要尝试 kfd 注入；越狱档走 JB trust cache，非越狱 17.1 无解，改本地代理抓包"),
+        ("trollstorehelper", "环境", "TrollStore 安装器在 17.1 不存在", "改用 JB 侧 appinst / jbctl；IPA 生成后也可手动安装"),
         ("Could not inspect the application package", "安装", "IPA 包结构不完整或非有效 App 包", "用 package.unpack 检查包结构，确认 Info.plist 与主二进制齐全"),
         ("0x8badf00d", "崩溃", "启动被系统看门狗杀死（启动耗时过长，常见注入太重）", "减少启动期加载的 dylib/检查项，把重活延后到启动后"),
         ("0xdead10cc", "崩溃", "系统判定 App 占用/挂死（多为后台锁/IO 卡死）", "排查主线程阻塞、全量序列化大文件，检查是否有死循环"),
@@ -123,11 +131,11 @@ final class FailureKnowledgeBase {
         var v = 0
         if sqlite3_step(stmt) == SQLITE_ROW { v = Int(sqlite3_column_int(stmt, 0)) }
         sqlite3_finalize(stmt)
-        if v < 2 {
+        if v < 3 {
             for (kw, cat, cause, fix) in v2Patterns where !keywordExists(kw) {
                 insertPattern(kw, cat, cause, fix)
             }
-            sqlite3_exec(db, "INSERT OR REPLACE INTO meta(k,v) VALUES('seed_version',2)", nil, nil, nil)
+            sqlite3_exec(db, "INSERT OR REPLACE INTO meta(k,v) VALUES('seed_version',3)", nil, nil, nil)
         }
     }
 

@@ -306,7 +306,13 @@ final class InjectionManager {
         // argv[1:] 应为纯参数。之前多塞 name 导致 argv[1]="cp"/"chown"/"install_name_tool" 等
         // 被工具当作第一个参数/第一个源文件：cp 报 "target ... No such file" (把 "cp" 当源）、
         // install_name_tool 把 "install_name_tool" 当命令等，大量注入步骤静默failed (_ = 忽略返回）。
-        let result = spawnRootDetailed(bin, args: args, timeout: timeout)
+        //
+        // v8（R⑥）：iOS 17+ 上 persona 恒 85（AMFI 拒绝 persona-mgmt），先查策略层跳过这一跳，
+        // 直接走 setuid/无 persona 路径，避免每次都多一次注定失败的 spawn（R⑰ 提速）。
+        let personaExpectedBlocked = ExecutionStrategy.DeviceFacts.personaExpectedBlocked
+            || !ExecutionStrategy.canUsePersona
+        let result = spawnRootDetailed(bin, args: args, timeout: timeout,
+                                       usePersona: !personaExpectedBlocked)
         // v6.6.7: ENOSYS fallback——persona spawn 被内核拒时（iOS 17+ AMFI 拒绝 persona-mgmt entitlement），
         // 降级到不带 persona attr 的 posix_spawn，依赖 helper 二进制的 setuid 位由 TrollStore 装上。
         // 这样即使 persona 链路挂了，只要 TrollStore 版本 ≥ 1.1.1 且 helper 有 setuid 位，仍能提权。
@@ -614,6 +620,29 @@ final class InjectionManager {
     /// v6.6.7: 新增 usePersona 参数——false 时不设置 persona 属性，依赖目标二进制的 setuid 位提权。
     ///         用于 posix_spawn 返回 85 (ENOSYS) 时的 fallback：iOS 17+ 上 persona spawn 被 AMFI 拒绝时，
     ///         若 helper 二进制被 TrollStore 打上 setuid 位，走这条路径仍能提权。
+    // MARK: - v8（R②/R⑥）：spawn 探针（ExecutionStrategy 用）
+    //
+    // 与 spawnRootDetailed 共享同一条 spawn 链，但只关心「能不能起来」，不读输出。
+    // usePersona=false → 依赖 setuid 位；true → persona 链路（iOS 17+ 恒 85）。
+    func spawnRootProbe(usePersona: Bool) -> SpawnProbe.SpawnResult {
+        guard let bin = binaryPath("ldid") else {
+            return .failed(code: 2, detail: "helper not bundled")
+        }
+        let r = spawnRootDetailed(bin, args: ["-h"], timeout: 6, usePersona: usePersona)
+        if r.code == 0 { return .ok }
+        // 把真实 errno 归位（spawnRootDetailed 里 code 即 errno/exit）
+        let code = Int32(r.code)
+        let detail: String
+        switch code {
+        case 85: detail = usePersona ? "persona spawn ENOSYS(85)——iOS 17+ AMFI 拒绝 persona-mgmt" : "setuid spawn ENOSYS(85)——容器内第三方二进制被拦"
+        case 86: detail = "EBADEXEC(86)：二进制格式不被认可"
+        case 13: detail = "EACCES(13)：helper 无执行/root 权限"
+        case 2:  detail = "helper 不存在"
+        default: detail = r.diagPrefix + String(r.output.prefix(120))
+        }
+        return .failed(code: code, detail: detail)
+    }
+
     func spawnRootDetailed(_ path: String, args: [String], timeout: Double = 60, usePersona: Bool = true) -> SpawnResult {
         // v2.9.281：argv[0] 放可执行路径 (posix_spawn 程序名惯例）。之前 argv[0]=args[0]
         // 导致 trollstorehelper 的 main (从 argv[1] 解析 cmd）把命令参数当成命令：
@@ -2290,6 +2319,8 @@ final class InjectionManager {
             "bundled_tools": availableBinaries(),
             "injected_count": injectedApps.count,
             "injected_apps": injectedApps,
+            // v8（R⑪）：注入路径计划——探测驱动的策略结论（静态/内存/不可用）
+            "injection_strategy": ExecutionStrategy.report(),
             "root_diagnosis": rootDiag,
             "root_chain": rootChain,
             "jailbreak": jbStatus
@@ -2546,17 +2577,37 @@ final class InjectionManager {
         _ = try? fm.removeItem(atPath: payloadRoot)
         _ = try? fm.removeItem(atPath: destApp)
 
-        // 7. TrollStore 静默安装 (自动重签）
-        let helper = "/var/usr/bin/trollstorehelper"
-        guard fm.isExecutableFile(atPath: helper) else {
-            return (false, "trollstorehelper not available. IPA generated at: \(ipaPath)")
-        }
-        let (instRc, instOut) = spawnRoot(helper, args: ["install", ipaPath], timeout: 180)
-        guard instRc == 0 else {
-            return (false, "trollstorehelper install failed: \(instOut.prefix(300)). IPA at: \(ipaPath)")
+        // 7. 安装注入后的 IPA：按档位选择安装器（v8 R⑦：JB 侧优先，TrollStore 兜底）
+        let (installed, installMsg) = Self.installIPA(ipaPath)
+        guard installed else {
+            return (false, "安装失败：\(installMsg)。IPA 已生成：\(ipaPath)")
         }
 
         AppCatalog.invalidateCache()
-        return (true, "Static injection success. App reinstalled with dylib: \(dylibName). IPA at: \(ipaPath)")
+        return (true, "Static injection success. App reinstalled with dylib: \(dylibName). \(installMsg). IPA at: \(ipaPath)")
     }
+
+    // MARK: - v8（R⑦/R⑪）：IPA 安装链（TrollStore / JB 双档）
+    //
+    // 17.1 + Relaxin 上 trollstorehelper 不存在，必须走 JB 侧 appinst/jbctl。
+    // 依次尝试，全部失败时把 IPA 路径交给用户手动安装（不静默失败）。
+    static func installIPA(_ ipaPath: String) -> (Bool, String) {
+        let fm = FileManager.default
+        let candidates: [(path: String, args: [String], label: String)] = [
+            ("/var/jb/usr/bin/appinst", ["install", ipaPath], "jb-appinst"),
+            ("/var/jb/usr/bin/jbctl", ["install", ipaPath], "jbctl"),
+            ("/var/jb/usr/bin/trollstorehelper", ["install", ipaPath], "jb-trollstorehelper"),
+            ("/usr/bin/appinst", ["install", ipaPath], "root-appinst"),
+            ("/var/usr/bin/trollstorehelper", ["install", ipaPath], "trollstorehelper"),
+        ]
+        for c in candidates {
+            guard fm.isExecutableFile(atPath: c.path) else { continue }
+            let (rc, out) = spawnRoot(c.path, args: c.args, timeout: 240)
+            if rc == 0 { return (true, "installed via \(c.label)") }
+            lastInstallError = "[\(c.label)] \(out.prefix(200))"
+        }
+        return (false, lastInstallError ?? "no installer found (appinst/jbctl/trollstorehelper 均不可用)")
+    }
+
+    private static var lastInstallError: String?
 }

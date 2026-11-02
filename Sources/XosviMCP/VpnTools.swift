@@ -59,6 +59,8 @@ final class VpnTool: MCPTool {
                 "system_proxy_configured": systemProxy,
                 "ca_installed_candidate": vm.caExists,
                 "cert_state": vm.caExists ? "CA_READY" : "NO_CA",
+                // v8（R⑨）：信任注入能力（kfd / JB trust cache / none）
+                "trust_injection": vm.trustInjectionCapability,
                 "mitm_log_files": mitmLogs.count,
                 "mitm_log_dir": vm.mitmLogDir,
                 "warnings": warnings,

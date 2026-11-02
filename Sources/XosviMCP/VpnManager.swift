@@ -65,8 +65,31 @@ final class VpnManager {
 
     // MARK: - VPN 模式
 
+    /// v8（R⑨）：本机能否做「信任注入」（kfd / JB trust cache）
+    /// 17.1+ 上 kfd 不可用；JB 档靠越狱 trust cache，不需要 kfd。
+    var trustInjectionCapability: [String: Any] {
+        let tier = ExecutionStrategy.tier()
+        let kfd = ExecutionStrategy.kfdUsable
+        let jbTrust = (tier == .jailbroken || tier == .rootHide)
+        return [
+            "tier": tier.rawValue,
+            "kfd_usable": kfd,
+            "jb_trust_cache": jbTrust,
+            "path": jbTrust ? "jb-trustcache" : (kfd ? "kfd" : "none"),
+            "note": jbTrust
+                ? "越狱环境靠 amfid/trust cache，无需 kfd；appex 已带 no-sandbox entitlements"
+                : (kfd ? "kfd 可用（≤16.6.1）" : "kfd 不可用且非越狱：appex 可能无法被 NECP 认可，将自动降级本地代理"),
+        ]
+    }
+
     func startVpn(completion: @escaping (String?) -> Void) {
         VpnManager.vpnlog("startVpn called")
+        // v8（R⑨）：kfd 守卫——kfd 不可用且非越狱时，跳过任何 trust 注入尝试，
+        // 直接标记「可能失败」，让上层走 local proxy 降级（VpnTools.start 已有 fallen_back）。
+        let trust = trustInjectionCapability
+        if (trust["path"] as? String) == "none" {
+            VpnManager.vpnlog("trust injection unavailable: kfd=false & not jailbroken → expect NECP refusal")
+        }
         // fix3cy（P1 修正方向 A）：VPN 隧道【剥离】kfd 注入。
         //   已实证 fuck_helper 是"信任自己"的黑盒引擎，无法定向信任 VpnTunnel；且每次开 VPN
         //   触发注入→目标不匹配→DMA panic 黑屏。VpnTunnel.appex 本身已有

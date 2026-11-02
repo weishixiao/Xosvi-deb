@@ -4,6 +4,40 @@ import Foundation
 // injected ControlAgent.dylib 到任意 App 后，通过 localhost HTTP 控制目标 App UI
 // 端口固定 4789，API: /status /ui_tree /screenshot /tap /swipe /type /key
 
+// MARK: - v8（R⑩）：控制路径策略（HID 优先 / 注入优先）
+
+enum ControlToolsPolicy {
+    /// HID 不需要注入目标 App，rootHide/Relaxin 上注入不可行时优先 HID。
+    /// 但 HID 需要 com.apple.private.hid.client.event-dispatch entitlement——
+    /// 现在只能探测 symbol + client 创建是否成功，失败就回退注入路径。
+    static var preferHID: Bool {
+        // 用户显式关闭
+        if UserDefaults.standard.object(forKey: "xosvi.control.hid_disabled") as? Bool == true { return false }
+        // 越狱档（尤其 rootHide）优先 HID
+        switch ExecutionStrategy.tier() {
+        case .rootHide, .jailbroken:
+            return HIDTouchInjector.shared.ensureClient().ok
+        case .trollStore:
+            // TS 上注入更稳，除非注入不可用
+            return false
+        default:
+            return HIDTouchInjector.shared.ensureClient().ok
+        }
+    }
+
+    /// 给 AI 看的控制路径说明
+    static var report: [String: Any] {
+        let hid = HIDTouchInjector.shared.ensureClient()
+        return [
+            "tier": ExecutionStrategy.tier().rawValue,
+            "prefer": preferHID ? "hid" : "inject",
+            "hid_available": hid.ok,
+            "hid_reason": hid.reason,
+            "fallback": "注入不可用时自动回退 HID（tap/swipe）",
+        ]
+    }
+}
+
 final class ControlAgentTools {
     static let shared = ControlAgentTools()
     private let port = 4789
@@ -456,7 +490,10 @@ final class ControlExecTool: MCPTool {
             return try ControlInjectTool().invoke(["bundle_id": bundleId])
             
         case "status":
-            return ControlAgentTools.shared.status()
+            var st = ControlAgentTools.shared.status()
+            // v8（R⑩）：同时报告控制路径选择（HID vs 注入）
+            st["control_path"] = ControlToolsPolicy.report
+            return st
             
         case "ui_tree":
             var tree = ControlAgentTools.shared.uiTree()
@@ -480,12 +517,26 @@ final class ControlExecTool: MCPTool {
             guard let x = params["x"] as? Double, let y = params["y"] as? Double else {
                 throw MCPError.invalidParams("x and y required. Usage: control tap x:100 y:200 (both Numbers)")
             }
+            // v8（R⑩）：HID 优先——HID 不需要注入目标 App，在 rootHide/Relaxin 上更可靠
+            if ControlToolsPolicy.preferHID {
+                let hid = HIDTouchInjector.shared.tap(x: Float(x), y: Float(y))
+                if hid { return ["tapped": true, "via": "hid", "x": x, "y": y,
+                                 "note": "HID 合成触摸（不依赖目标 App 注入）"] }
+            }
             return ControlAgentTools.shared.tap(x: x, y: y)
             
         case "swipe":
             guard let x1 = params["x1"] as? Double, let y1 = params["y1"] as? Double,
                   let x2 = params["x2"] as? Double, let y2 = params["y2"] as? Double else {
                 throw MCPError.invalidParams("x1,y1,x2,y2 required. Usage: control swipe x1:100 y1:200 x2:300 y2:400 (all Numbers)")
+            }
+            // v8（R⑩）：HID 优先
+            if ControlToolsPolicy.preferHID {
+                let hid = HIDTouchInjector.shared.swipe(x1: Float(x1), y1: Float(y1),
+                                                        x2: Float(x2), y2: Float(y2),
+                                                        durationMs: 300)
+                if hid { return ["swiped": true, "via": "hid",
+                                 "from": [x1, y1], "to": [x2, y2]] }
             }
             return ControlAgentTools.shared.swipe(x1: x1, y1: y1, x2: x2, y2: y2, duration: 0.3)
             
