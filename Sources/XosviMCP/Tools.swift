@@ -6,7 +6,7 @@ import UIKit
 //   device.* → DeviceExecTool（委托调用 DeviceInfoTool/DeviceProbeTool 等）
 
 final class DeviceInfoTool: MCPTool {
-    let definition = ToolDefinition(name: "device.info", summary: "Get device info: iOS version, iPhone model, memory/storage, battery, Xosvi version, workspace path. Use for: check what iOS version, know device specs, find workspace path. Don't use for: wipe keychain (use device.keychain_wipe). Example: user says 'what model is my phone' → get device info.", verified: true, category: "device")
+    let definition = ToolDefinition(name: "device.info", summary: "Get device info: iOS version, iPhone model, memory/storage, battery, Xosvi version, workspace path. Use for: check what iOS version, know device specs, find workspace path. Don't use for: wipe keychain (use device.keychain_wipe). Example: user says 'what model is my phone' → get device info.", verified: true, category: "device", annotations: .readOnlyLocal, cache: ToolCachePolicy.short)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         [
@@ -25,7 +25,7 @@ final class DeviceProbeTool: MCPTool {
     let definition = ToolDefinition(
         name: "device.probe",
         summary: "Probe/check device environment: TrollStore installed, can we inject, what permissions available. Use for: check if device supports injection, see what capabilities are available. Don't use for: get device specs (use device.info), check battery/memory (use device.snapshot). Example: user says 'can my phone inject, how is the environment' → probe device.",
-        verified: true, category: "device")
+        verified: true, category: "device", annotations: .readOnlyLocal, cache: ToolCachePolicy.short)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         let r = DeviceProbe.shared.run()
@@ -455,7 +455,15 @@ final class DeviceExecTool: MCPTool {
         parameters: [
             "command": "Subcommand: info / probe / snapshot"
         ],
-        verified: true, category: "device", annotations: .destructiveSystem, cache: ToolCachePolicy.none)
+        verified: true, category: "device",
+        annotations: .readOnlyLocal,
+        cache: ToolCachePolicy.none,
+        paramSpecs: [.e("command", "子命令", values: ["info", "probe", "snapshot"], required: true)],
+        variants: [
+            ToolVariant("info", requires: [], accepts: [], annotations: .readOnlyLocal),
+            ToolVariant("probe", requires: [], accepts: [], annotations: .readOnlyLocal),
+            ToolVariant("snapshot", requires: [], accepts: [], annotations: .readOnlyLocal),
+        ])
     
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let command = params["command"] as? String else {

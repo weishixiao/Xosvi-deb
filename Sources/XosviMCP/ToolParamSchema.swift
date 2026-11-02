@@ -103,12 +103,16 @@ public struct ToolVariant {
     public let accepts: [String]
     /// 一句话说明
     public let note: String?
+    /// v8：子命令级注解（如 device probe=只读、refresh_container=破坏性）
+    public let annotations: ToolAnnotations?
 
-    public init(_ command: String, requires: [String] = [], accepts: [String] = [], note: String? = nil) {
+    public init(_ command: String, requires: [String] = [], accepts: [String] = [],
+                note: String? = nil, annotations: ToolAnnotations? = nil) {
         self.command = command
         self.requires = requires
         self.accepts = accepts
         self.note = note
+        self.annotations = annotations
     }
 
     /// 生成给模型看的一行:「inspect → 需要: bundle_id」

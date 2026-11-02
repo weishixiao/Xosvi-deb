@@ -229,6 +229,14 @@ public struct ToolDefinition {
     /// v8：MCP annotations 投影
     public var annotationsJSON: [String: Any] { annotations.jsonObject }
 
+    /// v8：按子命令取有效注解（变体声明优先；未声明回落工具级保守值）
+    public func effectiveAnnotations(for command: String?) -> ToolAnnotations {
+        guard let c = command, !c.isEmpty,
+              let v = variants.first(where: { $0.command == c }),
+              let a = v.annotations else { return annotations }
+        return a
+    }
+
     /// v8：related 的统一自然语言渲染
     public var relatedSentence: String {
         guard !related.isEmpty else { return "" }
@@ -1385,7 +1393,7 @@ public final class ToolRegistry: ObservableObject {
         do {
             var result = try dispatchCore(name: r.name, params: params)
             result.merge(aliasInfo) { _, new in new }
-            return Self.applyEnvelope(result, tool: r.tool.definition)
+            return Self.applyEnvelope(result, tool: r.tool.definition, params: params)
         } catch {
             if let mcp = error as? MCPError {
                 throw mcp.withKBFix(Self.attachKB("\(mcp)"))
@@ -1417,7 +1425,10 @@ public final class ToolRegistry: ObservableObject {
 
     /// v8（PR-B3）：成功结果信封——`code` + `_meta`，只增不改。
     /// 工具自身的 message/next_step 优先，信封只在缺省时补位（避免覆盖工具结论）。
-    private static func applyEnvelope(_ result: [String: Any], tool: ToolDefinition) -> [String: Any] {
+    private static func applyEnvelope(_ result: [String: Any], tool: ToolDefinition,
+                                      params: [String: Any]) -> [String: Any] {
+        let command = (params["command"] as? String) ?? (params["action"] as? String)
+        let effective = tool.effectiveAnnotations(for: command)
         var out = result
         let data = (out["data"] as? [String: Any]) ?? [:]
         let name = tool.name
@@ -1435,7 +1446,7 @@ public final class ToolRegistry: ObservableObject {
         if !evidence.isEmpty { meta["evidence"] = evidence }
         // v8（PR-G3）：破坏性操作凭证——已显式标注 destructive 的工具，结果必须能溯源到备份；
         // 不能备份的（内存改写/删除）在 _meta 里明示风险并要求确认后才再调用
-        if tool.isAnnotated && tool.annotations.destructive {
+        if (tool.isAnnotated || command != nil) && effective.destructive {
             meta["destructive"] = true
             let backup = (data["backup"] as? String) ?? (data["backup_path"] as? String)
                 ?? (data["original_path"] as? String)

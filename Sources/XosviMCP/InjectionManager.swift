@@ -624,6 +624,24 @@ final class InjectionManager {
     //
     // 与 spawnRootDetailed 共享同一条 spawn 链，但只关心「能不能起来」，不读输出。
     // usePersona=false → 依赖 setuid 位；true → persona 链路（iOS 17+ 恒 85）。
+    /// v8.1：真·提权探针——`launchctl print system` 只有 uid 0 能成功。
+    /// 旧探针只看「spawn 成功」，persona 明明没拿到 root（proc-euid=501）也报 ok，误导模型。
+    func spawnPrivilegeProbe(usePersona: Bool) -> SpawnProbe.SpawnResult {
+        let r = spawnRootDetailed("/bin/launchctl", args: ["print", "system"],
+                                  timeout: 8, usePersona: usePersona)
+        if r.code == 0 { return .ok }
+        let code = Int32(r.code)
+        let detail: String
+        switch code {
+        case 85: detail = usePersona ? "persona ENOSYS(85)" : "setuid spawn ENOSYS(85)"
+        case 13: detail = "EACCES(13)：没有 root 权限"
+        case 1:  detail = "launchctl 退出 1：uid 不是 0（persona 未生效）"
+        case 2:  detail = "launchctl 不存在"
+        default: detail = "exit/errno=\(code)"
+        }
+        return .failed(code: code, detail: detail)
+    }
+
     func spawnRootProbe(usePersona: Bool) -> SpawnProbe.SpawnResult {
         guard let bin = binaryPath("ldid") else {
             return .failed(code: 2, detail: "helper not bundled")

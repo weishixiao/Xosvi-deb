@@ -77,9 +77,14 @@ enum SpawnProbe {
     }
 
     /// 探测用二进制：原生用系统 /bin/echo；JB 侧用 /var/jb/usr/bin/echo 之类
-    private static var nativeProbeBin: String { "/bin/echo" }
+    // v8.1（P0-3 修正）：/bin/echo 在 iOS 不存在（errno 2），/usr/bin/echo 在 rootless 下
+    // 解析也常失败（errno 14）——改用一定存在的 /bin/sh 做「能不能 spawn」探针。
+    private static var nativeProbeBin: String { "/bin/sh" }
     private static var jbProbeBin: String? {
-        JBEnvironment.firstExistingPath("/usr/bin/echo")   // 带 /var/jb 或 /rootfs 前缀解析
+        for c in ["/usr/bin/sh", "/bin/sh", "/usr/bin/dash", "/bin/dash"] {
+            if let p = JBEnvironment.firstExistingPath(c) { return p }
+        }
+        return nil
     }
 
     /// 完整探测（缓存 30s，避免每次 dispatch 都跑）
@@ -90,21 +95,21 @@ enum SpawnProbe {
         }
         var v = Verdict()
 
-        // 1. 原生 spawn
-        v.native = run(nativeProbeBin, args: ["probe"])
+        // 1. 原生 spawn（sh -c exit 0）
+        v.native = run(nativeProbeBin, args: ["-c", "exit 0"])
 
         // 2. JB 侧二进制
         if let jbBin = jbProbeBin {
-            v.jbSide = run(jbBin, args: ["probe"])
+            v.jbSide = run(jbBin, args: ["-c", "exit 0"])
         } else {
             v.jbSide = .failed(code: 2, detail: "no jb-side echo found")
         }
 
-        // 3. setuid（无 persona）
-        v.setuid = InjectionManager.shared.spawnRootProbe(usePersona: false)
+        // 3. setuid（无 persona）——必须验证「真的拿到 uid 0」，不是 spawn 成功就算 ok
+        v.setuid = InjectionManager.shared.spawnPrivilegeProbe(usePersona: false)
 
-        // 4. persona（仅当 TS 可能可用时试；17.1 上必然 85，仍要记录真实 errno）
-        v.persona = InjectionManager.shared.spawnRootProbe(usePersona: true)
+        // 4. persona（同样验证真实 uid；17.1 上通常 85 或仍 501）
+        v.persona = InjectionManager.shared.spawnPrivilegeProbe(usePersona: true)
 
         cachedVerdict = v
         cachedAt = Date()
@@ -150,14 +155,16 @@ enum SpawnProbe {
             }
             return .failed(code: rc, detail: detail)
         }
-        // 等它结束，回收
+        // 等它结束，回收——必须看退出码：spawn 成功 ≠ 命令成功
         var status: Int32 = 0
         var waited = 0
         while waitpid(pid, &status, WNOHANG) == 0 && waited < 300 {
             usleep(20_000)
             waited += 1
         }
-        return .ok
+        let exitCode = (status & 0x7f) == 0 ? Int32((status >> 8) & 0xff) : -1
+        if exitCode == 0 { return .ok }
+        return .failed(code: exitCode, detail: "spawn ok but exit=\(exitCode)")
     }
 }
 
