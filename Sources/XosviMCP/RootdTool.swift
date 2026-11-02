@@ -8,7 +8,7 @@ import Darwin
 ///   · daemon 存活按「任一目录的 rootd.pid」判断（pid 只在主目录）
 ///   · 探针失败时把 errno 原样报出来，别再用"视图不一致"这种猜测
 ///
-/// 通道协议（rootd v1.3.2 同时服务三个目录）：
+/// 通道协议（rootd v1.5.0 同时服务三个目录；LaunchDaemon 标签 com.xosvi.rootd）：
 ///   写 `<dir>/.cmd` → rootd 执行 → `<dir>/.out` / `<dir>/.status`（IDLE / RUNNING / DONE rc=N）
 final class RootdTool: MCPTool {
     let definition = ToolDefinition(
@@ -27,7 +27,7 @@ final class RootdTool: MCPTool {
             "diagnosis": "失败时的现场诊断"
         ],
         verified: false, category: "shell",
-        prerequisites: ["需要先安装 newterm-autoroot deb（≥1.3.2，含 rootd LaunchDaemon）；status 返回 daemon_alive:false 时让用户在终端跑 sh /var/mobile/.newterm-autoroot/selfcheck.sh"], annotations: .readOnlyLocal, cache: ToolCachePolicy.none)
+        prerequisites: ["需要先安装 newterm-autoroot deb（≥1.5.0，LaunchDaemon 标签 com.xosvi.rootd）；status 返回 daemon_alive:false 时让用户在终端跑 sh /var/mobile/.newterm-autoroot/selfcheck.sh"], annotations: .readOnlyLocal, cache: ToolCachePolicy.none)
 
     /// 候选目录，**App 侧可写的排前面**。
     /// v7.16.8：Library 在真机上对 App 不可见（写入探针会报 ENOENT/EACCES），Documents 侧才是通的。
@@ -227,13 +227,13 @@ final class RootdTool: MCPTool {
             return out
         }
         if !states.contains(where: { $0.exists }) {
-            out["hint"] = "rootd 未安装，或 App 完全看不到候选目录（看 dirs[].write_error）：安装 newterm-autoroot ≥1.3.2"
+            out["hint"] = "rootd 未安装，或 App 完全看不到候选目录（看 dirs[].write_error）：安装 newterm-autoroot ≥1.5.0"
         } else if !alive {
             out["hint"] = "目录在但守护进程没跑：让用户执行 sh /var/mobile/.newterm-autoroot/selfcheck.sh 或 launchctl kickstart -k system/com.xosvi.rootd"
         } else if !states.contains(where: { $0.shared }) {
             out["hint"] = "daemon 活着但没有任何目录收到心跳（.alive 不新鲜）：App 与本机文件系统是两个视图。dirs[].inode 与终端 ls -di 对比可确认"
         } else if !states.contains(where: { $0.writable }) {
-            out["hint"] = "daemon 活着但所有目录都写不进去：让用户 chmod 1777 对应目录（deb ≥1.3.2 会自动建 /var/mobile/Documents/Rootd）"
+            out["hint"] = "daemon 活着但所有目录都写不进去：让用户 chmod 1777 对应目录（deb ≥1.5.0 会自动建 /var/mobile/Documents/Rootd）"
         }
         return out
     }
@@ -343,7 +343,7 @@ final class RootdTool: MCPTool {
             return ["completed": false, "status": status, "dir": base,
                     "cmd_consumed": !stillPending,
                     "diagnosis": stillPending
-                        ? "命令没被取走：daemon 没在看这个目录（deb 版本太旧？1.3.2 起才会轮询 Documents/Rootd）"
+                        ? "命令没被取走：daemon 没在看这个目录（deb 版本太旧？1.5.0 起使用 com.xosvi.rootd 标签并轮询 Documents/Rootd）"
                         : "命令被取走了但没等到 DONE：可能在执行中超时（默认 \(Int(timeout))s）",
                     "hint": "root command:probe 看哪个目录通"]
         }
