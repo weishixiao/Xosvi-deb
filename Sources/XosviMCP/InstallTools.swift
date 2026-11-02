@@ -236,10 +236,21 @@ final class EnvSetupRETool: MCPTool {
             // 只读盘点：App 内置 bin 下的工具 + 版本自检（不安装任何东西）
             let dir = Bundle.main.bundlePath + "/bin"
             let files = (try? FileManager.default.contentsOfDirectory(atPath: dir))?.sorted() ?? []
-            let tools = files.map { name -> [String: Any] in
+            let tools = files.compactMap { name -> [String: Any]? in
                 let path = dir + "/" + name
-                let ver = Self.versionOutput(path)
                 var row: [String: Any] = ["name": name, "path": path]
+                // v8.3（P2）：库文件不参与 exec 自检——旧版把 .dylib/.a 拿去跑，
+                // 得到 ENOEXEC(8) 后被误判成「被越狱拦截」，面板一片假 blocked。
+                if name.hasSuffix(".a") {
+                    row["status"] = "n/a (static lib)"
+                    return row
+                }
+                guard SpawnClassifier.isExecutableMachO(path) else {
+                    row["status"] = "n/a (not executable)"
+                    return row
+                }
+                let ver = Self.versionOutput(path)
+                row["status"] = ver.isEmpty ? "no-output" : "ok"
                 if !ver.isEmpty { row["version"] = String(ver.prefix(120)) }
                 return row
             }

@@ -298,7 +298,7 @@ final class PackageTool: MCPTool {
     /// List file paths inside a possibly-compressed tar (data.tar.gz/.xz/.lzma/plain).
     private func tarFileList(_ raw: Data) -> [String]? {
         // v6.6.12：先走进程内解码——旧实现把压缩成员一律交给 python3，
-        // 而 python3 在这台设备上起不来，于是 data_file_count 永远是 0
+        // 早期版本误判 python3 起不来，于是 data_file_count 恒为 0；现已内置解码。
         // （inspect 看起来像"包坏了"，实际只是列表来源不可用）。
         if let tar = decompressTar(raw) {
             let names = parseTar(tar).map { $0.name }
@@ -349,7 +349,7 @@ final class PackageTool: MCPTool {
         // 裸 tar 先判（ustar 魔数/校验和是很强的特征）：否则压缩判定可能把它误认成 lzma。
         if raw.count >= 512, looksLikeTar(raw) { return raw }
         // .lzma-alone 优先走进程内 C 解码器（CLZMA）：不依赖 python3/bsdtar 子进程，
-        // 而子进程在部分越狱/AMFI 环境会被拒（Bad executable），实测导致解包永远失败。
+        // 早期版本误判子进程被拒；现统一走进程内解码，避免依赖外部二进制。
         if compressionKind(raw) == "lzma", let d = LzmaAlone.decode(raw) { return d }
         // .xz 同样内置解码（LZMA2 + CRC32/CRC64 + BCJ），不依赖子进程。
         if compressionKind(raw) == "xz", let d = XZStream.decode(raw) { return d }
@@ -652,7 +652,7 @@ private enum LzmaAlone {
 
 /// v6.6.9：进程内 .xz 解码（xz-embedded，0BSD）。
 /// deb 的 data.tar.xz 用 LZMA2 + xz 容器 + CRC 校验，Apple Compression 解不了、
-/// python3 子进程在部分环境又起不来，所以同样内置到主进程。
+/// 为避免依赖子进程（启动开销 / 环境差异），同样内置到主进程。
 private enum XZStream {
     static func decode(_ raw: Data, maxBytes: Int = 1 << 30) -> Data? {
         guard raw.count > 12 else { return nil }
@@ -677,7 +677,7 @@ private enum XZStream {
 /// App 内置原生 CPython 的 _lzma / _bz2 / _zstd 是静态链接的完整实现，
 /// 因此压缩成员统一交给它——落临时文件后由 python3 解压（或流式解到目录）。
 private enum NativeTar {
-    /// v7.8.0：python3() 工厂已删除——本机 spawn bin/python3 恒 ENOSYS 85，所有解码走进程内。
+    /// v7.8.0：python3() 工厂已删除——统一走进程内解码，不依赖 bin/python3。
 
     /// python 侧脚本：mode=cat 解压到文件；mode=extract 直接流式解 tar 到目录。
     private static let script = """
@@ -735,7 +735,7 @@ private enum NativeTar {
         print('OK', n)
     """
 
-    /// v7.8.0：不再 spawn bin/python3（本机恒 ENOSYS 85），同一段脚本交进程内解释器。
+    /// v7.8.0：不再 spawn bin/python3（统一进程内解释器，启动更快、依赖更少）。
     /// 语义与 spawn 版一致：nil = 解释器不可用/超时；0 = 成功；1 = 脚本内部失败。
     private static func run(_ raw: Data, kind: String, mode: String, dstPath: String) -> Int32? {
         let srcPath = NSTemporaryDirectory() + "/pkg_\(UUID().uuidString).in"

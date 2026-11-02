@@ -563,7 +563,7 @@ final class SystemPrompts {
     本机自身操作仍用 shell.exec / app / inject / control —— jb 只用于被配对设备。
 
     === GIT (原生实现，无子进程) ===
-    本机真 git 与 python3 都被越狱拦（ENOSYS 85），内置 curl 丢 -H、web.fetch 过代理剥 Authorization——
+    本机 git 走内置实现；python3 用 `py`（进程内）或 bin/python3（绝对路径）均可；内置 curl 丢 -H、web.fetch 过代理剥 Authorization——
     所以操作 GitHub 仓库**只用 git 工具**，不要用 shell 跑 git clone / git push / curl 带 token：
       - git {command:"login", token:"ghp_..."}        一次性保存到 Keychain（之后不用再传）
       - git {command:"clone", repo:"owner/name"}      下到 Workspace/<name>，建 .gitremote/manifest.json

@@ -1,6 +1,7 @@
 // PyEvalTool.swift — 进程内 CPython 执行（不 spawn 任何子进程）
 //
-// 背景：越狱对 posix_spawn 返回 ENOSYS(85)，bin/python3 永远起不来。
+// 背景：进程内解释器，不依赖子进程；bin/python3 在 App 内置路径下可正常 exec，
+// 但无子进程的实现更省内存、启动更快，且不受未来签名/策略变化影响。
 // Python.framework + stdlib 本来就在包里，改成 dlopen 进当前进程后
 // 直接跑解释器，一次 spawn 都不需要。
 
@@ -10,7 +11,7 @@ import CPyEmbed
 final class PyEvalTool: MCPTool {
     let definition = ToolDefinition(
         name: "py",
-        summary: "Run Python in-process (no subprocess). Commands: eval (code) / script (path) / status. Use for: parsing/patching bytes, struct unpack, regex over binaries, quick calculations — on devices where spawning python3 is blocked by the jailbreak (ENOSYS 85). Don't use for: long-running servers (interpreter shares the app process). Example: py command:eval code:\"print(open('/tmp/a.bin','rb').read(8).hex())\"",
+        summary: "Run Python in-process (no subprocess). Commands: eval (code) / script (path) / status. Use for: parsing/patching bytes, struct unpack, regex over binaries, quick calculations — without spawning a subprocess (faster, no bin/python3 dependency). Don't use for: long-running servers (interpreter shares the app process). Example: py command:eval code:\"print(open('/tmp/a.bin','rb').read(8).hex())\"",
         parameters: [
             "command": "eval / script / status",
             "code": "Python source (for eval)",

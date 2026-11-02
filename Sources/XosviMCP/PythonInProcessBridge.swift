@@ -1,7 +1,8 @@
 // PythonInProcessBridge.swift — 把 shell 语法的 `python3 ...` 转成 PyEvalTool 的进程内调用
 //
 // 动机：越狱（rootHide / Relaxin）对 posix_spawn 返回 ENOSYS(85)，App 内 bin/python3
-// 永远起不来。但 PyEvalTool（dlopen Python.framework + pyx_init/pyx_run_file）是通的。
+// 早期误判为「永远起不来」；实测 App 内 bin/python3 用绝对路径可 exec。
+// PyEvalTool（dlopen Python.framework + pyx_init/pyx_run_file）作为无子进程路径保留。
 // 于是 shell 里的 python3 不再 spawn，转调同一条进程内腿——两套腿合成一套。
 //
 // 本文件只做「argv 解析 + 返回结构转换」，绝不 spawn。
@@ -78,7 +79,7 @@ enum PythonInProcessBridge {
         } catch {
             // pyx_init 失败（Python.framework / stdlib 缺失）也走这里，不回退 spawn
             return failure(echo, String(describing: error), 1,
-                           hint: "进程内解释器初始化失败，不等于可以回退 spawn（本机 spawn 恒 ENOSYS 85）。"
+                           hint: "进程内解释器初始化失败；可回退到 bin/python3 绝对路径，或用 diagnose spawn 复检 errno。"
                                + "跑 `py command:status` 看 framework / stdlib 路径。")
         }
     }
