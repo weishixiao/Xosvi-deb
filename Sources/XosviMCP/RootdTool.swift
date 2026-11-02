@@ -153,6 +153,28 @@ final class RootdTool: MCPTool {
         return best
     }
 
+    /// v8.2：daemon 跑在哪个 launchd 域。
+    /// user/501 域里进程是 mobile 身份——state 也是 running，但执行 root 命令必然失败。
+    /// 旧版只看 pid/心跳，会把这种「假活」当成可用。
+    private func daemonDomain() -> String {
+        let labels = ["com.xosvi.rootd", "com.trollhax.rootd"]
+        for label in labels {
+            if launchctlPrint("system/\(label)") { return "system" }
+        }
+        for label in labels {
+            if launchctlPrint("user/501/\(label)") { return "user/501" }
+        }
+        return "none"
+    }
+
+    private func launchctlPrint(_ target: String) -> Bool {
+        let res = BuildRunner.shared.run(executable: "/bin/launchctl",
+                                         args: ["print", target],
+                                         env: ["PATH": "/usr/bin:/bin"],
+                                         timeout: 5)
+        return res.exitCode == 0 && !res.stdout.isEmpty
+    }
+
     private func usableDirs() -> [DirState] {
         let all = Self.candidateDirs.map(dirState)
         let shared = all.filter { $0.exists && $0.writable && $0.shared }
@@ -206,8 +228,11 @@ final class RootdTool: MCPTool {
             if let e = $0.writeError { m["write_error"] = e }
             return m
         }
+        let domain = daemonDomain()
         var out: [String: Any] = [
             "installed": states.contains { $0.exists },
+            "daemon_domain": domain,
+            "privileged": domain == "system",
             "daemon_alive": alive,
             "daemon_pid": pid.map { Int($0) } ?? 0,
             "alive_source": aliveSource,
@@ -221,6 +246,13 @@ final class RootdTool: MCPTool {
         // v7.16.12：诊断「launchd 反复拉起又秒死」——plist 里的脚本路径必须真实存在。
         // 现场就踩过：脚本被复制到 Library/Rootd，plist 仍指向旧位置 → 进程起不来，
         // 而 launchctl print 只显示 program（dash），看不到 arguments，极难发现。
+        // 域错误最高优先：pid 活着、心跳也新鲜，但身份是 mobile，root 命令全都会失败
+        if domain == "user/501" {
+            out["hint"] = "daemon 跑在 user/501 域（mobile 身份），没有 root 权限。修复："
+                + "launchctl bootout user/501/com.xosvi.rootd; "
+                + "launchctl bootstrap system <jbroot>/Library/LaunchDaemons/com.xosvi.rootd.plist"
+            return out
+        }
         if let bad = brokenLaunchdPaths() {
             out["launchd_problem"] = bad
             out["hint"] = "LaunchDaemon 配置指向的路径不存在：\(bad)。修正 plist 的 ProgramArguments，或重装 newterm-autoroot deb"
