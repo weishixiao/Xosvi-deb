@@ -44,23 +44,10 @@ enum ConfigMigration {
     // MARK: - 迁移步骤
 
     /// v2.9.126 → v2（当前）
-    /// 模型 API 配置键统一（xosvi.* → xosvi.*），旧键自动搬运：
-    /// 老版本用 xosvi. 前缀散落，未来统一 xosvi. 前缀集中管理。
+    /// 历史版本曾在 xosvi.* 与另一套前缀之间搬过键；现已统一回 xosvi.* 前缀，
+    /// 原来的自映射重命名表已无意义，保留会话切换键的一次性搬运即可。
     private static func migrateToV2() {
         let ud = UserDefaults.standard
-        // 旧键 → 新键（只搬运存在的）
-        let renames: [String: String] = [
-            "xosvi.baseURL": "xosvi.baseURL",
-            "xosvi.apiKey": "xosvi.apiKey",
-            "xosvi.model": "xosvi.model",
-            "xosvi.transcript": "xosvi.transcript",
-        ]
-        for (oldKey, newKey) in renames {
-            if ud.object(forKey: newKey) == nil, let val = ud.object(forKey: oldKey) {
-                ud.set(val, forKey: newKey)
-                ud.removeObject(forKey: oldKey)
-            }
-        }
         // 会话切换键（旧：lastUsedModelClientID / lastUsedSessionID 等）
         if ud.object(forKey: "xosvi.lastUsedModel") == nil, let v = ud.string(forKey: "lastUsedModelClientID") {
             ud.set(v, forKey: "xosvi.lastUsedModel")
