@@ -40,6 +40,26 @@ jobs:
       - name: Python 语法自检
         run: python3 -m py_compile scripts/*.py tests/**/*.py 2>/dev/null || python3 -m py_compile scripts/*.py
 
+  swift-syntax:
+    name: Swift 语法门禁（ubuntu swiftc -parse，快速失败）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: swift version
+        run: swift --version || true
+      - name: Parse all Swift sources
+        run: |
+          set -o pipefail
+          fail=0
+          while IFS= read -r f; do
+            if ! swiftc -parse "$f" >/tmp/parse.out 2>&1; then
+              echo "::error file=$f::语法错误"
+              sed -n '1,20p' /tmp/parse.out
+              fail=1
+            fi
+          done < <(find Sources -name '*.swift' | sort)
+          exit $fail
+
   brace-sanity:
     name: 括号/结构 sanity（存量脚本，暂不阻断）
     runs-on: ubuntu-latest
