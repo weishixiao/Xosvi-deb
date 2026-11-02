@@ -460,9 +460,9 @@ jobs:
             echo ">>> building $t"
             (cd "tweaks/$t" && make package) || { echo "FAILED: $t"; exit 1; }
             # v8.3：Theos 新版输出在 .theos/obj/debug/arm64/（旧版在 .theos/obj/debug/），用 find 兜住
-  DYLIB=$(find "tweaks/$t/.theos" -type f -name "$t.dylib" 2>/dev/null | head -1)
-  [ -n "$DYLIB" ] || { echo "NO DYLIB: $t"; find "tweaks/$t/.theos" -name "*.dylib" | head; exit 1; }
-  cp "$DYLIB" "Resources/tweaks/$t.dylib" || { echo "COPY FAIL: $t"; exit 1; }
+            DYLIB=$(find "tweaks/$t/.theos" -type f -name "$t.dylib" 2>/dev/null | head -1)
+            [ -n "$DYLIB" ] || { echo "NO DYLIB: $t"; find "tweaks/$t/.theos" -name "*.dylib" | head; exit 1; }
+            cp "$DYLIB" "Resources/tweaks/$t.dylib" || { echo "COPY FAIL: $t"; exit 1; }
           done
           # v2.9.315：默认注入 ControlAgent v1（合并版 UI 控制+保活+截图）
           cp "Resources/tweaks/ControlAgent.dylib" "Resources/bin/ControlAgent.dylib"
