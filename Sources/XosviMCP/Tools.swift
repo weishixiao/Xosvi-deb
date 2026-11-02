@@ -456,14 +456,14 @@ final class DeviceExecTool: MCPTool {
             "command": "Subcommand: info / probe / snapshot"
         ],
         verified: true, category: "device",
-        annotations: .readOnlyLocal,
-        cache: ToolCachePolicy.none,
         paramSpecs: [.e("command", "子命令", values: ["info", "probe", "snapshot"], required: true)],
         variants: [
             ToolVariant("info", requires: [], accepts: [], annotations: .readOnlyLocal),
             ToolVariant("probe", requires: [], accepts: [], annotations: .readOnlyLocal),
             ToolVariant("snapshot", requires: [], accepts: [], annotations: .readOnlyLocal),
-        ])
+        ],
+        annotations: .readOnlyLocal,
+        cache: ToolCachePolicy.none)
     
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let command = params["command"] as? String else {
