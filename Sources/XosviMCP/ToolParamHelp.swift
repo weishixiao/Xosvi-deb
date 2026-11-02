@@ -59,6 +59,24 @@ enum ToolParamHelp {
         "inject command:list query:<App名称>  或  app command:list  或  直接填已知包名，如 com.tencent.xin"
 
     /// 静态二进制检查的替代工具集（当模型想用 inject inspect 做加密检查时）
+    // MARK: v8（PR-B2）：常见错配 → 正确调用（参数类错误统一附上）
+    /// pattern 命中错误文本时，把对应「正确调用」附进提示
+    static let misuseSuggestions: [(pattern: String, calls: [String])] = [
+        ("bundle_id required", ["`process` 列进程拿 pid/bundle_id", "`app` command:status bundle_id:<目标>"]),
+        ("path required", ["`workspace` command:list_dir 或 `shell.exec` ls 确认路径", "容器路径用 `container` command:resolve bundle_id:<id>"]),
+        ("unknown command", ["用 `system.overview` 或工具 description 的 variants 查子命令名", "或改用单工具（如 shell.exec / web.fetch）"]),
+        ("not installed", ["先 `app` command:status 确认是否安装", "IPA 场景先 `app` command:install"]),
+    ]
+
+    static func suggestions(for errorText: String) -> [String] {
+        var out: [String] = []
+        for (pattern, calls) in misuseSuggestions where errorText.localizedCaseInsensitiveContains(pattern) {
+            out.append(contentsOf: calls)
+            if out.count >= 4 { break }
+        }
+        return out
+    }
+
     static func binaryCheckAlternatives(pathHint: String = "<文件绝对路径>") -> [String] {
         [
             "macho load path:\(pathHint)          → 查架构/UUID/加密状态(cryptid)",

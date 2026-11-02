@@ -66,6 +66,13 @@ final class DeviceProbe: ObservableObject {
     // MARK: 公开入口
 
     func run() -> Report {
+        // v8（PR-E2）：探测类操作与全盘枚举/写探针统一串行
+        return SerialGate.shared.run(SerialGate.probe, timeout: 120) {
+            self.runLocked()
+        }
+    }
+
+    private func runLocked() -> Report {
         runLock.lock()
         defer { runLock.unlock() }
         let deviceName = UIDevice.current.name

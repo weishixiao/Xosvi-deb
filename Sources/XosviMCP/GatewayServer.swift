@@ -1,6 +1,7 @@
 import Foundation
 import Darwin
 import Security
+import CommonCrypto
 
 // MARK: - v8（PR-D1a/D1b）：MCP Gateway
 //
@@ -192,6 +193,16 @@ final class MCPGatewayServer {
             return
         }
 
+        // v8（PR-D1a）：WebSocket 升级（RFC6455 服务端握手 + 文本帧转发 JSON-RPC）
+        if path == "/ws" && method == "GET" {
+            guard let key = request.headers["sec-websocket-key"] else {
+                writeJSON(fd, status: 400, body: ["error": "missing Sec-WebSocket-Key"])
+                return
+            }
+            serveWebSocket(fd, key: key, role: role)
+            return
+        }
+
         // 默认：JSON-RPC over POST
         guard method == "POST" else {
             writeJSON(fd, status: 405, body: ["error": "method not allowed"])
@@ -232,6 +243,136 @@ final class MCPGatewayServer {
             Thread.sleep(forTimeInterval: 5)
             let ping = ": ping\n\n"
             if ping.withCString({ write(fd, $0, strlen($0)) }) < 0 { break }
+        }
+    }
+
+    // MARK: - v8（PR-D1a）：WebSocket 服务端（最小 RFC6455：text/binary 帧 + ping/pong）
+
+    private func serveWebSocket(_ fd: Int32, key: String, role: String) {
+        // 握手：Sec-WebSocket-Accept = base64(SHA1(key + magic))
+        let magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+        let concat = key + magic
+        guard let data = concat.data(using: .utf8) else { return }
+        var digest = [UInt8](repeating: 0, count: Int(CC_SHA1_DIGEST_LENGTH))
+        data.withUnsafeBytes { buf in
+            _ = CC_SHA1(buf.baseAddress, CC_LONG(data.count), &digest)
+        }
+        let accept = Data(digest).base64EncodedString()
+
+        let resp = "HTTP/1.1 101 Switching Protocols\r\n"
+            + "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+            + "Sec-WebSocket-Accept: \(accept)\r\n\r\n"
+        guard resp.withCString({ write(fd, $0, strlen($0)) }) > 0 else { return }
+
+        // 帧循环
+        var buffer = Data()
+        var tmp = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let n = read(fd, &tmp, tmp.count)
+            if n <= 0 { break }
+            buffer.append(tmp, count: n)
+            // 处理缓冲区里所有完整帧
+            while let frame = Self.parseFrame(buffer) {
+                buffer.removeFirst(frame.consumed)
+                switch frame.opcode {
+                case 0x1, 0x2:   // text / binary → 按 JSON-RPC 处理
+                    let body = frame.payload
+                    var out: [String: Any] = [:]
+                    if let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+                       let method = obj["method"] as? String, method == "tools/call",
+                       let params = obj["params"] as? [String: Any],
+                       role == "read", let name = params["name"] as? String,
+                       let def = ToolRegistry.shared.tool(named: name)?.definition,
+                       def.isAnnotated && !def.annotations.readOnly {
+                        out = ["jsonrpc": "2.0", "id": obj["id"] ?? NSNull(),
+                               "error": ["code": -32003, "message": "read-only token cannot call \(name)"]]
+                    } else {
+                        out = handleWSRequest(body)
+                    }
+                    if let data = try? JSONSerialization.data(withJSONObject: out) {
+                        Self.writeWSFrame(fd, payload: data, opcode: 0x1)
+                    }
+                case 0x8:      // close
+                    Self.writeWSFrame(fd, payload: Data(), opcode: 0x8)
+                    return
+                case 0x9:      // ping → pong
+                    Self.writeWSFrame(fd, payload: frame.payload, opcode: 0xA)
+                default:
+                    break
+                }
+            }
+        }
+    }
+
+    private func handleWSRequest(_ body: Data) -> [String: Any] {
+        let resp = JSONRPC.handle(body)
+        if resp.isEmpty { return ["jsonrpc": "2.0", "id": NSNull(), "result": []] as [String: Any] }
+        return (try? JSONSerialization.jsonObject(with: resp) as? [String: Any]) ?? [:]
+    }
+
+    private struct WSFrame {
+        let opcode: UInt8
+        let payload: Data
+        let consumed: Int
+    }
+
+    /// 解析一帧（客户端帧必须带掩码）；不完整返回 nil
+    private static func parseFrame(_ data: Data) -> WSFrame? {
+        guard data.count >= 2 else { return nil }
+        let b0 = data[data.startIndex]
+        let b1 = data[data.startIndex + 1]
+        let opcode = b0 & 0x0F
+        let masked = (b1 & 0x80) != 0
+        var len = Int(b1 & 0x7F)
+        var offset = 2
+        if len == 126 {
+            guard data.count >= 4 else { return nil }
+            len = Int(data[data.startIndex + 2]) << 8 | Int(data[data.startIndex + 3])
+            offset = 4
+        } else if len == 127 {
+            guard data.count >= 10 else { return nil }
+            var big: UInt64 = 0
+            for i in 0..<8 {
+                big = big << 8 | UInt64(data[data.startIndex + 2 + i])
+            }
+            len = Int(big)
+            offset = 10
+        }
+        let maskLen = masked ? 4 : 0
+        guard data.count >= offset + maskLen + len else { return nil }
+        var mask = [UInt8](repeating: 0, count: 4)
+        if masked {
+            for i in 0..<4 { mask[i] = data[data.startIndex + offset + i] }
+        }
+        var payload = Data()
+        payload.reserveCapacity(len)
+        for i in 0..<len {
+            let byte = data[data.startIndex + offset + maskLen + i]
+            payload.append(masked ? byte ^ mask[i % 4] : byte)
+        }
+        return WSFrame(opcode: opcode, payload: payload, consumed: offset + maskLen + len)
+    }
+
+    /// 服务端帧不掩码
+    private static func writeWSFrame(_ fd: Int32, payload: Data, opcode: UInt8) {
+        var header = Data()
+        header.append(0x80 | opcode)
+        let len = payload.count
+        if len < 126 {
+            header.append(UInt8(len))
+        } else if len <= 0xFFFF {
+            header.append(126)
+            header.append(UInt8((len >> 8) & 0xFF))
+            header.append(UInt8(len & 0xFF))
+        } else {
+            header.append(127)
+            var big = UInt64(len).bigEndian
+            withUnsafeBytes(of: &big) { header.append(contentsOf: $0) }
+        }
+        var out = header
+        out.append(payload)
+        out.withUnsafeBytes { ptr in
+            _ = write(fd, ptr.baseAddress, out.count)
         }
     }
 

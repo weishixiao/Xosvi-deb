@@ -81,6 +81,12 @@ tools.audit                      # 注册表一致性：描述里引用的幽灵
 
 > 远程通道（8765 / 8790）直接调用工具实现，**不经过** `dispatch` 的缓存、熔断与信封，排障时注意区分。
 
+## 外部接入
+
+- [Gateway 接入（Mac / 局域网 MCP 客户端）](docs/runbooks/gateway-connect.md)
+- [数据去向与隐私](docs/privacy/data-flow.md)
+- [证书安装 Runbook](docs/runbooks/cert-install.md) · [注入冒烟 Runbook](docs/runbooks/injection-smoke.md) · [HID 验证矩阵](docs/runbooks/hid-matrix.md)
+
 ## 目录结构
 
 ```

@@ -73,11 +73,22 @@ final class HealthSummaryTool: MCPTool {
             ]
         }
 
-        return [
+        // v8（PR-F-40 可观测②）：失败率阈值告警（UI 红点/设置页可直接消费本字段）
+        let rate = total > 0 ? Double(failed) / Double(total) : 0
+        var alerts: [String: Any] = [:]
+        if failed > 0, rate >= 0.5 {
+            alerts = [
+                "level": rate >= 0.8 ? "critical" : "warning",
+                "failure_rate": rate,
+                "message": "最近 \(hours) 小时工具失败率 \(String(format: "%.0f%%", rate * 100))，阈值 50%",
+                "action": "优先排查 ENV_PERMISSION（TrollStore Entitlements / 卸载重装）；单项失败集中在 by_tool 顶部",
+            ]
+        }
+        var out: [String: Any] = [
             "hours": hours,
             "total_calls": total,
             "failures": failed,
-            "success_rate": total > 0 ? Double(total - failed) / Double(total) : 0,
+            "success_rate": 1 - rate,
             "by_tool": byTool,
             "error_codes": Array(codes),
             "recent_failures": Array(recent),
@@ -85,5 +96,7 @@ final class HealthSummaryTool: MCPTool {
                 ? "近期无失败"
                 : "优先看 by_tool 里 failure 最高的工具；若 top_code 是 ENV_PERMISSION，先修环境（TrollStore Entitlements），不要重复重试",
         ]
+        if !alerts.isEmpty { out["alert"] = alerts }
+        return out
     }
 }

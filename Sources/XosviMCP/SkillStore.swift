@@ -192,6 +192,28 @@ final class SkillStore {
 - 覆盖前必须留备份，返回备份绝对路径。
 """,
             ],
+            // v8（PR-F-41 教程型技能）：内存修改黄金路径
+            [
+                "name": "内存修改 Memory Flow",
+                "summary": "搜索数值→变化后精化→读改写→冻结回退的完整内存修改流程（原生 VansonMod 引擎）。Use for: 用户要改游戏数值/内存。Example: '帮我把游戏金币改成 999999'。",
+                "instruction": """
+# 内存修改黄金路径
+## 前置
+- 默认走原生引擎（built-in VansonMod），无需注入 MemoryTweak；仅 backend:legacy 才需先 inject。
+- `process` 列进程拿 pid（App 可能重启，pid 会变）。
+## 步骤
+1. `memory` action:attach pid:<pid> —— attach 失败看 kind 细分：进程不存在→重新取 pid；task_for_pid 拒绝→检查 Entitlements/加固。
+2. 首次搜索：`memory` action:search value:<当前值> type:int。
+3. 触发游戏内数值变化（升级/购买/进出场景）。
+4. 精化：`memory` action:refine value:<新值>（或 filter 范围）。
+5. 读验证：`memory` action:read address:<0x地址>。
+6. 写：`memory` action:write address:<0x地址> value:<目标>；要锁住用 freeze + frozen 查看。
+7. 反悔：`memory` action:undo / unfreeze。
+## 约束
+- 写内存不可备份：动手前记录原值（read 先存），改动只对当前进程有效。
+- 结果集过大时用 limit/offset 翻页，不要一次拉全量。
+""",
+            ],
             // v7.14.0：jb-p1lot 真机 Tweak 闭环（正文见 JBPlotSkill，避免两处维护）
             JBPlotSkill.entry,
         ]

@@ -590,10 +590,51 @@ public final class ToolRegistry: ObservableObject {
         "skills.list", "skills.read",  // v8（PR-A2）：注册名是 skills.*（旧名 skill.* 永不命中）
     ]
 
+    // MARK: - v8（PR-D4）：熔断后「替代工具推荐表」（数据化，便于持续维护与测试）
+
+    /// 错误签名 → 替代调用列表。loopBlockedError 按签名查表；
+    /// 未命中时回落到默认文案。新签名在此追加即可，不用改熔断主逻辑。
+    static let loopAlternatives: [String: [String]] = [
+        "missing_param": [
+            "补必填参数后重试（见返回里的 usage）",
+            "拿 bundle_id 再调: 用 `process` 列进程 / `app` command:status",
+            "换一个不需要该参数的工具",
+        ],
+        "not_found": [
+            "列出目录或已装 App 复核名称后再试",
+            "名称含空格/中文时改用绝对路径",
+        ],
+        "permission": [
+            "跑 `diagnose` 确认环境（Entitlements / setuid）",
+            "TrollStore 开「编辑 Entitlements」→ 卸载重装 → 再试",
+        ],
+        "encrypted": [
+            "先 `app` command:decrypt → command:replace_decrypted",
+        ],
+        "unsupported_env": [
+            "换进程内路径：读二进制用 `macho`，读权限用 `app` command:entitlements",
+            "rootless/rootHide 下常见 85 ENOSYS，重试无意义",
+        ],
+        "network": [
+            "换 endpoint 或稍后重试，不要连续撞同一个地址",
+        ],
+    ]
+
     /// v6.9.0：熔断报错——不只说「停」，还给出可执行的替代方案。
     ///
     /// 旧文案只喊 STOP，模型常常理解成「再试一次别的参数」，于是换个无关参数继续撞。
     /// 新文案明确列出：失败了几次、错误是什么、你传了什么、以及这批工具的替代选择。
+    private static func number(_ i: Int) -> String {
+        switch i {
+        case 0: return "①"
+        case 1: return "②"
+        case 2: return "③"
+        case 3: return "④"
+        case 4: return "⑤"
+        default: return "\(i + 1)."
+        }
+    }
+
     private func loopBlockedError(tool: String,
                                   params: [String: Any],
                                   errorMessage: String,
@@ -615,30 +656,15 @@ public final class ToolRegistry: ObservableObject {
         lines.append("")
         lines.append("不要再用相同参数重试。请按下面选择一条路：")
 
-        // 根据错误类型给针对性替代方案
-        switch signature {
-        case "missing_param":
-            if keys.contains("path") && keys.contains("command") {
-                lines.append("① 你很可能把 path 传给了只认 bundle_id 的子命令。改用:")
-                for alt in ToolParamHelp.binaryCheckAlternatives() { lines.append("   - \(alt)") }
-                lines.append("② 或者补上 bundle_id 后重试: \(tool) command:<子命令> bundle_id:<包名>")
-                lines.append("   拿包名: \(ToolParamHelp.howToGetBundleId)")
-            } else {
-                lines.append("① 缺参数。按工具 description 的 parameters 列表补齐必填项后重试一次。")
-                lines.append("② 如果拿不到这个参数所代表的东西，换一个能直接拿结果的工具。")
-            }
-        case "not_found":
-            lines.append("① 确认路径/包名是否真实存在（先列出目录或列出已装 App）。")
-            lines.append("② 名称含空格/中文时改用绝对路径直传。")
-        case "permission", "encrypted":
-            lines.append("① 权限类失败重试无意义。先跑诊断确认环境（如 inject command:diagnose / app command:diff）。")
-            lines.append("② 加密 App 先砸壳: app command:decrypt → app command:replace_decrypted → 再操作。")
-        case "unsupported_env":
-            lines.append("① 这是当前环境不支持该 syscall（rootless/rootHide 下常见的 85 ENOSYS），重试无意义。")
-            lines.append("② 换一条不需要提权/子进程路径：读二进制信息用 macho，读权限用 app command:entitlements。")
-        case "network":
-            lines.append("① 网络类失败稍后重试或换 endpoint，不要连续撞同一个地址。")
-        default:
+        // v8（PR-D4）：按签名查「替代工具推荐表」，数据驱动；特例（path/bundle_id 混淆）单独补一段
+        if signature == "missing_param" && keys.contains("path") && keys.contains("command") {
+            lines.append("① 你很可能把 path 传给了只认 bundle_id 的子命令。改用:")
+            for alt in ToolParamHelp.binaryCheckAlternatives() { lines.append("   - \(alt)") }
+            lines.append("② 或者补上 bundle_id 后重试: \(tool) command:<子命令> bundle_id:<包名>")
+            lines.append("   拿包名: \(ToolParamHelp.howToGetBundleId)")
+        } else if let alts = Self.loopAlternatives[signature] {
+            for (i, a) in alts.enumerated() { lines.append("\(Self.number(i)) \(a)") }
+        } else {
             lines.append("① 换一种工具或换一组参数。")
             lines.append("② 如果确实需要这个结果，把错误原文告诉用户，让他决定下一步。")
         }
@@ -1408,6 +1434,19 @@ public final class ToolRegistry: ObservableObject {
         }
         let evidence = Self.inferEvidence(data: data, tool: name)
         if !evidence.isEmpty { meta["evidence"] = evidence }
+        // v8（PR-G3）：破坏性操作凭证——已显式标注 destructive 的工具，结果必须能溯源到备份；
+        // 不能备份的（内存改写/删除）在 _meta 里明示风险并要求确认后才再调用
+        if tool.isAnnotated && tool.annotations.destructive {
+            meta["destructive"] = true
+            let backup = (data["backup"] as? String) ?? (data["backup_path"] as? String)
+                ?? (data["original_path"] as? String)
+            if let b = backup, !b.isEmpty {
+                meta["backup_voucher"] = ["kind": "path", "value": b]
+            } else {
+                meta["backup_voucher"] = "no_backup"
+                meta["destructive_warning"] = "本操作为破坏性且未返回备份凭证；重复执行前先向用户确认"
+            }
+        }
         if let age = out["cache_age"] { meta["cache_age"] = age }
         if meta["truncated"] == nil, (data["truncated"] as? Bool) == true { meta["truncated"] = true }
         out["_meta"] = meta
@@ -1685,6 +1724,11 @@ public final class ToolRegistry: ObservableObject {
                             }
                         }
                         hint += "\n取 bundle_id: \(ToolParamHelp.howToGetBundleId)"
+                    }
+                    let fixes = ToolParamHelp.suggestions(for: errDesc)
+                    if !fixes.isEmpty {
+                        hint += "\n正确调用参考:"
+                        for f in fixes { hint += "\n  - \(f)" }
                     }
                     hint += "\n补全参数后重试一次；如果这个工具本身选错了，换上面列出的工具。"
                     errDesc += hint
