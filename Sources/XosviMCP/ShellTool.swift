@@ -589,8 +589,9 @@ final class ShellExecTool: MCPTool {
         // v4.4.9-fix3cd: python3/python 首词无管道也走原生——之前 36 个快捷路径都不匹配 → 兜底送 Alpine
         // (3.12)，与提示词"python3 首词走原生 ARM64 CPython(3.14+numpy/pandas)"矛盾。要 Alpine 版仍用 sh -c 'python3 ...'。
         if iosCmd == "python3" || iosCmd.hasPrefix("python3 ") || iosCmd == "python" || iosCmd.hasPrefix("python ") {
-            let result = ShellExecTool.runIOSPython3(iosCmd)
-            AuditLog.shared.log("shell.exec (ios python3)", detail: String(trimmed.prefix(100)))
+            // v7.8.0：不再 spawn bin/python3（本机恒 ENOSYS 85），转调 PyEvalTool 进程内解释器
+            let result = PythonInProcessBridge.run(command: iosCmd, limit: outLimit)
+            AuditLog.shared.log("shell.exec (in-process python)", detail: String(trimmed.prefix(100)))
             return result
         }
         
@@ -702,8 +703,8 @@ final class ShellExecTool: MCPTool {
             #"^\s*apk\s+"#,           // apk add / apk update
             #"^\s*(tar|dpkg|dpkg-deb|rpm|unzip|zip)\s+"#,  // 解包/装包 (原生缺失或假实现→Alpine 真工具链)。strings/nm/hexdump 原生已有且能直读大文件, 不在此路由
             #"\|\s*(tar|dpkg|dpkg-deb|unzip)\s+"#,  // 管道中间的解包命令 (curl x | tar -x)
-            // fix3p: python3/python 不再强制 Alpine——v4.4.4+ 原生 ARM64 CPython(内置)能跑 numpy，
-            // 首词 python3 走 iOS 原生分支(runIOSPython3)。要 Alpine 版 Python 用 sh -c 'python3 ...'
+            // fix3p: python3/python 不再强制 Alpine——v7.8.0 起首词 python3 走 PythonInProcessBridge
+            // （PyEvalTool dlopen 的进程内 CPython，不 spawn）。要 Alpine 版 Python 用 sh -c 'python3 ...'
             // (sh marker 命中仍走 Alpine)，或显式声明"在 Alpine 里跑"。
             #"^\s*(pip3?)\s+"#,        // pip / pip3 (装包仍在 Alpine)
             #"^\s*(git|wget|make|cmake|gcc|clang)\s+"#,  // 工具链，所有git都走Alpine（原生没有git实现）
@@ -770,8 +771,7 @@ final class ShellExecTool: MCPTool {
     /// 动机：iSH 里的 file 二进制在 arm64 真机执行即段错误（用户实测 + 日志解读一致），
     /// 而"看文件类型"完全可本地判定（魔数），无需外部命令。
     static func runFileViaPython(_ command: String, limit: Int, timeout: TimeInterval) -> [String: Any]? {
-        let py = Bundle.main.bundlePath + "/bin/python3"
-        guard FileManager.default.isExecutableFile(atPath: py) else { return nil }
+        // v7.8.0：不再 spawn bin/python3（本机恒 ENOSYS 85）——同一段脚本交进程内解释器执行
         let paths = command.split(separator: " ").map(String.init).dropFirst().filter { !$0.hasPrefix("-") }
         guard !paths.isEmpty else { return nil }
         // 注意：全部用 fromhex 构造魔数，避免反斜杠转义问题
@@ -820,23 +820,27 @@ final class ShellExecTool: MCPTool {
                     t = 'data'
             print(p + ': ' + t)
         """
-        var args = ["-c", script]
-        args.append(contentsOf: paths)
-        let res = BuildRunner.shared.run(executable: py, args: args, env: [:], timeout: timeout)
-        var out = res.stdout + res.stderr
-        if res.timedOut { out += "\n[执行超时]" }
-        if let e = res.spawnError, !e.isEmpty { out += "\n[spawn error: \(e)]" }
+        // 把 paths 注入 sys.argv[1:] 后在进程内跑（等价原 `python3 -c <script> <paths...>`）
+        let argv = paths.map { "\"" + $0.replacingOccurrences(of: "\\", with: "\\\\")
+                                  .replacingOccurrences(of: "\"", with: "\\\"") + "\"" }.joined(separator: ", ")
+        let wrapped = "import sys as _s; _s.argv = [\"-c\"]" + (argv.isEmpty ? "" : " + [" + argv + "]") + "\n" + script
+        var out = ""
+        do {
+            let r = try PyEvalTool().invoke(["command": "eval", "code": wrapped, "limit": max(limit, 1000)])
+            out = (r["stdout"] as? String) ?? ""
+        } catch {
+            return nil   // 解释器不可用 → 交回上层原逻辑，不伪装成功
+        }
         if limit > 0 && out.count > limit { out = String(out.prefix(limit)) + "\n…(截断)" }
-        return ["command": command, "exit_code": res.exitCode, "stdout": out,
-                "ios_native": true, "runtime_actual": "native-python-file",
-                "hint": "文件类型由内置原生 python3 判定（读魔数），不经 iSH。"]
+        return ["command": command, "exit_code": 0, "stdout": out,
+                "ios_native": true, "runtime_actual": "in-process-python-file",
+                "hint": "文件类型由进程内 CPython 判定（读魔数），不经 iSH、不 spawn。"]
     }
 
     /// v6.4.5：python3 解压回退（zipfile/tarfile/gzip）——bsdtar 被 AMFI 拒时使用。
     /// 支持 `unzip <zip> [-d <dir>]` / `tar xf <archive> -C <dir>` / `gunzip <file.gz>`。
     static func extractViaPython(command: String, limit: Int, timeout: TimeInterval) -> [String: Any]? {
-        let py = Bundle.main.bundlePath + "/bin/python3"
-        guard FileManager.default.isExecutableFile(atPath: py) else { return nil }
+        // v7.8.0：进程内执行，不再依赖 bin/python3 可执行
         let parts = command.split(separator: " ").map(String.init)
         guard let w = parts.first else { return nil }
         var src = "", dst = ""
@@ -868,13 +872,19 @@ final class ShellExecTool: MCPTool {
             sys.exit('unsupported')
         print('EXTRACT_OK', dst)
         """
-        let res = BuildRunner.shared.run(executable: py, args: ["-c", script, src, dst], env: [:], timeout: timeout)
-        var out = res.stdout + res.stderr
-        if res.timedOut { out += "\n[执行超时]" }
+        let escaped = [src, dst].map { $0.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") }
+        let wrapped = "import sys as _s; _s.argv = [\"-c\", \"\(escaped[0])\", \"\(escaped[1])\"]\n" + script
+        var out = ""
+        do {
+            let r = try PyEvalTool().invoke(["command": "eval", "code": wrapped, "limit": max(limit, 1000)])
+            out = (r["stdout"] as? String) ?? ""
+        } catch {
+            return nil
+        }
         if limit > 0 && out.count > limit { out = String(out.prefix(limit)) + "\n…(截断)" }
-        return ["command": command, "exit_code": res.exitCode, "stdout": out,
-                "ios_native": true, "runtime_actual": "native-python-extract",
-                "hint": "解压由内置原生 python3 完成（zipfile/tarfile/gzip）。解压目录：\(dst)"]
+        return ["command": command, "exit_code": out.contains("EXTRACT_OK") ? 0 : 1, "stdout": out,
+                "ios_native": true, "runtime_actual": "in-process-python-extract",
+                "hint": "解压由进程内 CPython 完成（zipfile/tarfile/gzip），不 spawn。解压目录：\(dst)"]
     }
 
     /// v6.3.7：原生解包/打包——libarchive 的 bsdtar（CI 用 iOS SDK 交叉编译成 Mach-O，
@@ -1275,7 +1285,7 @@ final class ShellExecTool: MCPTool {
         case "nm": return runIOSNm(iosCmd)
         case "objdump": return runIOSObjdump(iosCmd)
         case "class-dump": return runIOSClassDump(iosCmd)
-        case "python3": return runIOSPython3(iosCmd)
+        case "python3": return PythonInProcessBridge.run(command: iosCmd)
         case "kfd_diag": return runIOSKfdDiag(iosCmd)
         // fix3q: 内置原生工具链（CI native-tools 交叉编译进 bin/）——AI 直接调用即走原生 ARM64
         case "lua", "node", "r2", "cstool": return runIOSBundled(word, iosCmd)
@@ -2467,7 +2477,7 @@ final class ShellExecTool: MCPTool {
     /// VpnTunnel 为何无法提取 cdhash。**纯只读、不注入、不 spawn 任何 helper**（绝对安全，不会触发 kfd/panic）。
     /// 语法: kfd_diag <path>
     /// v4.4.4: 引号感知拆参（支持 -c "code with spaces" 等）
-    private static func shellSplitArgs(_ s: String) -> [String] {
+    static func shellSplitArgs(_ s: String) -> [String] {
         var args: [String] = []
         var cur = ""
         var inS = false, inD = false
@@ -2485,88 +2495,7 @@ final class ShellExecTool: MCPTool {
         return args
     }
 
-    /// v4.4.4: 原生 Python CLI——App/bin/python3（iPhone 芯片直跑，PEP 730 CPython iOS）。
-    /// 未内置时给明确指引（不静默降级到 iSH，避免 AI 误以为原生可用）。
-    private static func runIOSPython3(_ command: String) -> [String: Any] {
-        let pythonPath = Bundle.main.bundlePath + "/bin/python3"
-        guard FileManager.default.isExecutableFile(atPath: pythonPath) else {
-            return ["command": command, "exit_code": 1,
-                    "stdout": "python3: 原生 Python 未内置（此构建未集成 Python.xcframework）— 请用 iSH 版：sh -c 'python3 ...'（注意 iSH 内不能 import numpy/pandas，会段错误闪退）",
-                    "ios_native": true]
-        }
-        let body = command.dropFirst("python3".count)
-        let args = shellSplitArgs(String(body))
-        // fix3ck: iOS CPython 无 tty 时 fd 1/2 不可靠（os.write(1) 也丢），main.c 已改为把
-        // sys.stdout/stderr 重定向到 TROLL_PY_OUT 文件。fix3cl: 用 Workspace 绝对路径
-        // （App 数据容器一定可写可读），Documents//tmp/cwd 兜底——多通道总有一个能到。
-        // fix3cl3: 先 mkdir 保证 Workspace 目录存在（python3 子进程 fopen 依赖父目录，
-        // 目录不存在 → 全部 diag 静默失败 → 真机表现"exit 0 全空"）
-        let wsBase = "/var/mobile/Documents/Workspace"
-        let docsBase = NSHomeDirectory() + "/Documents"
-        try? FileManager.default.createDirectory(atPath: wsBase, withIntermediateDirectories: true)
-        let pyOutPath = wsBase + "/troll_py_out.txt"
-        let pyDiagPath = wsBase + "/troll_py_diag.txt"
-        let pyStartPath = wsBase + "/troll_py_start.txt"
-        try? FileManager.default.removeItem(atPath: pyOutPath)
-        try? FileManager.default.removeItem(atPath: pyDiagPath)
-        try? FileManager.default.removeItem(atPath: pyStartPath)
-        let res = BuildRunner.shared.run(executable: pythonPath, args: args,
-                                         env: ["PYTHONIOENCODING": "utf-8",
-                                               "TROLL_PY_OUT": pyOutPath,
-                                               "TROLL_PY_DIAG": pyDiagPath], timeout: 120)
-        var out = res.stdout
-        if res.timedOut { out += "\n[python3 执行超时 120s 被终止]" }
-        if let serr = res.spawnError, !serr.isEmpty {
-            out += "\n[spawn error: \(serr)]"
-        }
-        // fix3cl/fix3cn: 无条件读回 TROLL_PY_OUT——main.c 把 sys.stdout/stderr 重定向到该文件；
-        // 调试期 os.write(1, "[PY-BIND-FILE]") 使 res.stdout 非空，旧代码 if res.stdout.isEmpty
-        // 跳过文件读回 → print 输出（版本号/结果/异常 traceback）全部丢失（真机实测 code PyRun ok 但
-        // PYVER 不可见）。无条件读：文件不存在时 try? 安全返回 nil；print 内容与 fd1 标记不重复。
-        if let d = try? String(contentsOfFile: pyOutPath, encoding: .utf8), !d.isEmpty {
-            out += d
-        } else if let d = try? String(contentsOfFile: docsBase + "/troll_py_out.txt", encoding: .utf8), !d.isEmpty {
-            out += d
-        }
-        // v6.0.30: 过滤诊断噪音，stdout只留用户print的结果
-        out = out.components(separatedBy: .newlines)
-            .filter { line in
-                let t = line.trimmingCharacters(in: .whitespaces)
-                return !t.hasPrefix("[PY-BIND-FILE]") && !t.hasPrefix("[py-diag]") && !t.hasPrefix("[PYVER")
-            }
-            .joined(separator: "\n")
-        for dpath in [pyDiagPath, docsBase + "/troll_py_diag.txt", "/tmp/troll_py_diag.txt", "troll_py_diag.txt"] {
-            if let d = try? String(contentsOfFile: dpath, encoding: .utf8), !d.isEmpty {
-                out += "\n[py-diag]\n" + d
-                try? FileManager.default.removeItem(atPath: dpath)
-                break
-            }
-        }
-        // fix3cl3: start 标记——main.c 在 main 第一行无条件写，读回区分"main 没跑"vs"绑定失败"
-        if out.isEmpty {
-            for spath in [pyStartPath, docsBase + "/troll_py_start.txt", "/tmp/troll_py_start.txt", "troll_py_start.txt"] {
-                if let d = try? String(contentsOfFile: spath, encoding: .utf8), !d.isEmpty {
-                    out += "\n[py-start]\n" + d
-                    try? FileManager.default.removeItem(atPath: spath)
-                    break
-                }
-            }
-        }
-        // fix3cl6: 构造器标记——dyld 构造器无条件写，区分"dyld 加载成功(main 问题)"vs"dyld 阶段被杀(framework 问题)"
-        if out.isEmpty {
-            for cpath in [wsBase + "/troll_py_ctor.txt", "/tmp/troll_py_ctor.txt"] {
-                if let d = try? String(contentsOfFile: cpath, encoding: .utf8), !d.isEmpty {
-                    out += "\n[py-ctor]\n" + d
-                    try? FileManager.default.removeItem(atPath: cpath)
-                    break
-                }
-            }
-        }
-        try? FileManager.default.removeItem(atPath: pyOutPath)
-        try? FileManager.default.removeItem(atPath: docsBase + "/troll_py_out.txt")
-        return ["command": command, "exit_code": res.exitCode, "stdout": out,
-                "stderr": res.stderr, "ios_native": true]
-    }
+    // v7.8.0: runIOSPython3 已删除——shell 的 python3 转 PythonInProcessBridge（进程内，不 spawn）。
 
     /// fix3q: 内置原生工具链通用执行——lua/node/r2/cstool（native-tools 交叉编译进 App bin/）。
     /// 直接探测 Bundle bin/<name>（TSRootBinaries 注册），不存在则明确提示改用 Alpine 或 tool.install。

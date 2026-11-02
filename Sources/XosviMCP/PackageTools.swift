@@ -521,11 +521,13 @@ final class PackageTool: MCPTool {
             if kind == "xz", let tar = XZStream.decode(raw) {
                 return try writeTar(tar, into: destURL)
             }
-            // xz / bz2 / zstd：内置原生 python3 流式解到目录
+            // v7.8.0：xz / bz2 / zstd 由进程内 CPython 流式解到目录（不 spawn）
             if let n = NativeTar.extract(raw, kind: kind, into: destURL) { return n }
             throw MCPError.classified("package: cannot decompress \(label) (\(kind)) — 内置解码器不可用或压缩数据损坏",
                                       code: "UNSUPPORTED_COMPRESSION", reason: "format",
-                                      nextStep: "确认 App 内置 python3 可执行（App/bin/python3）；或在电脑端用 7-Zip / bsdtar 解包")
+                                      nextStep: "内置解码走走进程内 CPython（bz2/lzma/zstd），不依赖 App 内置解释器二进制。"
+                                          + "若报错，跑 `py command:status` 看 stdlib 是否完整（需 compression.zstd / bz2 / lzma）；"
+                                          + "或在电脑端用 7-Zip / bsdtar 解包")
         }
 
         guard let tar = decompressTar(raw) else {
@@ -675,11 +677,7 @@ private enum XZStream {
 /// App 内置原生 CPython 的 _lzma / _bz2 / _zstd 是静态链接的完整实现，
 /// 因此压缩成员统一交给它——落临时文件后由 python3 解压（或流式解到目录）。
 private enum NativeTar {
-    /// 内置原生 python3；未集成 Python 的构建返回 nil。
-    static func python3() -> String? {
-        let p = Bundle.main.bundlePath + "/bin/python3"
-        return FileManager.default.isExecutableFile(atPath: p) ? p : nil
-    }
+    /// v7.8.0：python3() 工厂已删除——本机 spawn bin/python3 恒 ENOSYS 85，所有解码走进程内。
 
     /// python 侧脚本：mode=cat 解压到文件；mode=extract 直接流式解 tar 到目录。
     private static let script = """
@@ -737,17 +735,28 @@ private enum NativeTar {
         print('OK', n)
     """
 
+    /// v7.8.0：不再 spawn bin/python3（本机恒 ENOSYS 85），同一段脚本交进程内解释器。
+    /// 语义与 spawn 版一致：nil = 解释器不可用/超时；0 = 成功；1 = 脚本内部失败。
     private static func run(_ raw: Data, kind: String, mode: String, dstPath: String) -> Int32? {
-        guard let py = python3() else { return nil }
         let srcPath = NSTemporaryDirectory() + "/pkg_\(UUID().uuidString).in"
         defer { try? FileManager.default.removeItem(atPath: srcPath) }
         guard (try? raw.write(to: URL(fileURLWithPath: srcPath))) != nil else { return nil }
-        let res = BuildRunner.shared.run(executable: py,
-                                        args: ["-c", script, mode, kind, srcPath, dstPath],
-                                        env: ["PYTHONIOENCODING": "utf-8"],
-                                        timeout: 300)
-        if res.timedOut { return nil }
-        return res.exitCode
+        let quoted = [mode, kind, srcPath, dstPath].map {
+            "\"" + $0.replacingOccurrences(of: "\\", with: "\\\\")
+                   .replacingOccurrences(of: "\"", with: "\\\"") + "\""
+        }.joined(separator: ", ")
+        let wrapped = "import sys as _s; _s.argv = [\"-c\", \(quoted)]\n" + script
+        var out = ""
+        do {
+            let r = try PyEvalTool().invoke(["command": "eval", "code": wrapped, "limit": 200_000])
+            out = (r["stdout"] as? String) ?? ""
+        } catch {
+            return nil
+        }
+        // 进程内执行拿不到退出码，改用脚本自己打的成功标记判定：
+        // 三个 mode 成功时都会 print('OK' ...)，没有该行即脚本中途失败（格式不支持/解压异常）。
+        let succeeded = out.split(separator: "\n").contains { $0.hasPrefix("OK") }
+        return succeeded ? 0 : 1
     }
 
     /// 解压到内存（control.tar 与文件清单用，体积小）。

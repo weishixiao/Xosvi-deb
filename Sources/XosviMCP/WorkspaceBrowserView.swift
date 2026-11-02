@@ -134,12 +134,7 @@ struct WorkspaceBrowserView: View {
             }
         }
 
-        // 回退：内置原生 python3（zipfile/tarfile/gzip）
-        let py = Bundle.main.bundlePath + "/bin/python3"
-        guard FileManager.default.isExecutableFile(atPath: py) else {
-            toast = "解压需要内置 bsdtar 或 python3（本包均不可用）"
-            return
-        }
+        // 回退：进程内 CPython（zipfile/tarfile/gzip）——不再 spawn bin/python3
         let script = """
         import sys, os, zipfile, tarfile, gzip, shutil
         src, dst = sys.argv[1], sys.argv[2]
@@ -159,8 +154,16 @@ struct WorkspaceBrowserView: View {
             sys.exit('unsupported archive type')
         print('EXTRACT_OK')
         """
-        let res2 = BuildRunner.shared.run(executable: py, args: ["-c", script, item.path, dest], env: [:], timeout: 300)
-        let out2 = res2.stdout + res2.stderr
+        let wrapped = "import sys as _s; _s.argv = [\"-c\", "
+            + PythonInProcessBridge.pyStringLiteral(item.path) + ", "
+            + PythonInProcessBridge.pyStringLiteral(dest) + "]\n" + script
+        var out2 = ""
+        do {
+            let r = try PyEvalTool().invoke(["command": "eval", "code": wrapped, "limit": 200_000])
+            out2 = (r["stdout"] as? String) ?? ""
+        } catch {
+            out2 = "进程内解释器不可用：" + String(describing: error)
+        }
         if out2.contains("EXTRACT_OK") {
             toast = "已解压到 \((dest as NSString).lastPathComponent)"
         } else {

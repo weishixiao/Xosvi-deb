@@ -415,8 +415,18 @@ final class AppInjectPackageTool: MCPTool {
             workDir = ipaPath
         } else {
             try? FileManager.default.createDirectory(atPath: workDir, withIntermediateDirectories: true)
-            let py = "import zipfile,os; zipfile.ZipFile('\(ipaPath)').extractall('\(workDir)')"
-            let (pc, po) = InjectionManager.shared.spawn("/usr/bin/python3", args: ["-c", py], timeout: 180)
+            // v7.8.0：/usr/bin/python3 也要 posix_spawn（本机可能 ENOSYS 85）→ 改进程内解释器
+            let py = "import zipfile\n"
+                + "zipfile.ZipFile(" + PythonInProcessBridge.pyStringLiteral(ipaPath) + ").extractall("
+                + PythonInProcessBridge.pyStringLiteral(workDir) + ")"
+            var po = ""
+            var pc: Int32 = 0
+            do {
+                _ = try PyEvalTool().invoke(["command": "eval", "code": py, "limit": 4000])
+            } catch {
+                pc = 1
+                po = "进程内解释器不可用：" + String(describing: error)
+            }
             let payloadOK = FileManager.default.fileExists(atPath: workDir + "/Payload")
             if pc != 0 || !payloadOK {
                 do { try ZipExtractor.unzip(URL(fileURLWithPath: ipaPath), to: URL(fileURLWithPath: workDir, isDirectory: true)) }
