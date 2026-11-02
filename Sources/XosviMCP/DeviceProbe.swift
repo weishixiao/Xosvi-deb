@@ -288,7 +288,7 @@ final class DeviceProbe: ObservableObject {
     private func testContainerWrite() -> Bool {
         guard let other = AppCatalog.list().first(where: { $0.bundleId != Bundle.main.bundleIdentifier }),
               let container = AppCatalog.lookupContainer(bundleId: other.bundleId) else { return false }
-        let probe = URL(fileURLWithPath: container).appendingPathComponent(".trollmcp_probe_\(UUID().uuidString)")
+        let probe = URL(fileURLWithPath: container).appendingPathComponent(".xosvi_probe_\(UUID().uuidString)")
         do {
             try Data("ok".utf8).write(to: probe)
             try FileManager.default.removeItem(at: probe)

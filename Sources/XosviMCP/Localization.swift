@@ -392,7 +392,7 @@ enum L10n {
             "ui_122": ["zh": "线上编译在指定仓库的 Actions 中运行。仓库须包含 build-tweak workflow，且当前账号对该仓库有写权限。授权新账号成功后，Owner 会自动填入该账号（若此前仍是默认值）。", "en": "Online builds run in the Actions of the chosen repo. The repo must contain the build-tweak workflow and your account needs write access. After authorizing a new account, Owner auto-fills to that account (if it was still the default)."],
             "ui_123": ["zh": "缓存 · 钥匙串 · 广告符 · 数据容器 · 标识符", "en": "Caches · Keychain · IDFA · Containers · Identifiers"],
             "ui_124": ["zh": "缓存占用", "en": "Cache usage"],
-            "ui_125": ["zh": "编译模式允许在 iPhone 上编译 dylib。需要已注入 TMBuildAgent.dylib 到 TrollMCP。编译令牌用于验证编译请求。", "en": "Build mode compiles dylibs on iPhone. Requires TMBuildAgent.dylib injected into TrollMCP. The build token is used to verify build requests."],
+            "ui_125": ["zh": "编译模式允许在 iPhone 上编译 dylib。需要已注入 TMBuildAgent.dylib 到 XosviMCP。编译令牌用于验证编译请求。", "en": "Build mode compiles dylibs on iPhone. Requires TMBuildAgent.dylib injected into XosviMCP. The build token is used to verify build requests."],
             "ui_126": ["zh": "自动化中心支持脚本执行、定时任务（cron）、事件触发。通过 MCP 工具 automation.* 和 cron.fire 驱动。", "en": "Automation hub supports script execution, cron jobs and event triggers, driven by the automation.* and cron.fire MCP tools."],
             "ui_127": ["zh": "自动化任务", "en": "Automation tasks"],
             "ui_128": ["zh": "获取上游模型列表", "en": "Fetch upstream models"],

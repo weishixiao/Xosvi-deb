@@ -166,7 +166,7 @@ let package = Package(
                 // v6.7.0：VansonMod 内存引擎（GPL-3.0）——memory 工具的原生扫描/读写/冻结实现
                 "VansonEngine"
             ],
-            path: "Sources/Xosvi",
+            path: "Sources/XosviMCP",
             exclude: ["Resources"],
             linkerSettings: [
                 .linkedLibrary("z"),

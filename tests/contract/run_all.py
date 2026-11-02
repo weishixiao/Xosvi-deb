@@ -18,9 +18,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 CHECKS = [
-    ("注册一致性", [sys.executable, "scripts/check_tool_registration.py", "--src", "Sources/Xosvi"]),
-    ("描述引用有效性", [sys.executable, "scripts/lint_tool_descriptions.py", "--src", "Sources/Xosvi", "--fail-on-refs"]),
-    ("注册表快照", [sys.executable, "scripts/dump_registry.py", "--src", "Sources/Xosvi",
+    ("注册一致性", [sys.executable, "scripts/check_tool_registration.py", "--src", "Sources/XosviMCP"]),
+    ("描述引用有效性", [sys.executable, "scripts/lint_tool_descriptions.py", "--src", "Sources/XosviMCP", "--fail-on-refs"]),
+    ("注册表快照", [sys.executable, "scripts/dump_registry.py", "--src", "Sources/XosviMCP",
                     "--check", "docs/registry.snapshot.json"]),
 ]
 

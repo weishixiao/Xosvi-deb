@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """括号/结构 sanity（参数化，CI 友好）。
 
-默认扫描 Sources/Xosvi 全部 .swift；默认只报告不阻断（--strict 才退出 1）。
+默认扫描 Sources/XosviMCP 全部 .swift；默认只报告不阻断（--strict 才退出 1）。
 正确处理字符串（含三引号）、行注释、块注释，避免把 `{` 当代码。
 """
 from __future__ import annotations
@@ -73,7 +73,7 @@ def strip_code(src: str) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Swift brace/paren sanity")
-    ap.add_argument("--src", default="Sources/Xosvi")
+    ap.add_argument("--src", default="Sources/XosviMCP")
     ap.add_argument("--strict", action="store_true", help="有 MISMATCH 时退出 1")
     args = ap.parse_args()
     src = pathlib.Path(args.src)

@@ -1,5 +1,5 @@
 // ControlAgent v1.0 — 通用 UI 控制 agent dylib（合并版）
-// 合并自：ControlAgent（4789 截图/保活）+ TrollMCPAgent v4.1（4792 自动化）
+// 合并自：ControlAgent（4789 截图/保活）+ XosviMCPAgent v4.1（4792 自动化）
 // 功能：截图 / UI树 / 点击 / 滑动 / 输入 / 按键 / 保活hook / 滚动
 // 端口：4789（统一）
 // 注入任意 App 后开启 localhost HTTP 服务，Xosvi 通过 HTTP 控制目标 App
@@ -758,7 +758,7 @@ static NSData *handleRequest(NSString *method, NSString *path, NSData *body) {
         return jsonResponse(@{@"error": @"unknown key", @"supported": @[@"back", @"home", @"enter"]});
     }
 
-    // v1.0：/scroll 滚动（合并自 TrollMCPAgent）
+    // v1.0：/scroll 滚动（合并自 XosviMCPAgent）
     if ([path isEqualToString:@"/scroll"]) {
         NSDictionary *params = parseJSONBody(body);
         NSString *dir = params[@"direction"] ?: @"down";

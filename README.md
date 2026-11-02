@@ -77,7 +77,7 @@ tools.audit                      # 注册表一致性：描述里引用的幽灵
 | 内置 AI 对话 | App 内 Chat | 进程内直接 `ToolRegistry.dispatch`，享受缓存/熔断/信封/审计 |
 | 本地 HTTP（REST） | `server command:start`（默认 8765） | `/health`、`/tools`、`/api/{tool_name}?param=value` |
 | 远程终端 | 设置 → 远程终端（默认 8790） | Bearer token；危险工具默认拒绝，需显式开启"允许危险工具" |
-| MCP JSON-RPC | `Sources/Xosvi/JSONRPC.swift` | 实现 `initialize` / `ping` / `tools/list`（200/页，游标分页）/ `tools/call`；当前为进程内处理器，协议版本 `2024-11-05` |
+| MCP JSON-RPC | `Sources/XosviMCP/JSONRPC.swift` | 实现 `initialize` / `ping` / `tools/list`（200/页，游标分页）/ `tools/call`；当前为进程内处理器，协议版本 `2024-11-05` |
 
 > 远程通道（8765 / 8790）直接调用工具实现，**不经过** `dispatch` 的缓存、熔断与信封，排障时注意区分。
 
@@ -92,7 +92,7 @@ tools.audit                      # 注册表一致性：描述里引用的幽灵
 ```
 Xosvi/
 ├── Sources/
-│   ├── Xosvi/        # App 主体：MCP 内核、工具注册表、dispatch、全部工具实现、SwiftUI 界面
+│   ├── XosviMCP/        # App 主体：MCP 内核、工具注册表、dispatch、全部工具实现、SwiftUI 界面
 │   ├── ISHBridge/        # iSH Alpine 沙盒桥接（移植自 Kelivo/OpenMinis，见 Sandbox/NOTICE）
 │   ├── MitmCore/         # MITM 代理 + SOCKS5（TLS 拦截、CA 管理）
 │   ├── PythonCLI/        # 进程内 CPython 入口（dlopen，无子进程）

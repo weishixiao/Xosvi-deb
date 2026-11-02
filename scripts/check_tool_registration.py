@@ -10,7 +10,7 @@
 
 用法：
   python3 scripts/check_tool_registration.py
-  python3 scripts/check_tool_registration.py --src Sources/Xosvi
+  python3 scripts/check_tool_registration.py --src Sources/XosviMCP
   python3 scripts/check_tool_registration.py --strict-extras
 
 退出码：0 = 通过；1 = 存在 ERROR；2 = 参数/目录错误。
@@ -33,8 +33,8 @@ NAME_RE = re.compile(r"ToolDefinition\s*\(\s*name\s*:\s*\"([^\"]+)\"", re.S)
 
 def parse_args(argv):
     p = argparse.ArgumentParser(description="Xosvi tool registration consistency check")
-    p.add_argument("--src", default="Sources/Xosvi",
-                   help="源码目录（默认相对仓库根 Sources/Xosvi）")
+    p.add_argument("--src", default="Sources/XosviMCP",
+                   help="源码目录（默认相对仓库根 Sources/XosviMCP）")
     p.add_argument("--strict-extras", action="store_true",
                    help="把「定义了但未注册」的类也视为错误")
     return p.parse_args(argv)

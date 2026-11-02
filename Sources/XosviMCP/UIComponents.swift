@@ -1,6 +1,6 @@
 import SwiftUI
 
-// MARK: - 通用设置行（原版 TrollMCP 风格）
+// MARK: - 通用设置行（原版 XosviMCP 风格）
 
 struct SettingRow<Destination: View>: View {
     let title: String

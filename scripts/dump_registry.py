@@ -29,7 +29,7 @@ BLOCK_LIMIT = 8000
 
 def parse_args(argv):
     p = argparse.ArgumentParser(description="Xosvi registry snapshot tool")
-    p.add_argument("--src", default="Sources/Xosvi")
+    p.add_argument("--src", default="Sources/XosviMCP")
     p.add_argument("--out", default=None, help="写入快照文件（不存在则创建父目录）")
     p.add_argument("--check", default=None, help="与快照文件比对，不一致退出 1")
     return p.parse_args(argv)

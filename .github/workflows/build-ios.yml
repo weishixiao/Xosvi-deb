@@ -455,7 +455,7 @@ jobs:
         run: |
           export THEOS="$THEOS"
           export THEOS_PACKAGE_SCHEME=rootless
-          # v2.9.315：合并精简——FakeDevice→ConfigHook v2，TrollMCPAgent→ControlAgent v1
+          # v2.9.315：合并精简——FakeDevice→ConfigHook v2，XosviMCPAgent→ControlAgent v1
           for t in ProbeAgent ConfigHook NetworkTweak TLSHook MemoryTweak ControlAgent; do
             echo ">>> building $t"
             (cd "tweaks/$t" && make package) || { echo "FAILED: $t"; exit 1; }

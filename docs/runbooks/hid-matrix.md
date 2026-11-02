@@ -1,6 +1,6 @@
 # Runbook：HID 触摸注入验证矩阵
 
-> 适用：`Sources/Xosvi/ControlUITools.swift` 中的 `HIDTouchInjector`（IOHIDEventSystemClient 合成触摸）。
+> 适用：`Sources/XosviMCP/ControlUITools.swift` 中的 `HIDTouchInjector`（IOHIDEventSystemClient 合成触摸）。
 > 该实现全部符号用 `dlsym` 动态加载、代码自述"云端无法真机验证，按社区通用实现"，因此必须**按环境逐项留档**。
 > 本文件是**可执行清单**：命令全部使用真实注册工具名，结果按 `✅PASS / ⚠️PARTIAL / ❌FAIL + 备注` 填表。
 

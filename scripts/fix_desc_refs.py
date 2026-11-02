@@ -3,8 +3,8 @@
 """PR-A6：修正工具描述里的交叉引用（旧写法 → 规范形式）。
 
 用法：
-  python3 scripts/fix_desc_refs.py --src Sources/Xosvi            # dry-run（默认）
-  python3 scripts/fix_desc_refs.py --src Sources/Xosvi --apply    # 写回文件
+  python3 scripts/fix_desc_refs.py --src Sources/XosviMCP            # dry-run（默认）
+  python3 scripts/fix_desc_refs.py --src Sources/XosviMCP --apply    # 写回文件
 
 规则：
   1) 只做「精确字符串」替换（见 REPLACEMENTS），不做正则联想——避免误伤。
@@ -81,7 +81,7 @@ REPLACEMENTS: list[tuple[str, str, str]] = [
 
 def parse_args(argv):
     p = argparse.ArgumentParser(description="Fix stale cross-references in tool descriptions")
-    p.add_argument("--src", default="Sources/Xosvi")
+    p.add_argument("--src", default="Sources/XosviMCP")
     p.add_argument("--apply", action="store_true", help="写回文件（默认 dry-run）")
     return p.parse_args(argv)
 

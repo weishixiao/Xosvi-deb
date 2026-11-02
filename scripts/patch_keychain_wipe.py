@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import io
 
-path = r'C:\Users\q3711\WorkBuddy\2026-08-16-16-09-55\Xosvi\Sources\Xosvi\AdvancedTools.swift'
+path = r'C:\Users\q3711\WorkBuddy\2026-08-16-16-09-55\XosviMCP\Sources\XosviMCP\AdvancedTools.swift'
 with io.open(path, 'r', encoding='utf-8') as f:
     c = f.read()
 

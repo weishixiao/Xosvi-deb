@@ -18,7 +18,7 @@ r"""Xosvi 工具描述 lint（CI 友好）。
 
 用法：
   python3 scripts/lint_tool_descriptions.py
-  python3 scripts/lint_tool_descriptions.py --src Sources/Xosvi --warn-only
+  python3 scripts/lint_tool_descriptions.py --src Sources/XosviMCP --warn-only
 
 退出码：有 ERROR 且非 --warn-only -> 1；否则 0。
 """
@@ -44,8 +44,8 @@ NAME_LIMIT = 400
 
 def parse_args(argv):
     p = argparse.ArgumentParser(description="Xosvi tool description lint")
-    p.add_argument("--src", default="Sources/Xosvi",
-                   help="源码目录（默认相对仓库根 Sources/Xosvi）")
+    p.add_argument("--src", default="Sources/XosviMCP",
+                   help="源码目录（默认相对仓库根 Sources/XosviMCP）")
     p.add_argument("--warn-only", action="store_true",
                    help="只报告，不因 ERROR 失败")
     p.add_argument("--fail-on-refs", action="store_true",

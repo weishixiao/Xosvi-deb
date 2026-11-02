@@ -3,7 +3,7 @@
 import io, os
 from PIL import Image, ImageEnhance, ImageOps
 
-BASE = r'C:\Users\q3711\WorkBuddy\2026-08-16-16-09-55\Xosvi\Resources'
+BASE = r'C:\Users\q3711\WorkBuddy\2026-08-16-16-09-55\XosviMCP\Resources'
 SRC_2X = os.path.join(BASE, 'AppIcon60x60@2x.png')   # 120
 SRC_3X = os.path.join(BASE, 'AppIcon60x60@3x.png')   # 180
 SRC_1024 = os.path.join(BASE, 'AppIcon1024x1024.png')

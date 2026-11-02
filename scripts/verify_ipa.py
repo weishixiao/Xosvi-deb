@@ -35,7 +35,7 @@ checks = [
     ('outsetIcon-1024x1024.png', None),
     ('originalIcon-1024x1024.png', None),
     ('Xosvi', None),
-    ('TrollMCPDeveloperInstructions.md', None),
+    ('XosviMCPDeveloperInstructions.md', None),
 ]
 for rel, minsize in checks:
     p = os.path.join(app, rel)

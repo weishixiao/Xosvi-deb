@@ -2,7 +2,7 @@
 # ---------------------------------------------------------------------------
 # rootd —— root 命令执行守护进程（供 Xosvi `root` 工具使用）
 #
-# 协议（与 Sources/Xosvi/RootdTool.swift 严格对齐）：
+# 协议（与 Sources/XosviMCP/RootdTool.swift 严格对齐）：
 #   <dir>/.cmd      工具写入待执行脚本（原子 rename 进来）
 #   <dir>/.out      执行结果（stdout + stderr）
 #   <dir>/.status   IDLE / RUNNING / DONE rc=N / DISABLED

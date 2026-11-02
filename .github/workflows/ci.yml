@@ -21,18 +21,18 @@ jobs:
           python-version: '3.11'
 
       - name: 注册一致性（类定义 ↔ register 调用 + 工具名唯一）
-        run: python3 scripts/check_tool_registration.py --src Sources/Xosvi
+        run: python3 scripts/check_tool_registration.py --src Sources/XosviMCP
 
       - name: 描述引用有效性（L2 失效引用 = 0）
-        run: python3 scripts/lint_tool_descriptions.py --src Sources/Xosvi --fail-on-refs
+        run: python3 scripts/lint_tool_descriptions.py --src Sources/XosviMCP --fail-on-refs
 
       - name: 描述三段式盘点（L1 存量，暂不阻断）
-        run: python3 scripts/lint_tool_descriptions.py --src Sources/Xosvi --warn-only
+        run: python3 scripts/lint_tool_descriptions.py --src Sources/XosviMCP --warn-only
 
       - name: 注册表快照校验
         run: |
           if [ -f docs/registry.snapshot.json ]; then
-            python3 scripts/dump_registry.py --src Sources/Xosvi --check docs/registry.snapshot.json
+            python3 scripts/dump_registry.py --src Sources/XosviMCP --check docs/registry.snapshot.json
           else
             echo "::warning::docs/registry.snapshot.json 尚未提交，跳过快照校验"
           fi

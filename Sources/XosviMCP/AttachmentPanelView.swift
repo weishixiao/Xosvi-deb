@@ -178,7 +178,7 @@ struct PhotoPickerView: UIViewControllerRepresentable {
                 result.itemProvider.loadFileRepresentation(forTypeIdentifier: "public.image") { url, error in
                     if let url = url {
                         let dest = FileManager.default.temporaryDirectory
-                            .appendingPathComponent("trollmcp_img_\(UUID().uuidString).jpg")
+                            .appendingPathComponent("xosvi_img_\(UUID().uuidString).jpg")
                         try? FileManager.default.copyItem(at: url, to: dest)
                         urls.append(dest)
                     }

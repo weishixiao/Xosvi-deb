@@ -60,8 +60,8 @@ fuck_helper（= Fuck 工具箱的 FuckKfdHelper，已完整逆向其机制）
 | `tools/kfd_helper.c` | **纯 C 胶水**（v3.6.18 重写）：提取 VpnTunnel 的 cdhash → posix_spawn 同目录 fuck_helper，返回其退出码。不依赖 libkfd |
 | `tools/build_kfd_helper.sh` | macOS 编译脚本（纯 C + CommonCrypto，无需 clone libkfd） |
 | `Resources/bin/fuck_helper` | FuckKfdHelper 注入引擎（arm64，已验证 16.3） |
-| `Sources/Xosvi/TrustEnabler.swift` | Swift 探测(越狱/iOS版本/kfd区间) + 路径调度 + posix_spawn |
-| `Sources/Xosvi/VpnManager.swift` | `startVpn` 起手调用 `TrustEnabler.injectIfNeeded` |
+| `Sources/XosviMCP/TrustEnabler.swift` | Swift 探测(越狱/iOS版本/kfd区间) + 路径调度 + posix_spawn |
+| `Sources/XosviMCP/VpnManager.swift` | `startVpn` 起手调用 `TrustEnabler.injectIfNeeded` |
 | `.github/workflows/build-xosvi-ios.yml` | 加 "Build kfd_helper" step（失败不阻塞） |
 
 ## 编译
