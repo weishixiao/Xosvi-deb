@@ -2578,7 +2578,7 @@ final class InjectionManager {
         _ = try? fm.removeItem(atPath: destApp)
 
         // 7. 安装注入后的 IPA：按档位选择安装器（v8 R⑦：JB 侧优先，TrollStore 兜底）
-        let (installed, installMsg) = Self.installIPA(ipaPath)
+        let (installed, installMsg) = installIPA(ipaPath)
         guard installed else {
             return (false, "安装失败：\(installMsg)。IPA 已生成：\(ipaPath)")
         }
@@ -2591,7 +2591,7 @@ final class InjectionManager {
     //
     // 17.1 + Relaxin 上 trollstorehelper 不存在，必须走 JB 侧 appinst/jbctl。
     // 依次尝试，全部失败时把 IPA 路径交给用户手动安装（不静默失败）。
-    static func installIPA(_ ipaPath: String) -> (Bool, String) {
+    func installIPA(_ ipaPath: String) -> (Bool, String) {
         let fm = FileManager.default
         let candidates: [(path: String, args: [String], label: String)] = [
             ("/var/jb/usr/bin/appinst", ["install", ipaPath], "jb-appinst"),
@@ -2609,5 +2609,5 @@ final class InjectionManager {
         return (false, lastInstallError ?? "no installer found (appinst/jbctl/trollstorehelper 均不可用)")
     }
 
-    private static var lastInstallError: String?
+    private var lastInstallError: String?
 }
