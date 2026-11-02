@@ -43,10 +43,10 @@ enum SpawnClassifier {
         guard let fh = FileHandle(forReadingAtPath: path) else { return false }
         defer { try? fh.close() }
         guard let head = try? fh.read(upToCount: 28), head.count >= 28 else { return false }
-        let magicLE = head.withUnsafeBytes { $0.load(as: UInt32.self) }
+        let magicLE = head.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
         // 0xfeedfacf = MH_MAGIC_64（小端宿主上直接读即此值）；0xcffaedfe = 大端存储
         guard magicLE == 0xfeedfacf || magicLE == 0xcffaedfe || magicLE == 0xfeedface else { return false }
-        let ftBig = head.withUnsafeBytes { $0.load(fromByteOffset: 12, as: UInt32.self) }
+        let ftBig = head.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 12, as: UInt32.self) }
         let ft = (magicLE == 0xcffaedfe) ? ftBig.byteSwapped : ftBig
         return ft == 0x2   // MH_EXECUTE
     }

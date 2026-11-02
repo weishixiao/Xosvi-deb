@@ -41,10 +41,15 @@ static char g_cap_path[PATH_MAX];
 static int  g_cap_fd = -1, g_saved_out = -1, g_saved_err = -1;
 
 static int cap_begin(void) {
-    const char *tmp = getenv("TMPDIR");
-    if (!tmp || !tmp[0]) tmp = "/tmp";
-    snprintf(g_cap_path, sizeof g_cap_path, "%s/pyx_out_XXXXXX", tmp);
-    g_cap_fd = mkstemp(g_cap_path);
+    const char *cands[3] = { getenv("TMPDIR"), "/tmp", NULL };
+    g_cap_fd = -1;
+    for (int i = 0; i < 3 && g_cap_fd < 0; i++) {
+        const char *tmp = cands[i];
+        if (!tmp || !tmp[0]) continue;
+        int n = snprintf(g_cap_path, sizeof g_cap_path, "%s/pyx_out_XXXXXX", tmp);
+        if (n <= 0 || (size_t)n >= sizeof g_cap_path) continue;
+        g_cap_fd = mkstemp(g_cap_path);
+    }
     if (g_cap_fd < 0) return -1;
     g_saved_out = dup(STDOUT_FILENO);
     g_saved_err = dup(STDERR_FILENO);
