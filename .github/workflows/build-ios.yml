@@ -455,6 +455,8 @@ jobs:
         run: |
           export THEOS="$THEOS"
           export THEOS_PACKAGE_SCHEME=rootless
+          # v8.4：历史清理把构建产物目录删了，先建好落点（否则 cp: No such file or directory）
+          mkdir -p Resources/tweaks Resources/bin
           # v2.9.315：合并精简——FakeDevice→ConfigHook v2，XosviMCPAgent→ControlAgent v1
           for t in ProbeAgent ConfigHook NetworkTweak TLSHook MemoryTweak ControlAgent; do
             echo ">>> building $t"
