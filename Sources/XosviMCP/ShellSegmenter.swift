@@ -187,12 +187,12 @@ enum ShellSegmenter {
         for seg in segments {
             switch seg.kind {
             case .builtin(let n):
-                let args = argv(seg.raw).dropFirst().map(String.init)
+                let args = Array(argv(seg.raw).dropFirst())
                 let r = runBuiltin(n, args: args)
                 ran += 1
                 outputs.append(["seg": seg.raw, "kind": "builtin", "code": Int(r.code), "out": r.out])
             case .bundled(let path):
-                let args = argv(seg.raw).dropFirst().map(String.init)
+                let args = Array(argv(seg.raw).dropFirst())
                 let res = BuildRunner.shared.run(executable: path, args: args,
                                                  env: ["PATH": ShellExecTool.effectivePATH],
                                                  timeout: 60)

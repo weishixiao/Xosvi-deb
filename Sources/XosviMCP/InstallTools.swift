@@ -207,7 +207,6 @@ final class EnvSetupRETool: MCPTool {
             "profile": "setup 时的批次名（re / dev / network），先用 action:list 查",
         ],
         verified: true, category: "build",
-        annotations: .destructiveSystem, cache: ToolCachePolicy.none,
         paramSpecs: [
             .e("action", "动作", values: ["list", "report", "setup"], required: false),
             .s("profile", "批次名（setup 必填）", required: false, example: "re"),
@@ -216,7 +215,8 @@ final class EnvSetupRETool: MCPTool {
             ToolVariant("list", requires: [], accepts: []),
             ToolVariant("report", requires: [], accepts: []),
             ToolVariant("setup", requires: ["profile"], accepts: []),
-        ]
+        ],
+        annotations: .destructiveSystem, cache: ToolCachePolicy.none
     )
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
