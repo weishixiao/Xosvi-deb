@@ -166,6 +166,12 @@ final class SubagentTool: MCPTool {
                     toolOutput = "工具调用失败：\(error)"
                     step["ok"] = false
                 }
+                // v8（P0-1）：熔断/终止标记必须被消费——否则子代理会继续撞同一面墙
+                if RunScope.consumeAbort(RunScope.currentToken) {
+                    finalText = "[[RUN_TERMINATED]] 子代理已停止：连续相同参数失败，本轮终止。"
+                    failure = nil
+                    break
+                }
                 // 单条工具结果截断，防止一次把预算吃光
                 if toolOutput.count > 12_000 {
                     toolOutput = String(toolOutput.prefix(12_000)) + "\n…（已截断，共 \(toolOutput.count) 字）"

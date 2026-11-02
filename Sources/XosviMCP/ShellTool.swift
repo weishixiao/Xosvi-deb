@@ -628,6 +628,13 @@ final class ShellExecTool: MCPTool {
             }
         }
         
+        // v8（P1-5）：分段执行——`id -u`、`B=/tmp id -u`、`for …; do …; done`、
+        // `/var/.../bin/jq --version` 这类不再整串判死；能跑的段跑，不支持的段单独报。
+        if let segmented = ShellSegmenter.execute(trimmed) {
+            AuditLog.shared.log("shell.exec (segmented)", detail: String(trimmed.prefix(100)))
+            return segmented
+        }
+
         // v7.3.0：iSH 引擎已移除，这里不再有任何"兜底到 Alpine"的路径
         return ["command": trimmed, "exit_code": 127, "ios_native": false,
                 "runtime_actual": "ainot_available",

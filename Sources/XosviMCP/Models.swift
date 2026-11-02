@@ -2002,7 +2002,7 @@ final class ConversationStore: ObservableObject {
                 self.currentClient = nil
                 TaskNotify.shared.endBackground()
                 var stopMsg = ChatMessage(role: "assistant",
-                    content: "已停止：\(call.name) 用相同参数连续失败，原因相同，我不再重复它。\n\n"
+                    content: "[[RUN_TERMINATED]] 已停止：\(call.name) 用相同参数连续失败，原因相同，我不再重复它。\n\n"
                            + "下一步给你三个选择：\n"
                            + "① 换工具/换参数（告诉我你想拿到什么结果，我换一种方式）\n"
                            + "② 我先解释这个错误意味着什么\n"

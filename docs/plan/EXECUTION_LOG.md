@@ -53,6 +53,13 @@
 | F-43 | 远程通道审计与白名单 | DONE | feat/v8-ai-seamless | EXEC/DONE/DENIED 入 AuditLog（只记参数键） | 白名单沿用 safeTools |
 | F-44 | 知识库隐私开关 | DONE | feat/v8-ai-seamless | session_memory_enabled 关闭后不写入 | 清理入口已有 |
 
+| P0-1 | 熔断真正终止（RUN_TERMINATED） | DONE | main | 连续两次同参失败即终止 | Models/SubagentTool 消费 abort |
+| P0-2 | env.setup_re 参数校验 + action:list | DONE | main | action:list 返回批次；无参=report | InstallTools.swift |
+| P0-3 | spawn_verdict 只看 bundled | DONE | main | verdict 与 spawn_probe 自洽 | ToolchainSigner.swift |
+| P1-4 | python3 bind 容错 + realpath | DONE | main | python3 -c "print(1)" 输出 1 | PythonCLI/main.c |
+| P1-5 | shell 分段执行 + 路径归一 | DONE | main | B=/tmp id -u、for 循环可用 | ShellSegmenter.swift |
+| P2-6 | shim 识别（sqlite3/plutil） | DONE | main | diagnose 的 shims 标出 | ShimDetector.swift |
+
 ## 下一步
 
 1. B5 ExternalContent 接入（web.fetch / shell.exec / file / ui_tree / 剪贴板）。

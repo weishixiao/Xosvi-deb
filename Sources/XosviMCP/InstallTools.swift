@@ -173,6 +173,10 @@ final class ToolInstallTool: MCPTool {
     ]
 
     /// 逆向/开发/网络 三档 curated 批量（Alpine 包）
+    /// v8（P0-2）：供 env.setup_re action:list 使用
+    static var profileNames: [String] { profiles.keys.sorted() }
+    static func profileTools(_ name: String) -> [String] { profiles[name.lowercased()] ?? [] }
+
     private static let profiles: [String: [String]] = [
         "re": ["binutils", "file", "python3", "sqlite", "openssl", "curl", "git", "jq",
                "zip", "unzip", "xz", "7zip", "tree", "gawk", "coreutils", "findutils", "vim",
@@ -192,15 +196,89 @@ final class ToolInstallTool: MCPTool {
     ]
 }
 
-/// v4.3.65：一键逆向工具链（env.setup_re = tool.install profile:re）
+/// v4.3.65：一键逆向工具链（env.setup_re）
+/// v8（P0-2）：补必填校验与 action:list——无参调用不再进入执行后吐 ok=false（AI 会原样重试）。
 final class EnvSetupRETool: MCPTool {
     let definition = ToolDefinition(
         name: "env.setup_re",
-        summary: "Report which reverse-engineering tools are bundled natively (Alpine was removed). Use for: AI needs RE tools (strings/file/nm/python3/sqlite/tcpdump/7z...). Don't use for: native iOS binaries (jtool2/class-dump → use tool.install name:jtool2). Example: 'setup reverse engineering tools' → install curated RE batch.",
-        parameters: [:],
-        verified: true, category: "build")
+        summary: "Prepare/inspect the reverse-engineering toolchain. Actions: list (profiles) / report (bundled tools, default) / setup (install a profile). Use for: AI needs RE tools or wants to know what is bundled. Don't use for: single tool install (use tool.install name:...). Example: '看看逆向环境' → action:report; '装逆向工具链' → action:setup profile:re.",
+        parameters: [
+            "action": "list / report (default) / setup",
+            "profile": "setup 时的批次名（re / dev / network），先用 action:list 查",
+        ],
+        verified: true, category: "build",
+        annotations: .destructiveSystem, cache: ToolCachePolicy.none,
+        paramSpecs: [
+            .e("action", "动作", values: ["list", "report", "setup"], required: false),
+            .s("profile", "批次名（setup 必填）", required: false, example: "re"),
+        ],
+        variants: [
+            ToolVariant("list", requires: [], accepts: []),
+            ToolVariant("report", requires: [], accepts: []),
+            ToolVariant("setup", requires: ["profile"], accepts: []),
+        ]
+    )
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
-        return try ToolInstallTool().invoke(["profile": "re"])
+        let action = ((params["action"] as? String) ?? "report").lowercased()
+
+        switch action {
+        case "list":
+            return [
+                "ok": true,
+                "profiles": ToolInstallTool.profileNames.map { name in
+                    ["name": name, "tools": ToolInstallTool.profileTools(name)]
+                },
+                "next_step": "env.setup_re action:setup profile:<name>",
+            ]
+
+        case "report":
+            // 只读盘点：App 内置 bin 下的工具 + 版本自检（不安装任何东西）
+            let dir = Bundle.main.bundlePath + "/bin"
+            let files = (try? FileManager.default.contentsOfDirectory(atPath: dir))?.sorted() ?? []
+            let tools = files.map { name -> [String: Any] in
+                let path = dir + "/" + name
+                let ver = Self.versionOutput(path)
+                var row: [String: Any] = ["name": name, "path": path]
+                if !ver.isEmpty { row["version"] = String(ver.prefix(120)) }
+                return row
+            }
+            return [
+                "ok": true,
+                "bin_dir": dir,
+                "count": tools.count,
+                "tools": tools,
+                "profiles": ToolInstallTool.profileNames,
+                "next_step": "需要安装批次用 action:setup profile:<name>；单工具用 tool.install name:<tool>",
+            ]
+
+        case "setup", "install":
+            guard let profile = params["profile"] as? String,
+                  !profile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw MCPError.classified(
+                    "env.setup_re 缺少 profile 参数",
+                    code: "PARAM_INVALID",
+                    reason: "未提供 profile，且 setup 不支持无参调用",
+                    nextStep: "先用 env.setup_re action:list 取可用名称，再 action:setup profile:<名称> 重试")
+            }
+            return try ToolInstallTool().invoke(["profile": profile])
+
+        default:
+            throw MCPError.classified(
+                "env.setup_re 未知 action: \(action)",
+                code: "PARAM_INVALID",
+                reason: "action 只支持 list / report / setup",
+                nextStep: "用 env.setup_re action:list 查看批次名")
+        }
+    }
+
+    /// 轻量版本探测（只读，2s 超时）——用 BuildRunner（iOS 可用），不用 macOS-only 的 Process
+    private static func versionOutput(_ path: String) -> String {
+        let res = BuildRunner.shared.run(executable: path, args: ["--version"],
+                                         env: ["PATH": ShellExecTool.effectivePATH],
+                                         timeout: 2)
+        var out = res.stdout
+        if !res.stderr.isEmpty { out += (out.isEmpty ? "" : "\n") + res.stderr }
+        return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }

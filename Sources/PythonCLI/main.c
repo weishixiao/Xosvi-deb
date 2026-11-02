@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <errno.h>
+#include <limits.h>
 
 // fix3cl: python3 转生产态——诊断收敛为 env 控制：
 // 仅当 Swift 传 TROLL_PY_DIAG（App Documents 绝对路径）时才写日志，正常使用零文件残留。
@@ -137,18 +139,26 @@ int main(int argc, char **argv) {
     // 改为彻底不依赖 fd：sys.stdout/stderr 直接重定向到 Swift 传的 TROLL_PY_OUT 文件（App Documents），
     // print/os.write 全部写入该文件，Swift 执行后读回——与 node 的 stdout 重定向同一思路。
     // 保留 os.write 标记仅作诊断（TROLL_PY_DIAG 一定能读到，用于确认 main 是否真的执行）。
+    // v8（P1-4）：bind 全程 try/except，绝不因 bind 失败中断。
+    // 旧实现直接 os.write(1, ...) 且未保护：fd 1 常已被父进程重定向/关闭 →
+    // OSError(EBADF) → PyRun_SimpleString 返回 -1 → 正是 "bind PyRun FAIL" 的来源。
+    // 回退目录也改为 TMPDIR（App 容器内，子进程可见），不再用 /var/mobile/Documents。
     int bind_rc = PyRun_SimpleString(
         "import sys, os\n"
-        "_d = os.environ.get('TROLL_PY_OUT', '') or '/var/mobile/Documents/Workspace/troll_py_out.txt'\n"
-        "if _d:\n"
-        "    _f = open(_d, 'w', encoding='utf-8', errors='replace')\n"
+        "_d = os.environ.get('TROLL_PY_OUT', '')\n"
+        "if not _d:\n"
+        "    _d = os.path.join(os.environ.get('TMPDIR', '/tmp'), 'troll_py_out.txt')\n"
+        "try:\n"
+        "    _f = open(_d, 'w', encoding='utf-8', errors='replace', buffering=1)\n"
         "    sys.stdout = _f\n"
         "    sys.stderr = _f\n"
-        "    os.write(1, b'[PY-BIND-FILE]\\n')\n"   // fd1 可能无效，写失败不致命（文件重定向已接管）
-        "else:\n"
-        "    sys.stdout = sys.stderr = open(os.devnull, 'w')\n");
+        "except Exception as _e:\n"
+        "    try:\n"
+        "        sys.stdout = sys.stderr = open(os.devnull, 'w')\n"
+        "    except Exception:\n"
+        "        pass\n");
     diag(bind_rc == 0 ? "bind PyRun ok" : "bind PyRun FAIL (rc != 0)");
-    if (PyErr_Occurred()) { PyErr_Print(); PyErr_Clear(); diag("cleared bind PyErr"); }
+    if (bind_rc != 0) { PyErr_Print(); PyErr_Clear(); diag("bind PyErr printed"); }
 
     int rc = 0;
     if (show_version) {
@@ -164,12 +174,29 @@ int main(int argc, char **argv) {
         else { Py_DECREF(mod); diag("module import ok"); }
         if (PyErr_Occurred()) { PyErr_Clear(); }
     } else if (script) {
-        FILE *fp = fopen(script, "rb");
+        // v8（P1-4）：解析真实路径（/var 是软链；父进程可见 ≠ 子进程可见），并输出 errno 原文
+        char resolved[PATH_MAX];
+        const char *sp = script;
+        if (realpath(script, resolved)) {
+            sp = resolved;
+        } else {
+            char alt[PATH_MAX];
+            if (strncmp(script, "/var/", 5) == 0) {
+                snprintf(alt, sizeof alt, "/private%s", script);
+                if (realpath(alt, resolved)) { sp = resolved; }
+            } else if (strncmp(script, "/private/var/", 13) == 0) {
+                snprintf(alt, sizeof alt, "%s", script + 8);
+                if (realpath(alt, resolved)) { sp = resolved; }
+            }
+        }
+        FILE *fp = fopen(sp, "rb");
         if (!fp) {
-            fprintf(stderr, "python3: can't open file '%s': No such file or directory\n", script);
+            fprintf(stderr, "python3: can't open file '%s' (resolved '%s'): %s (errno=%d)\n",
+                    script, sp, strerror(errno), errno);
             diag("script open FAIL");
             rc = 2;
         } else {
+            if (sp != script) { diag("script resolved via realpath"); }
             rc = PyRun_AnyFileExFlags(fp, script, 1, NULL);
             diag(rc == 0 ? "script PyRun ok" : "script PyRun FAIL");
             if (PyErr_Occurred()) { PyErr_Print(); PyErr_Clear(); }

@@ -160,17 +160,19 @@ enum ToolchainSigner {
     }
 
     /// 根据对照实验结果给出结论。
+    /// v8（P0-3）：verdict 只看内置二进制；系统路径缺失（/usr/bin/true 在 iOS 本来就不存在）
+    /// 不能作为「spawn 被拦截」的证据。旧实现据此断言"整个 spawn 被拦截"，把模型带偏。
     static func probeVerdict(_ probe: [[String: Any]]) -> String {
-        func ok(_ name: String) -> Bool {
-            probe.first { ($0["target"] as? String) == name }?["spawn_ok"] as? Bool == true
+        let bundled = probe.filter { (($0["target"] as? String) ?? "").hasPrefix("bundled_") }
+        guard !bundled.isEmpty else { return "未找到内置二进制探针结果" }
+        let ok = bundled.filter { ($0["spawn_ok"] as? Bool) == true }.count
+        if ok == bundled.count {
+            return "内置二进制可执行 \(ok)/\(bundled.count)；系统路径缺失属 iOS 常态，不影响功能"
         }
-        if !ok("system_true") {
-            return "连 /usr/bin/true 都起不来：整个 spawn 被环境拦截（不是签名问题），只能从越狱环境侧解决。"
+        if ok > 0 {
+            return "内置二进制部分可执行 \(ok)/\(bundled.count)；失败项见 spawn_probe（多为签名/架构）"
         }
-        if !ok("bundled_ldid") {
-            return "系统二进制能跑、自带的起不来：问题在自带二进制的签名（EBADEXEC），需要重签。"
-        }
-        return "spawn 通道正常，签名器可执行。"
+        return "内置二进制全部无法执行（\(bundled.count) 个）"
     }
 
     // MARK: - 自签
@@ -244,15 +246,15 @@ enum ToolchainSigner {
 
         let probe = spawnProbe()
         let verdict = probeVerdict(probe)
-        var advice = ""
+        // v8（P0-3）：advice 只在有确证时输出（签名器不可用 / 真的补签过），
+        // 不再出现「repaired 为空却断言补签失败」这种自相矛盾。
+        var advice: String? = nil
         if !signerRunnable {
             advice = "自带 ldid 跑不起来。" + verdict
-        } else if !broken.isEmpty && repaired.isEmpty {
-            advice = "签名器可用但补签失败：App bundle 通常只读，需要在打包阶段（CI）完成签名。"
-        } else if !broken.isEmpty {
+        } else if !repaired.isEmpty {
             advice = "已补签 \(repaired.count) 个工具，重启 App 后重新跑 diagnose spawn 验证。"
-        } else {
-            advice = "全部工具已带签名与 entitlements；若仍 errno 85，则是 rootHide/TrollStore 的签名身份不匹配，不是文件问题。"
+        } else if broken.isEmpty {
+            advice = nil
         }
 
         let report: [String: Any] = [
@@ -264,7 +266,9 @@ enum ToolchainSigner {
             "count": items.count,
             "broken": broken,
             "repaired": repaired,
-            "advice": advice,
+            "advice": advice as Any,
+            // v8（P2-6）：识别同名但能力被裁剪的壳二进制（如只读 sqlite3）
+            "shims": ShimDetector.scan(names: ["sqlite3", "plutil", "jq", "cstool"]),
             "items": items,
         ]
 
