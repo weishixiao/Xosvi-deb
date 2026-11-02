@@ -6,7 +6,7 @@ import UIKit
 //   device.* → DeviceExecTool（委托调用 DeviceInfoTool/DeviceProbeTool 等）
 
 final class DeviceInfoTool: MCPTool {
-    let definition = ToolDefinition(name: "device.info", summary: "Get device info: iOS version, iPhone model, memory/storage, battery, Xosvi version, workspace path. Use for: check what iOS version, know device specs, find workspace path. Don't use for: spoof/change device info (use device.fake), wipe keychain (use device.keychain_wipe). Example: user says 'what model is my phone' → get device info.", verified: true, category: "device")
+    let definition = ToolDefinition(name: "device.info", summary: "Get device info: iOS version, iPhone model, memory/storage, battery, Xosvi version, workspace path. Use for: check what iOS version, know device specs, find workspace path. Don't use for: wipe keychain (use device.keychain_wipe). Example: user says 'what model is my phone' → get device info.", verified: true, category: "device")
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         [
@@ -451,9 +451,9 @@ final class ArtifactExecTool: MCPTool {
 final class DeviceExecTool: MCPTool {
     let definition = ToolDefinition(
         name: "device",
-        summary: "Device info & identity spoofing. Subcommands: info / probe / fake / restore / advertising / idfv / snapshot. fake spoofs device identity, restore reverts, snapshot captures state. App management use app.*.",
+        summary: "Device info & snapshot. Subcommands: info / probe / snapshot. info=specs, probe=environment/capabilities, snapshot=health. App management use app.*.",
         parameters: [
-            "command": "Subcommand: info / probe / fake / restore / advertising / idfv / snapshot"
+            "command": "Subcommand: info / probe / snapshot"
         ],
         verified: true, category: "device", annotations: .destructiveSystem, cache: ToolCachePolicy.none)
     
@@ -471,23 +471,11 @@ final class DeviceExecTool: MCPTool {
         case "probe":
             return try DeviceProbeTool().invoke([:])
             
-        case "fake":
-            return try DeviceFakeTool().invoke([:])
-            
-        case "restore":
-            return try DeviceRestoreTool().invoke([:])
-
-        case "advertising":
-            return try AdvertisingTool().invoke([:])
-
-        case "idfv":
-            return try IdfvTool().invoke([:])
-
         case "snapshot":
             return try DeviceSnapshotTool().invoke([:])
 
         default:
-            throw MCPError.invalidParams("Unknown command: \(command). Available: info/probe/fake/restore/advertising/idfv/snapshot")
+            throw MCPError.invalidParams("Unknown command: \(command). Available: info/probe/snapshot")
         }
     }
 }

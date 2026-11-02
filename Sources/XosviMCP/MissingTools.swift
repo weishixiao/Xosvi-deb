@@ -72,7 +72,7 @@ final class ReminderScheduleRecurringTool: MCPTool {
 // MARK: - 设备快照 (电池/存储/系统）
 
 final class DeviceSnapshotTool: MCPTool {
-    let definition = ToolDefinition(name: "device.snapshot", summary: "Quick device status snapshot: battery level, memory usage, disk space, iOS version. Use for: check device health, see how much free space, monitor performance. Don't use for: detailed device info (use device.info), spoof device info (use device.fake). Example: user says 'how much memory is left' → device snapshot.", annotations: .readOnlyLocal, cache: ToolCachePolicy.short)
+    let definition = ToolDefinition(name: "device.snapshot", summary: "Quick device status snapshot: battery level, memory usage, disk space, iOS version. Use for: check device health, see how much free space, monitor performance. Don't use for: detailed device info (use device.info). Example: user says 'how much memory is left' → device snapshot.", annotations: .readOnlyLocal, cache: ToolCachePolicy.short)
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         UIDevice.current.isBatteryMonitoringEnabled = true
         let battery = UIDevice.current.batteryLevel

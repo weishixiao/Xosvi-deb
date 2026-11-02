@@ -1,5 +1,5 @@
 {
-  "count": 169,
+  "count": 165,
   "names": [
     "app",
     "app.decrypt",
@@ -57,14 +57,10 @@
     "debug.dump_conversation",
     "debug.dump_conversations",
     "device",
-    "device.advertising",
-    "device.fake",
-    "device.idfv",
     "device.info",
     "device.keychain_wipe",
     "device.probe",
     "device.refresh_container",
-    "device.restore",
     "device.snapshot",
     "diagnose",
     "diagnose.crash",
@@ -620,30 +616,6 @@
       "requires_trollstore": false,
       "verified": true
     },
-    "device.advertising": {
-      "category": "device",
-      "file": "AdvancedTools.swift",
-      "remote_only": false,
-      "requires_jailbreak": false,
-      "requires_trollstore": false,
-      "verified": true
-    },
-    "device.fake": {
-      "category": "device",
-      "file": "AdvancedTools.swift",
-      "remote_only": false,
-      "requires_jailbreak": false,
-      "requires_trollstore": false,
-      "verified": true
-    },
-    "device.idfv": {
-      "category": "device",
-      "file": "AdvancedTools.swift",
-      "remote_only": false,
-      "requires_jailbreak": false,
-      "requires_trollstore": false,
-      "verified": true
-    },
     "device.info": {
       "category": "device",
       "file": "Tools.swift",
@@ -670,14 +642,6 @@
     },
     "device.refresh_container": {
       "category": "",
-      "file": "AdvancedTools.swift",
-      "remote_only": false,
-      "requires_jailbreak": false,
-      "requires_trollstore": false,
-      "verified": true
-    },
-    "device.restore": {
-      "category": "device",
       "file": "AdvancedTools.swift",
       "remote_only": false,
       "requires_jailbreak": false,

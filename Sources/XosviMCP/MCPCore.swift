@@ -573,8 +573,7 @@ public final class ToolRegistry: ObservableObject {
     //   状态类 inject/app/rescue/engine —— 写操作成功后立刻读 status 必须看到新状态。
     // v7.16.12：把 root 加进来——root 是「守护进程状态」查询，缓存 5 分钟会让
     // 刚 kickstart 完的 daemon 仍报 daemon_alive:false，排障时把人带沟里。
-    // v8（PR-A2）：删除两个从未命中注册表的死条目（"device.fake" / "injection.mem"——
-    // 真实工具名是 device + command:fake、inject；前缀匹配对子命令不生效）。
+    // v8（PR-A2）：删除两个从未命中注册表的死条目（子命令不是工具名，前缀匹配不生效）。
     private var cacheBypassPrefixes: [String] = ["workspace", "browser", "control",
                                                  "web", "inject", "app", "rescue", "engine",
                                                  "root"]
@@ -1526,7 +1525,7 @@ public final class ToolRegistry: ObservableObject {
                 WorkflowManager.shared.addStep(name: originalName, tool: originalName)
 
                 // v3.0.90：结果缓存——5 分钟内同样的调用直接返回缓存
-                // v4.3.26：有状态工具 (web./workspace/browser./control./device.fake/injection.mem）绕过缓存；
+                // v4.3.26：有状态工具（web./workspace/browser./control.）绕过缓存；
                 // 其余工具连续第 2 次命中缓存也强制重取 (命中计数归零后真实执行)。
                 let cacheKey = callKey(name: originalName, params: params)
                 var cached: [String: Any]? = nil
@@ -1957,13 +1956,13 @@ public final class ToolRegistry: ObservableObject {
         // v3.1.38: rescue 大工具 + 子命令 (合并 3 个 rescue.* 工具）
         register(RescueExecTool())
         // v3.1.38: 删旧的 3 个 rescue.* 工具 (已合并到 rescue 大工具）
-        // v2.9.90：高级工具组 (类探测/配置化 Hook/设备伪装）
+        // v2.9.90：高级工具组（类探测/配置化 Hook）
         // v3.1.60: 删 ProbeInspectTool / HookApplyTool (已合并到 inject 大工具）
         // v3.1.55: 删旧的 device 工具 (已合并到 DeviceExecTool）
         // v2.9.95：设备指纹 / 容器 / entitlements (对齐 Fuck 工具箱 + 绿盾式）
         // v3.1.59: 删 AppEntitlementsTool (已合并到 app 大工具：app entitlements）
         // v3.1.60: 删 KeychainWipeTool (已合并到 inject 大工具：inject keychain_wipe）
-        // v3.1.62: 删 AdvertisingTool / IdfvTool (已合并到 DeviceExecTool）
+        // v3.1.62: AdvertisingTool / IdfvTool 已删除（设备伪装功能移除）
         // v3.1.41: container 大工具 + 子命令 (合并 3 个 container.* 工具）
         register(ContainerExecTool())
         // v3.1.41: 删旧的 3 个 container.* 工具 (已合并到 container 大工具）

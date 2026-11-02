@@ -167,10 +167,6 @@ struct SettingsView: View {
         var devItems: [SettingsItem] = [
                 // v4.3.53：图标主题功能彻底移除（含 Resources 残留图标文件）。
                 // 侧载环境下动态图标注册可能干扰 MobileIcons 图标缓存（分享面板崩溃嫌疑项）。
-                SettingsItem(title: L10n.t("row_device_fake"),
-                             subtitle: "伪装机型 · 注入生效",
-                             icon: "iphone.gen3.radiowaves.left.and.right", color: .pink,
-                             destination: AnyView(FakeDeviceView())),
                 // v7.16.11：按用户要求删除「工具权限」入口。
                 // 实测它只是工具清单展示（开关早已移除，isEnabled 由白名单决定），
                 // 对用户没有任何可操作项，属纯信息噪音。

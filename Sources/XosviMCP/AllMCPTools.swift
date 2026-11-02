@@ -515,7 +515,7 @@ final class ContactsSearchTool: MCPTool {
 }
 
 final class LocationGetTool: MCPTool {
-    let definition = ToolDefinition(name: "location.get", summary: "Get current GPS location (latitude/longitude). Use for: find where the phone is, location-based tasks. Don't use for: spoof fake location (use device.fake), get device info (use device.info). Example: user says 'where am I now' → get current location.")
+    let definition = ToolDefinition(name: "location.get", summary: "Get current GPS location (latitude/longitude). Use for: find where the phone is, location-based tasks. Don't use for: get device info (use device.info). Example: user says 'where am I now' → get current location.")
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         let mgr = LocationProvider.shared
         // v7.9.8：定位不再常驻，工具调用时才按需取一次（最多等 8 秒）

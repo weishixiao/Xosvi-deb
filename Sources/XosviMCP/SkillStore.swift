@@ -104,7 +104,7 @@ final class SkillStore {
             ],
             [
                 "name": "设备信息与定位",
-                "summary": "get device info, probe, fake/restore location, advertising ID, IDFV. Use for: device details, spoofing location, manage device state. Example: user wants to check device info or fake location.",
+                "summary": "get device info, probe, snapshot, fake/restore location. Use for: device details, manage device state. Example: user wants to check device info or fake location.",
                 "instruction": "当用户要求查看设备信息/模拟定位/设备状态时执行本技能：\n## 适用范围\n- 设备信息查询、定位模拟/还原、广告标识、设备探测\n## 工作流\n1. 用 `device` / `location`；参数参考 对应工具的 description/variants\n2. 查询：`device` command:info（设备信息）、`location` command:get（当前定位）\n3. 需要模拟定位：先记录当前状态，再设置新位置；用完可还原\n4. 涉及广告标识/IDFV 时按工具子命令操作\n## 输出要求\n- 给出查询结果（设备/定位）或修改前后对比\n## 禁止事项\n- 模拟定位前先记录原状态，便于还原\n- 不擅自改设备全局配置，围绕用户明确要求操作\n## 自检\n- [ ] 是否记录了修改前状态？ [ ] 是否验证了修改生效？",
             ],
             [

@@ -43,7 +43,7 @@ final class RemoteTerminalServer {
         "injection.", "hook.", "cleanup.execute", "workspace.cleanup", "system.cleanup_execute",
         "artifact", "artifact", "shell.exec", "shell.exec", "shell.exec", "shell.exec", "shell.exec",
         "fs.container", "container.", "app.decrypt", "app.reinstall", "app.install", "app.uninstall",
-        "device.fake.", "device.restore", "memory.write", "network.capture", "network.redirect",
+        "memory.write", "network.capture", "network.redirect",
         "automation.run", "cron.", "webhooks.",
         "ui.tap", "ui.swipe", "ui.long_press", "control.",
     ]

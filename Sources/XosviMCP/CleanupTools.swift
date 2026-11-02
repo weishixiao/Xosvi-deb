@@ -42,11 +42,6 @@ final class CleanupScanner {
                                  detail: "按 keychain-access-groups 删除该 App 的密码/令牌/密钥",
                                  bytes: 0, risk: .warn, affected: "清空该 App 登录态，需重新登录"))
 
-        // 3. 广告标识符 (警告——IDFA）
-        items.append(CleanupItem(id: "adid", label: "刷新广告标识符 (IDFA)",
-                                 detail: "调用私有 API 尝试重置；iOS 14+ 受系统限制时仅提示",
-                                 bytes: 0, risk: .warn, affected: "广告符变化，游戏拉新/广告追踪可能重置"))
-
         // 4. 数据容器 (危险——整体重置，可恢复）
         items.append(CleanupItem(id: "container", label: "刷新数据容器 (重置 App 数据，可恢复)",
                                  detail: "容器改名备份 → 杀进程 → 系统重建空容器；备份可 restore 恢复",
@@ -77,12 +72,6 @@ final class CleanupScanner {
                 } else if let out = try? KeychainWipeTool().invoke(["bundle_id": bundleId]) {
                     r["ok"] = true; r["result"] = out
                 } else { r["ok"] = false; r["error"] = "keychain cleanup failed" }
-            case "adid":
-                if dryRun {
-                    r["ok"] = true; r["result"] = ["dry_run": true, "note": "will try to refresh IDFA"]
-                } else if let out = try? AdvertisingTool().invoke(["action": "reset"]) {
-                    r["ok"] = true; r["result"] = out
-                } else { r["ok"] = false; r["error"] = "IDFA refresh failed" }
             case "container":
                 if dryRun {
                     r["ok"] = true; r["result"] = ["dry_run": true, "note": "will backup container and reset (restorable)"]

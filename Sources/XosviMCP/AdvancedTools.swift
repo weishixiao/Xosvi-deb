@@ -692,7 +692,7 @@ final class CrashReproTool: MCPTool {
 
 }
 
-// MARK: - v2.9.90 高级工具组 (借鉴 Fuck 巨魔工具箱：opainject 内存injected / ProbeEngine 类探测 / FuckEngine 配置化 Hook / 绿盾式设备伪装）
+// MARK: - v2.9.90 高级工具组（opainject 内存注入 / ProbeEngine 类探测 / 配置化 Hook）
 
 // MARK: - 进程/启动辅助
 
@@ -1100,7 +1100,7 @@ final class ProbeInspectTool: MCPTool {
 final class HookApplyTool: MCPTool {
     let definition = ToolDefinition(
         name: "hook.apply",
-        summary: "Apply UI customization hook (change navbar color, show startup alert, log methods). Use for: customize app UI, add startup popup, log specific method calls. Don't use for: memory modification (use memory), device spoofing (use device.fake). Example: user says 'change 小红书 navbar to red' → apply hook config.",
+        summary: "Apply UI customization hook (change navbar color, show startup alert, log methods). Use for: customize app UI, add startup popup, log specific method calls. Don't use for: memory modification (use memory). Example: user says 'change 小红书 navbar to red' → apply hook config.",
         parameters: [
             "bundle_id": "Target App bundle_id (required)",
             "config": "JSON config: navbar color, tint color, startup alert, method log rules",
@@ -1161,158 +1161,6 @@ final class HookApplyTool: MCPTool {
         ]
     }
 }
-
-// MARK: - device.fake / device.restore：设备伪装 (FakeDevice，绿盾式）
-
-final class DeviceFakeTool: MCPTool {
-    let definition = ToolDefinition(
-        name: "device.fake",
-        summary: "Spoof device info (model, iOS version, etc.). Use for: fake device model to bypass device detection, test app on different device. Don't use for: restore real device info (use device.restore), inject dylib (use injection.enable). Mechanism: device disguise is built into ConfigHook.dylib (reads fake_device.json), no separate FakeDevice. Example: user says 'spoof phone as iPhone 16 Pro Max' → fake device.",
-        parameters: [
-            "bundle_id": "Target App bundle_id (required)",
-            "name": "Fake device name (e.g. iPhone 16 Pro Max)",
-            "model": "Fake model (e.g. iPhone)",
-            "model_identifier": "Fake model identifier (e.g. iPhone17,2; some Apps read via sysctl, info only)",
-            "system_version": "Fake iOS version (e.g. 18.0)",
-            "mode": "memory (default, opainject memory injection) / file (legacy file injection, high risk, special use only)"
-        ],
-        verified: true, category: "device")
-
-    func invoke(_ params: [String: Any]) throws -> [String: Any] {
-        guard let bundleId = params["bundle_id"] as? String, !bundleId.isEmpty else {
-            throw MCPError.invalidParams("bundle_id required")
-        }
-        guard let app = AppCatalog.find(bundleId) else {
-            return ["error": "app not found: \(bundleId)"]
-        }
-        var config: [String: Any] = [:]
-        if let name = params["name"] as? String, !name.isEmpty { config["name"] = name }
-        if let model = params["model"] as? String, !model.isEmpty { config["model"] = model }
-        if let mi = params["model_identifier"] as? String, !mi.isEmpty { config["modelIdentifier"] = mi }
-        if let sv = params["system_version"] as? String, !sv.isEmpty { config["systemVersion"] = sv }
-        guard !config.isEmpty else {
-            throw MCPError.invalidParams("provide at least one spoof field (name/model/model_identifier/system_version)")
-        }
-        guard ProcessHelper.writeWorkspaceConfig("fake_device.json", dict: config) else {
-            return ["error": "failed to write fake_device.json (workspace permission)"]
-        }
-
-        let mode = (params["mode"] as? String) ?? "memory"
-        if mode == "file" {
-            // 旧式文件注入：保留但明确标注风险
-            let dylib = ProcessHelper.tweakPath("ConfigHook.dylib") ?? ""
-            guard !dylib.isEmpty else { return ["error": "built-in ConfigHook.dylib does not exist"] }
-            let r = try InjectionManager.shared.enable(bundleId: bundleId, dylibSourcePath: dylib)
-            if (r["status"] as? String) != "injected" {
-                return ["error": "ConfigHook file injection failed", "detail": r]
-            }
-            let exe = ProcessHelper.executableName(for: app)
-            _ = InjectionManager.shared.runAsRoot("killall", args: ["killall", "-9", exe])
-            _ = ProcessHelper.launchApp(bundleId: bundleId)
-            AuditLog.shared.log("device.fake.file", detail: "\(bundleId) \(config)")
-            return [
-                "status": "faked",
-                "mode": "file",
-                "bundle_id": bundleId,
-                "app": app.name,
-                "config": config,
-                "config_path": "/var/mobile/Documents/Workspace/fake_device.json",
-                "note": "file injection applied (App binary modified, backed up). Use device.restore to revert"
-            ]
-        }
-
-        // 默认：内存injected (opainject）——不碰任何文件
-        let exeName = ProcessHelper.executableName(for: app)
-        let dylib = ProcessHelper.tweakPath("ConfigHook.dylib") ?? ""
-        guard !dylib.isEmpty, FileManager.default.fileExists(atPath: dylib) else {
-            return ["error": "built-in ConfigHook.dylib does not exist", "hint": "check tweaks/ConfigHook.dylib inside the IPA"]
-        }
-        var pid = ProcessHelper.pidOf(executableName: exeName)
-        if pid == nil {
-            _ = ProcessHelper.launchApp(bundleId: bundleId)
-            for _ in 0..<12 {
-                usleep(500_000)
-                pid = ProcessHelper.pidOf(executableName: exeName)
-                if pid != nil { break }
-            }
-        }
-        guard let targetPid = pid else {
-            return ["error": "target App failed to launch, cannot memory-inject", "hint": "open target App manually then retry"]
-        }
-        let (exit, output) = InjectionManager.shared.injectDylib(pid: targetPid, dylib: dylib)
-        let ok = output.contains("dlopen succeeded") || (exit == 0 && output.contains("handle"))
-        AuditLog.shared.log("device.fake.mem", detail: "\(bundleId) pid=\(targetPid) ok=\(ok)")
-        return [
-            "status": ok ? "faked" : "failed",
-            "mode": "memory",
-            "bundle_id": bundleId,
-            "app": app.name,
-            "pid": targetPid,
-            "config": config,
-            "config_path": "/var/mobile/Documents/Workspace/fake_device.json",
-            "exit": exit,
-            "output": output,
-            "note": ok
-                ? "内存注入OK：设备伪装(ConfigHook)已在进程内生效，未改动任何文件；App 重启后自动还原真实设备"
-                : "opainject failed (见 output)。App 文件未被动过，无需恢复"
-        ]
-    }
-}
-
-final class DeviceRestoreTool: MCPTool {
-    let definition = ToolDefinition(
-        name: "device.restore",
-        summary: "Restore real device info. Use for: undo device spoofing after testing. Don't use for: start spoofing (use device.fake), check device info (use device.info). Example: user says 'restore real device info' → restore device.",
-        parameters: ["bundle_id": "Target app bundle ID"], verified: true, category: "device")
-    func invoke(_ params: [String: Any]) throws -> [String: Any] {
-        guard let bundleId = params["bundle_id"] as? String, !bundleId.isEmpty else {
-            throw MCPError.invalidParams("bundle_id required")
-        }
-        let removed = ProcessHelper.removeWorkspaceConfig("fake_device.json")
-        guard let app = AppCatalog.find(bundleId) else {
-            return ["status": "restored", "bundle_id": bundleId, "config_removed": removed,
-                    "injection_removed": false, "note": "App not found; fake_device.json deleted"]
-        }
-        let exe = ProcessHelper.executableName(for: app)
-        // 检查是否为文件injected (旧版遗留）
-        let injected = ((InjectionManager.shared.inspect(bundleId)["injected"] as? Bool) ?? false)
-        var injectionRemoved = false
-        var restoreError = ""
-        if injected {
-            do {
-                let r = try InjectionManager.shared.disable(bundleId: bundleId)
-                injectionRemoved = ((r["status"] as? String) == "reverted") || !((r["restored_from_backup"] as? [String]) ?? []).isEmpty
-                if !injectionRemoved {
-                    restoreError = "disable 未确认还原 (见 injection.disable 输出)"
-                }
-            } catch {
-                restoreError = "恢复failed：\(error.localizedDescription)"
-                AuditLog.shared.log("device.restore.error", detail: "\(bundleId) \(restoreError)")
-            }
-        }
-        // 内存注入：杀进程即还原；文件注入：杀进程确保新状态生效
-        _ = InjectionManager.shared.runAsRoot("killall", args: ["killall", "-9", exe])
-        _ = ProcessHelper.launchApp(bundleId: bundleId)
-        AuditLog.shared.log("device.restore", detail: "\(bundleId) injected=\(injected)")
-        if !restoreError.isEmpty {
-            return ["status": "error", "bundle_id": bundleId, "config_removed": removed,
-                    "injection_removed": injectionRemoved, "error": restoreError,
-                    "note": "fake_device.json deleted and App restarted; old file injection uninstall failed, use Emergency Restore (one-click full recovery) in the Inject and Automation page"]
-        }
-        return [
-            "status": "restored",
-            "bundle_id": bundleId,
-            "config_removed": removed,
-            "injection_removed": injectionRemoved,
-            "mode": injected ? "file" : "memory",
-            "note": injected
-                ? "已删除 fake_device.json、卸载旧文件注入并重启 App"
-                : "已删除 fake_device.json 并重启 App (内存注入随进程结束自动消失，零残留)"
-        ]
-    }
-}
-
-// MARK: - v2.9.95 设备指纹 / 容器 / entitlements 工具 (对齐 Fuck 工具箱 + 绿盾式）
 
 /// 查看 App entitlements (ldid -e 解析）
 final class AppEntitlementsTool: MCPTool {
@@ -1547,55 +1395,6 @@ final class KeychainWipeTool: MCPTool {
 
 // v2.9.312：device.keychain_reset 已删除——清空整机钥匙串太危险，
 // 会导致所有 App 密码/登录态丢失。保留 device.keychain_wipe (按指定 App 清理）。
-
-/// 广告标识符 (IDFA）读取 / 刷新
-final class AdvertisingTool: MCPTool {
-    let definition = ToolDefinition(
-        name: "device.advertising",
-        summary: "Read or reset IDFA (advertising identifier). Use for: check ad tracking status, reset ad ID for fresh identity. Don't use for: device spoofing (use device.fake), wipe app keychain (use device.keychain_wipe). Example: user says 'reset advertising ID' → reset IDFA.",
-        parameters: ["action": "read (show current) / reset (get new ID)"],
-        verified: true, category: "device")
-    func invoke(_ params: [String: Any]) throws -> [String: Any] {
-        let action = (params["action"] as? String)?.lowercased() ?? "read"
-        var result: [String: Any] = [:]
-        let m = ASIdentifierManager.shared()
-        result["idfa"] = m.advertisingIdentifier.uuidString
-        result["tracking_enabled"] = m.isAdvertisingTrackingEnabled
-        result["tracking_limited"] = !m.isAdvertisingTrackingEnabled
-        if action == "reset" {
-            let any = m as AnyObject
-            let sel = NSSelectorFromString("resetIdentifier")
-            if any.responds(to: sel) {
-                any.perform(sel)
-                result["reset"] = "resetIdentifier called"
-                result["idfa_after"] = ASIdentifierManager.shared().advertisingIdentifier.uuidString
-            } else {
-                result["reset"] = "resetIdentifier not supported on this system (public API removed on iOS14+)"
-                result["hint"] = "IDFA refresh restricted on iOS14+"
-            }
-        }
-        return result
-    }
-}
-
-/// 读取设备/App 的 identifierForVendor
-final class IdfvTool: MCPTool {
-    let definition = ToolDefinition(
-        name: "device.idfv",
-        summary: "Read IDFV (identifier for vendor) - device fingerprint. Use for: check device fingerprint, see if app can track you. Don't use for: reset IDFV (no public API, delete app instead), spoof device model (use device.fake). Example: user says 'what is my IDFV' → read IDFV.",
-        parameters: ["bundle_id": "Optional: target app bundle ID"],
-        verified: true, category: "device")
-    func invoke(_ params: [String: Any]) throws -> [String: Any] {
-        let sys = UIDevice.current.identifierForVendor?.uuidString ?? "N/A"
-        var extra: [String: Any] = ["system_idfv": sys]
-        if let bid = params["bundle_id"] as? String, !bid.isEmpty {
-            extra["requested_bundle_id"] = bid
-            extra["app_idfv"] = "(read inside target App process; device-level IDFV above)"
-        }
-        extra["hint"] = "IDFV has no public refresh API: system decides after App deletion; usually unchanged on backup restore"
-        return extra
-    }
-}
 
 /// 刷新 (重置）指定 App 数据容器——数据保留在备份目录，可 restore 恢复
 final class RefreshContainerTool: MCPTool {
