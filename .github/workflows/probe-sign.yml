@@ -1,0 +1,47 @@
+name: probe-sign
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: macos-14
+    steps:
+      - name: Download latest tipa
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p /tmp/p
+          gh release download latest --pattern 'Xosvi.tipa' --dir /tmp/p --repo "$GITHUB_REPOSITORY" --clobber
+          ls -la /tmp/p
+
+      - name: Probe entitlements before/after -Cadhoc
+        run: |
+          set -x
+          cd /tmp/p && unzip -q Xosvi.tipa
+          B=Payload/Xosvi.app/Xosvi
+          ls -la "$B"
+          echo "===== 1) 现状：codesign -d ====="
+          codesign -dv "$B" 2>&1 | head -6 || true
+          codesign -d --entitlements :- "$B" > /tmp/before.txt 2>&1 || true
+          echo "before keys: $(grep -c '<key>' /tmp/before.txt || true)"
+          head -5 /tmp/before.txt || true
+
+          echo "===== 2) 人为把 flags 打成 0（模拟当前 CI 产物）后再用 -Cadhoc 重签 ====="
+          ldid -e "$B" > /tmp/ent.plist 2>/dev/null || true
+          echo "ldid -e keys: $(grep -c '<key>' /tmp/ent.plist || true)"
+
+          cp "$B" /tmp/plain
+          ldid -S/tmp/ent.plist /tmp/plain
+          echo "--- 无 -Cadhoc 时 Security 能不能读 ---"
+          codesign -d --entitlements :- /tmp/plain > /tmp/a.txt 2>&1 || true
+          echo "no-adhoc keys: $(grep -c '<key>' /tmp/a.txt || true)"; head -3 /tmp/a.txt || true
+
+          cp "$B" /tmp/adhoc
+          ldid -Cadhoc -S/tmp/ent.plist /tmp/adhoc
+          echo "--- 带 -Cadhoc 时 Security 能不能读 ---"
+          codesign -d --entitlements :- /tmp/adhoc > /tmp/b.txt 2>&1 || true
+          echo "adhoc keys: $(grep -c '<key>' /tmp/b.txt || true)"
+          grep -E 'no-sandbox|platform-application|container-manager|task_for_pid|pmap_cs' /tmp/b.txt || true
+          echo "--- codesign -dv 签名信息 ---"
+          codesign -dv /tmp/adhoc 2>&1 | head -8 || true
