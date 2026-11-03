@@ -15,6 +15,9 @@ jobs:
           gh release download latest --pattern 'Xosvi.tipa' --dir /tmp/p --repo "$GITHUB_REPOSITORY" --clobber
           ls -la /tmp/p
 
+      - name: Install ldid
+        run: brew install ldid-procursus 2>/dev/null || brew install ldid
+
       - name: Probe entitlements before/after -Cadhoc
         run: |
           set -x
