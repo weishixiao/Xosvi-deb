@@ -80,6 +80,20 @@ def _cs_blob(data, off):
     return None, {}
 
 
+def _cd_flags(data, off):
+    """读取 CodeDirectory 的 flags（0x2=CS_ADHOC）。没有 ADHOC 位时
+    Security.framework 会判签名无效、entitlements 读成空——TrollStore 就是这么沙盒化的。"""
+    sb, slots = _cs_blob(data, off)
+    if sb is None or 0 not in slots:
+        return None
+    cd = slots[0][1]
+    try:
+        # _cs_blob 已剥掉 8 字节 blob 头，cd 从 version 开始 → flags 在 4:8
+        return struct.unpack(">I", cd[4:8])[0]
+    except Exception:
+        return None
+
+
 def parse_binary(path):
     data = open(path, "rb").read()
     res = []
@@ -100,6 +114,7 @@ def parse_binary(path):
                     ent[k] = "?"
         der = 7 in slots and slots[7][0] == CSMAGIC_DER_ENTITLEMENTS
         res.append({"path": path, "offset": off, "entitlements": ent, "der": der,
+                    "flags": _cd_flags(data, off),
                     "slots": sorted(slots.keys())})
     return res
 
@@ -153,7 +168,16 @@ def main(argv):
                 ok = False
                 continue
             ent = r["entitlements"] or {}
-            print(f"\n=== {name} slice@{r['offset']}  slots={r['slots']}  键数={len(ent)}  DER={r['der']} ===")
+            fl = r.get("flags")
+            adhoc = bool(fl is not None and (fl & 0x2))
+            flagtxt = "None" if fl is None else f"0x{fl:x}"
+            print(f"\n=== {name} slice@{r['offset']}  slots={r['slots']}  键数={len(ent)}  "
+                  f"DER={r['der']}  ADHOC={'yes' if adhoc else 'NO'} (flags={flagtxt}) ===")
+            if not adhoc:
+                print("  FAIL CodeDirectory 缺 CS_ADHOC(0x2) —— Security/TrollStore 会把整份签名判为无效，"
+                      "entitlements 读成空 → 装成沙盒 App（用 ldid -Cadhoc 重签）")
+                missing_total.append(f"{name}:CS_ADHOC")
+                ok = False
             for k in required:
                 hit = k in ent
                 print(f"  {'OK  ' if hit else 'MISS'} {k}" + (f" = {ent[k]!r}" if hit else ""))
