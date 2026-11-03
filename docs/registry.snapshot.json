@@ -1,5 +1,5 @@
 {
-  "count": 165,
+  "count": 164,
   "names": [
     "app",
     "app.decrypt",
@@ -72,7 +72,6 @@
     "file",
     "gateway",
     "git",
-    "health.summary",
     "hook.apply",
     "inject",
     "injection.diagnose",
@@ -731,14 +730,6 @@
     "git": {
       "category": "system",
       "file": "GitNativeTool.swift",
-      "remote_only": false,
-      "requires_jailbreak": false,
-      "requires_trollstore": false,
-      "verified": false
-    },
-    "health.summary": {
-      "category": "diagnose",
-      "file": "HealthSummaryTool.swift",
       "remote_only": false,
       "requires_jailbreak": false,
       "requires_trollstore": false,
