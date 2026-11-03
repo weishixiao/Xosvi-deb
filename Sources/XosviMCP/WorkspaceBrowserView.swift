@@ -27,6 +27,8 @@ struct WorkspaceBrowserView: View {
     @State private var toast: String?
     // v6.4.4：上传用的 document picker delegate（需强引用，否则点击无回调）
     @State private var importDelegate: WorkspaceImportDelegate?
+    // v9：顶部双 Tab——文件 / 工具（ZStack 保活，切换不销毁另一侧）
+    @State private var tab = 0
 
     struct FileItem: Identifiable, Hashable {
         let id = UUID()
@@ -205,6 +207,97 @@ struct WorkspaceBrowserView: View {
             )
             .padding(.vertical, 8)
 
+            // v9：文件 / 工具 双 Tab（对应 Kelivo WorkspaceDetailTabs）
+            WorkspaceDetailTabs(index: $tab)
+
+            WorkspaceTabsContainer(tab: $tab,
+                                   files: filesPane,
+                                   tools: WorkspaceToolsPane())
+        }
+        .background(DoubaoTheme.bg)
+        .navigationTitle(L10n.t("page_workspace"))
+        .deepseekPage()
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItemGroup(placement: .navigationBarLeading) {
+                if let onClose = onClose {
+                    Button("完成") { onClose() }
+                }
+                Button { goUp() } label: { Label("上一级", systemImage: "arrow.up") }
+                    .disabled(currentPath == Workspace.root.path || tab != 0)
+            }
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                Button { importFiles() } label: { Label("上传", systemImage: "square.and.arrow.down") }
+                    .disabled(tab != 0)
+                Button { showNewFolder = true } label: { Label("新建", systemImage: "folder.badge.plus") }
+                    .disabled(tab != 0)
+            }
+        }
+        .onAppear { reload() }
+        .onChange(of: currentPath) { _ in reload() }
+        .sheet(item: $previewItem) { item in
+             FilePreviewView(item: item)
+        }
+        .alert("删除确认", isPresented: Binding(get: { confirmDelete != nil }, set: { if !$0 { confirmDelete = nil } })) {
+            Button("取消", role: .cancel) { confirmDelete = nil }
+            Button("删除", role: .destructive) {
+                if let item = confirmDelete {
+                    do {
+                        try FileManager.default.removeItem(atPath: item.path)
+                        toast = "已删除 \(item.name)"
+                    } catch {
+                        toast = "删除失败：\(error.localizedDescription)"
+                    }
+                    confirmDelete = nil
+                    reload()
+                }
+            }
+        } message: {
+            Text("确定删除 \(confirmDelete?.name ?? "")？此操作不可恢复。")
+        }
+        .alert("新建文件夹", isPresented: $showNewFolder) {
+            TextField("名称", text: $newFolderName)
+            Button("创建") {
+                let name = newFolderName.trimmingCharacters(in: .whitespaces)
+                if !name.isEmpty {
+                    let dir = currentPath + "/" + name
+                    do {
+                        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+                        toast = "已创建 \(name)"
+                    } catch {
+                        toast = "创建失败：\(error.localizedDescription)"
+                    }
+                    newFolderName = ""
+                    reload()
+                }
+            }
+            Button("取消", role: .cancel) { newFolderName = "" }
+        }
+        // v4.3.41：文件分享统一走系统分享页（SharePresenter.present）
+        .overlay(alignment: .bottom) {
+            if let toast = toast {
+                Text(toast)
+                    .font(.caption)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Color(.systemGray5).opacity(0.95))
+                    .clipShape(Capsule())
+                    .padding(.bottom, 16)
+                    .transition(.opacity)
+                    .onAppear {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+                            withAnimation { self.toast = nil }
+                        }
+                    }
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: toast)
+    }
+
+    /// v9：文件 Tab 的内容（搜索 / 面包屑 / 列表）
+    private var filesPane: some View {
+        VStack(spacing: 0) {
+
             // 搜索
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
@@ -313,89 +406,10 @@ struct WorkspaceBrowserView: View {
                     }
                 }
                 .listStyle(.insetGrouped)
-        .deepseekList()
+                .deepseekList()
                 .refreshable { reload() }
             }
         }
-        .background(DoubaoTheme.bg)
-        .navigationTitle(L10n.t("page_workspace"))
-        .deepseekPage()
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            // v6.4.4：返回上一级（面包屑之外给一个显式按钮）
-            ToolbarItemGroup(placement: .navigationBarLeading) {
-                if let onClose = onClose {
-                    Button("完成") { onClose() }
-                }
-                Button { goUp() } label: { Label("上一级", systemImage: "arrow.up") }
-                    .disabled(currentPath == Workspace.root.path)
-            }
-            ToolbarItemGroup(placement: .navigationBarTrailing) {
-                // v6.4.4：上传——从"文件"App 选文件复制进当前目录
-                Button { importFiles() } label: { Label("上传", systemImage: "square.and.arrow.down") }
-                Button { showNewFolder = true } label: { Label("新建", systemImage: "folder.badge.plus") }
-            }
-        }
-        .onAppear { reload() }
-        .onChange(of: currentPath) { _ in reload() }
-        .sheet(item: $previewItem) { item in
-             FilePreviewView(item: item) 
-        }
-        // v3.0.82: 用 SharePresenter 替代 ShareSheet——修复从 sheet 里再弹 sheet 闪退
-        .alert("删除确认", isPresented: Binding(get: { confirmDelete != nil }, set: { if !$0 { confirmDelete = nil } })) {
-            Button("取消", role: .cancel) { confirmDelete = nil }
-            Button("删除", role: .destructive) {
-                if let item = confirmDelete {
-                    do {
-                        try FileManager.default.removeItem(atPath: item.path)
-                        toast = "已删除 \(item.name)"
-                    } catch {
-                        toast = "删除失败：\(error.localizedDescription)"
-                    }
-                    confirmDelete = nil
-                    reload()
-                }
-            }
-        } message: {
-            Text("确定删除 \(confirmDelete?.name ?? "")？此操作不可恢复。")
-        }
-        .alert("新建文件夹", isPresented: $showNewFolder) {
-            TextField("名称", text: $newFolderName)
-            Button("创建") {
-                let name = newFolderName.trimmingCharacters(in: .whitespaces)
-                if !name.isEmpty {
-                    let dir = currentPath + "/" + name
-                    do {
-                        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-                        toast = "已创建 \(name)"
-                    } catch {
-                        toast = "创建失败：\(error.localizedDescription)"
-                    }
-                    newFolderName = ""
-                    reload()
-                }
-            }
-            Button("取消", role: .cancel) { newFolderName = "" }
-        }
-        // v4.3.41：文件分享统一走系统分享页（SharePresenter.present）
-        .overlay(alignment: .bottom) {
-            if let toast = toast {
-                Text(toast)
-                    .font(.caption)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(Color(.systemGray5).opacity(0.95))
-                    .clipShape(Capsule())
-                    .padding(.bottom, 16)
-                    .transition(.opacity)
-                    .onAppear {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
-                            withAnimation { self.toast = nil }
-                        }
-                    }
-            }
-        }
-        .animation(.easeInOut(duration: 0.2), value: toast)
     }
 
     private var filtered: [FileItem] {

@@ -10,7 +10,9 @@ import UIKit
 
 // MARK: - ① 环境
 
-struct EnvironmentView: View {
+/// v9：环境 Pane——页面内容只写一次，壳（EnvironmentView）只负责路由与返回按钮。
+/// 这是文档「壳 + Pane」结构的落地：以后要做桌面端/多布局，各自包一层壳即可复用本 Pane。
+struct EnvironmentPane: View {
     @ObservedObject private var installer = EnvironmentInstaller.shared
     @State private var booted = false
     @State private var version = ""
@@ -773,5 +775,34 @@ struct GuestFilesystemView: View {
 
     private func join(_ base: String, _ name: String) -> String {
         base == "/" ? "/" + name : base + "/" + name
+    }
+}
+
+
+// MARK: - v9：环境页壳（文档「壳 + Pane」结构）
+
+struct EnvironmentView: View {
+    @Environment(\.presentationMode) private var presentationMode
+
+    var body: some View {
+        // 注意：本页由 SettingsView 的 NavigationStack push 进来，不能再套 CompatNav
+        //（嵌套 NavigationStack 会导致返回按钮/侧滑失效）。
+        EnvironmentPane()
+            .navigationTitle("环境")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        presentationMode.wrappedValue.dismiss()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundColor(.primary)
+                            .frame(width: 32, height: 32)
+                            .contentShape(Rectangle())
+                    }
+                    .accessibilityLabel(Text("返回"))
+                }
+            }
     }
 }

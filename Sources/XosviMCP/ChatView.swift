@@ -501,6 +501,9 @@ struct ChatView: View {
                                              : $0.timestamp < $1.timestamp
             }
         }
+        // v9：跳过已被回填消费的 tool 消息（结果已住在 ToolCallPayload.result 里，
+        // 再显示一遍就是双份；不物理删除——搜索/导出/审计还在用）
+        all = all.filter { !$0.isToolConsumed }
         guard all.count > visibleMessageLimit else { return all }
         return Array(all.suffix(visibleMessageLimit))
     }
@@ -1625,6 +1628,8 @@ struct MessageBubble: View {
     @State private var expandedToolIds: Set<String> = []
     // v8.6：点 [cite:sN] 角标 → 待打开的引用原文（确认后走系统浏览器）
     @State private var pendingCitation: CitationLink?
+    // v9：投影过程区里点工具步骤 → 待展示的完整结果
+    @State private var toolResultRef: ToolStepRef?
     /// v7.6.0：工具结果半屏面板是否打开
     @State private var showToolResult = false
     // v3.4.5：打字机效果——已显示字符数 + 定时器（显示与网络解耦，逐字稳定刷出）
@@ -1749,6 +1754,15 @@ struct MessageBubble: View {
         .onChange(of: message.content) { _ in
             if revealedCount < message.content.count { startTypeTimer() }
         }
+        // v9：投影过程区里点工具步骤 → 完整结果面板
+        .sheet(item: $toolResultRef) { ref in
+            ToolStepResultSheet(name: ref.name,
+                                args: ref.argumentsFull.isEmpty ? ref.argumentsPreview : ref.argumentsFull,
+                                result: ref.resultFull ?? ref.resultPreview,
+                                isError: ref.isError,
+                                isRunning: ref.isRunning,
+                                durationMs: ref.durationMs)
+        }
         // v8.6：点引用角标 → 确认后打开原文（先确认再离开 App，避免误触）
         .alert(item: $pendingCitation) { link in
             Alert(title: Text("打开引用来源"),
@@ -1785,11 +1799,47 @@ struct MessageBubble: View {
     /// v8.6：气泡正文——流式/打字机走轻量 Text，完成态走分块富文本
     @ViewBuilder
     private func bubbleContent(_ shown: String) -> some View {
-        if isStreaming || forceType {
+        // v9：投影器分派（text / steps[reasoning|tool|toolGroup] / image / file）。
+        // 过程区（思考+工具）折叠成一行摘要——这是"层次"的来源，正文永远是视觉焦点。
+        // · 纯正文的流式/打字机 → 轻量 Text（避免 UITextView 高频刷新闪跳）
+        // · 带工具调用的消息 → 必须走投影器，否则过程区不显示，只剩空气泡
+        let hasToolParts = message.effectiveParts.contains {
+            if case .toolCall = $0 { return true }
+            return false
+        }
+        if isUser {
+            CollapsibleUserText(text: shown)
+        } else if (isStreaming || forceType) && !hasToolParts {
             messageTextView(shown)
         } else {
-            messageBlocksView(shown)
+            projectedContent
         }
+    }
+
+    /// v9：投影渲染——后端只认 ProjectedBlock，不再关心 content/toolCalls/thinking 的存储细节
+    private var projectedContent: some View {
+        let urls = isUser ? [:] : CitationRenderer.collectURLs(
+            around: message, in: ConversationStore.shared.currentMessages)
+        // v9：思考块与图片条由气泡自己渲染（带耗时/token 的折叠块、横滑缩略图），
+        // 投影器只负责「工具过程区 + 正文」——否则同一个思考/图片会出现两次。
+        let settings = TimelineSettings(showReasoning: false,
+                                        showToolCalls: true,
+                                        showImages: false)
+        return ProjectedMessageView(
+            msg: message,
+            citedURLs: urls,
+            settings: settings,
+            // v9：流式期间用增量投影结果（只重算尾部块）；完成后走 ProjectedBlockCache
+            precomputed: ConversationStore.shared.streamingBlocks(for: message.id),
+            renderText: { s in
+                // v9：投影出来的每个正文块仍走富文本渲染（保住加粗/行内代码/引用角标/表格）
+                AnyView(richText(s))
+            },
+            onTapTool: { ref in
+                // v9：点过程区里的工具步骤 → 打开完整结果面板
+                toolResultRef = ref
+            }
+        )
     }
 
     private var selectionBadge: some View {
@@ -1802,44 +1852,34 @@ struct MessageBubble: View {
     // v4.4.11：AI 正文行内代码(反引号)→橙色(与"已深度思考"同色)。手动正则解析，
     // 容错流式打字机未闭合反引号(不配对则视为普通文本)。仅 assistant 生效, user 保持纯文本。
     // v4.4.12：正文 markdown 加粗(**xx**)→粗体(semibold)。代码段优先(橙色)，代码段外再匹配粗体。
-    /// v7.4.1：分块渲染——普通文本块 + 黑色代码预览块。
-    /// v8.5：完成态消息走这里（含代码围栏与普通段落统一处理）；
-    /// 流式/打字机期间仍走 messageTextView（轻量 Text，避免 UITextView 高频刷新）。
+    /// v9：正文富文本渲染（投影器的 renderText 注入点）
+    /// 保留分块能力：MessageBlockParser 负责 text/code/list/heading/quote/table 切分。
     @ViewBuilder
-    private func messageBlocksView(_ shown: String) -> some View {
-        let blocks = MessageBlockParser.parse(shown)
-        // v8.5：走 MessageBodyView（列表/标题/引用分块渲染 + 中文行距 + 段落间距 9），
-        // 块间距统一 ChatMetrics.blockGap(10)——不再与段落/消息间距相等。
-        // 正文文本块仍注入现有富文本路径（attributedBody + SelectableText），保住
-        // 加粗/行内代码/[cite:sN] 角标——否则分块渲染会丢掉 v4.5.0 的富文本样式。
+    private func richText(_ s: String) -> some View {
+        let blocks = MessageBlockParser.parse(s)
         let urls = isUser ? [:] : CitationRenderer.collectURLs(
             around: message, in: ConversationStore.shared.currentMessages)
         let body = self.attributedBody
         let userFlag = self.isUser
-        return MessageBodyView(
+        MessageBodyView(
             blocks: blocks,
             isUser: isUser,
             citedURLs: urls,
-            // v8.6：用户气泡是 accent 实色 → 结构块（标题/列表/引用）也用白字，避免深字糊蓝底
-            textColor: isUser ? .white : .primary,
-            renderText: { s in
+            textColor: isUser ? Color.white : Color.primary,
+            renderText: { t in
                 AnyView(
                     Group {
                         if userFlag {
-                            // v8.5：用户气泡是 accent 实色 + 白字（v8.6 按文档改为强调色气泡）
-                            Text(s)
-                                .font(ChatType.body)
-                                .lineSpacing(ChatType.bodyLineSpacing)
-                                .foregroundColor(.white)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .textSelection(.enabled)
+                            CollapsibleUserText(text: t)
+                        } else if t.count > 20000 {
+                            // v9：超长单块 → 分块渲染，避免单 Text 布局/命中测试过慢
+                            BoundedLargeText(text: t)
                         } else {
                             SelectableText(
-                                attributed: urls.isEmpty ? body(s)
-                                    : CitationRenderer.apply(to: body(s), urls: urls),
+                                attributed: urls.isEmpty ? body(t)
+                                    : CitationRenderer.apply(to: body(t), urls: urls),
                                 textColor: .label,
                                 onTapCitation: { url in
-                                    // v8.6：点角标 → 确认后打开引用原文（外部 Safari）
                                     pendingCitation = CitationLink(url: url)
                                 })
                         }
@@ -1857,14 +1897,13 @@ struct MessageBubble: View {
         let capped = shown.count > 50000
             ? String(shown.prefix(50000)) + "\n\n…[内容过长，仅渲染前 5 万字；完整内容见会话数据]"
             : shown
-        if isStreaming || forceType || isUser {
+        if isStreaming || forceType {
             // v6.4.0（对齐 OpenMinis：流式期间用廉价渲染，完成后才上富文本）：
             // 旧实现在每个 delta 都跑 coloredBody（正则解析代码段/加粗）→ 长输出卡顿。
             // 流式期间直接 Text(纯文本)，完成后再走 attributed/SelectableText 富文本路径。
             Text(AttributedString(capped))
                 .font(.system(size: 16.5))
-                // v8.6：用户气泡是 accent 实色，正文必须白字（否则黑字糊在蓝底上）
-                .foregroundColor(isUser ? .white : .primary)
+                .foregroundColor(.primary)
                 .textSelection(.enabled)
         } else {
             // v4.5.0：完成消息用原生 NSAttributedString 富文本（加粗/橙色/暗黑模式都正确渲染），避免 SwiftUI AttributedString 桥接丢失样式
@@ -1995,9 +2034,14 @@ struct MessageBubble: View {
         let thinkingText = (thinkEnabled && !isUser) ? (message.thinking ?? "") : ""
         let hasThinking = !thinkingText.isEmpty
         let hasBody = !message.content.isEmpty
+        // v9：只有工具调用、没有正文的消息（模型直接发 tool_calls）也要渲染过程区
+        let hasToolParts = message.effectiveParts.contains {
+            if case .toolCall = $0 { return true }
+            return false
+        }
 
         return Group {
-            if hasImages || hasThinking || hasBody {
+            if hasImages || hasThinking || hasBody || hasToolParts {
                 bubbleChrome(
                     VStack(alignment: isUser ? .trailing : .leading,
                            spacing: ChatMetrics.blockGap) {
@@ -2009,8 +2053,8 @@ struct MessageBubble: View {
                         if hasThinking {
                             thinkingView(thinkingText, message: message)
                         }
-                        // ③ 正文（最重：字号 16 / 中文行距 6.5）
-                        if hasBody {
+                        // ③ 过程区（工具步骤，默认折叠成一行）+ 正文（最重：16pt / 行距 6.5）
+                        if hasBody || hasToolParts {
                             bubbleContent(shown)
                         }
                     }

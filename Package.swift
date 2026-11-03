@@ -176,5 +176,13 @@ let package = Package(
                 // v6.9.14：可爱助手 / 桌面悬浮 HUD 已删除，不再链接 libHUD.a 与私有 framework tbd。
             ]
         ),
+        // v9：纯数据层单测（MessagePart / 迁移 / 投影器 / 工具结果回填）
+        // 注意：主 target 是 iOS App（依赖 UIKit / NetworkExtension），本测试目标只在
+        // 具备 iOS SDK 的环境下可跑；CI 的 swiftc -parse 门禁不覆盖 tests/。
+        .testTarget(
+            name: "XosviTests",
+            dependencies: ["Xosvi"],
+            path: "tests/XosviTests"
+        ),
     ]
 )

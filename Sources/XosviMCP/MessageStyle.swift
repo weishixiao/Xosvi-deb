@@ -331,6 +331,9 @@ struct MessageBodyView: View {
                 case .text(let s):
                     if let renderText = renderText {
                         renderText(s)
+                    } else if s.count > 20000 {
+                        // v9：超长单块 → 分块渲染（对应 Kelivo bounded_large_text_view）
+                        BoundedLargeText(text: s, textColor: textColor)
                     } else {
                         Text(s)
                             .font(ChatType.body)

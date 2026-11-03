@@ -648,8 +648,18 @@ struct ChatMessage: Codable, Identifiable, Hashable {
     var isRunning: Bool = false
     /// v8：web.search 结果的 id→url 映射（挂在本条 tool 消息上）——UI 渲染 [cite:sN] 引用角标的命中态
     var citedURLs: [String: String]? = nil
+    /// v9：结构化消息片段（移植 Kelivo MessagePart）。nil = 尚未迁移的旧消息，读取时走 effectiveParts
+    var parts: [MessagePart]? = nil
+    /// v9：这条 tool 消息的结果已回填进前文的 ToolCallPayload.result，渲染层应跳过它
+    /// （不物理删除：会话导出/全文搜索/审计仍在用）。
+    /// 注意用 Optional：Swift 合成的 Decodable **不会**使用属性默认值，
+    /// 非可选字段会让所有老会话 JSON 解码失败（整库会话丢失）。读取统一走 isToolConsumed。
+    var isConsumedTool: Bool? = nil
 
     var isTool: Bool { role == "tool" }
+
+    /// v9：工具结果是否已被回填消费（老数据无该字段 → false）
+    var isToolConsumed: Bool { isConsumedTool ?? false }
 }
 
 /// v2.9.127：执行轨迹单步 (思考/工具调用/工具结果/备注）
@@ -747,14 +757,21 @@ final class ConversationStore: ObservableObject {
 
     private var streamDeltaBuffer = ""
     private var streamThinkBuffer = ""
-    private var streamFlushScheduled = false
+    /// v9：流式刷新节流器（150ms 基线，含换行时走 50ms 快速通道）
+    private let streamThrottle = StreamThrottle()
+    /// v9：流式增量投影——每条流式消息一个，只在尾部变化时重算（前面已渲染的块 id 不变）
+    private var streamProjections: [UUID: StreamingProjection] = [:]
+
+    /// v9：取某条消息的增量投影结果（非流式消息返回 nil，走缓存投影）
+    func streamingBlocks(for id: UUID) -> [ProjectedBlock]? {
+        streamProjections[id]?.blocks
+    }
     private func scheduleStreamFlush() {
-        guard !streamFlushScheduled else { return }
-        streamFlushScheduled = true
+        // v9：改用 StreamThrottle（同一实例，后到的 delta 会顶掉前一批，不堆积）
         // v6.4.0（对齐 OpenMinis tiered flush throttle）：0.08s → 0.18s。
         // 每批"滑过"而不是高频重绘；结构化输出（含换行）走快速通道 0.05s 保证可读节奏。
         let delay: Double = streamDeltaBuffer.contains("\n") ? 0.05 : 0.18
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        streamThrottle.schedule(delay: delay) { [weak self] in
             self?.flushStreamBuffers()
         }
     }
@@ -784,20 +801,56 @@ final class ConversationStore: ObservableObject {
     }
 
     func flushStreamBuffers() {
-        streamFlushScheduled = false
+        streamThrottle.cancelPending()
+        flushStreamBuffers(into: streamingMessageId)
+    }
+
+    /// v9：把缓冲写入指定消息（停止/取消时 streamingMessageId 已被清，需要显式传 id）
+    func flushStreamBuffers(into sid: UUID?) {
         let dBuf = streamDeltaBuffer
         let tBuf = streamThinkBuffer
         streamDeltaBuffer = ""
         streamThinkBuffer = ""
-        guard let sid = streamingMessageId, let idx = activeConvIndex,
+        guard let sid, let idx = activeConvIndex,
               let mi = conversations[idx].messages.firstIndex(where: { $0.id == sid }) else { return }
         if !dBuf.isEmpty {
             conversations[idx].messages[mi].content += dBuf
+            // v9：结构化 parts 同步增量追加——投影器据此避免每帧全文重解析
+            var parts = conversations[idx].messages[mi].effectiveParts
+            if case .text(let last)? = parts.last {
+                parts[parts.count - 1] = .text(last + dBuf)
+            } else {
+                parts.append(.text(dBuf))
+            }
+            conversations[idx].messages[mi].parts = parts
         }
         if !tBuf.isEmpty {
             let existing = conversations[idx].messages[mi].thinking ?? ""
             conversations[idx].messages[mi].thinking = existing + tBuf
+            // v9：思考单独成 reasoning part（在 text 之前插入，保持"先思考后正文"顺序）
+            var parts = conversations[idx].messages[mi].effectiveParts
+            if parts.count > 1, case .reasoning(let last)? = parts[parts.count - 2],
+               case .text = parts[parts.count - 1] {
+                parts[parts.count - 2] = .reasoning(last + tBuf)
+            } else if case .reasoning(let last)? = parts.last {
+                parts[parts.count - 1] = .reasoning(last + tBuf)
+            } else {
+                parts.insert(.reasoning(tBuf), at: max(0, parts.count - 1))
+            }
+            conversations[idx].messages[mi].parts = parts
         }
+        // v9：增量投影——只有尾部块重算，前面块 id 保持不变（LazyVStack 不重建）
+        let mid = conversations[idx].messages[mi].id
+        let projection: StreamingProjection
+        if let existing = streamProjections[mid] {
+            projection = existing
+        } else {
+            let created = StreamingProjection()
+            streamProjections[mid] = created
+            projection = created
+        }
+        projection.update(parts: conversations[idx].messages[mi].effectiveParts)
+        ProjectedBlockCache.shared.invalidate(id: mid)
     }
     /// v3.4.9：本轮刚"生成完成"的 assistant 消息 ID（工具解说/整段到达的回复）。
     /// ChatView 用它给这些消息开打字机——它们 isStreaming=false 且内容在出现前已定好，
@@ -995,6 +1048,15 @@ final class ConversationStore: ObservableObject {
         guard let idx = activeConvIndex,
               let mi = conversations[idx].messages.firstIndex(where: { $0.id == id }) else { return }
         conversations[idx].messages[mi].content = content
+        // v9：覆盖时同步 parts 里的 text 段（保留 reasoning / toolCall 及其顺序与结果）
+        var parts = conversations[idx].messages[mi].effectiveParts
+        if let ti = parts.lastIndex(where: { if case .text = $0 { return true }; return false }) {
+            parts[ti] = .text(content)
+        } else if !content.isEmpty {
+            parts.append(.text(content))
+        }
+        conversations[idx].messages[mi].parts = parts
+        ProjectedBlockCache.shared.invalidate(id: id)
         conversations[idx].updatedAt = Date()
     }
 
@@ -1014,6 +1076,20 @@ final class ConversationStore: ObservableObject {
         currentClient?.cancel()
         currentClient = nil
         // v7.9.9：清掉流式目标——旧流即使还有回调，也不会再往那条气泡里写
+        // v9：先把已收到的尾部落盘（否则中断后气泡停在半句），再清流式态。
+        // 用显式 sid 版本——下面马上会把 streamingMessageId 置 nil。
+        let sidToFlush = streamingMessageId
+        if Thread.isMainThread {
+            streamThrottle.flushNow()
+            flushStreamBuffers(into: sidToFlush)
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.streamThrottle.flushNow()
+                self.flushStreamBuffers(into: sidToFlush)
+            }
+        }
+        if let sid = sidToFlush { streamProjections.removeValue(forKey: sid) }
         streamingMessageId = nil
         isLoading = false
         statusText = nil
@@ -1399,9 +1475,13 @@ final class ConversationStore: ObservableObject {
             // "completion 在主线程但 delta 还在别的队列里排队"的竞态。done 处理里随后
             // 还有"取更完整一方"的合并逻辑，最终内容以合并结果为准，不会丢字。
             if Thread.isMainThread {
+                self.streamThrottle.flushNow()   // v9：立即执行挂起的最后一批
                 self.flushStreamBuffers()
             }
-            DispatchQueue.main.async { self.flushStreamBuffers() }
+            DispatchQueue.main.async {
+                self.streamThrottle.flushNow()
+                self.flushStreamBuffers()
+            }
             // v6.5.4：流式结束 → 停后台保活
             BackgroundKeepAlive.shared.stop()
             DispatchQueue.main.async {
@@ -1456,6 +1536,8 @@ final class ConversationStore: ObservableObject {
                             }
                         }
                         self.attachTrail(to: sid, thinking: thinking)
+                        // v9：本轮结束——丢弃增量投影（完成态走 ProjectedBlockCache）
+                        self.streamProjections.removeValue(forKey: sid)
                         self.streamingMessageId = nil
                         // v6.5.7：自我批判精炼——深度思考开、答案足够长、本轮未精炼过 → 追加一轮"批判→改进"
                         let thinkOn = UserDefaults.standard.object(forKey: "chat_think_enabled") == nil
@@ -1617,6 +1699,17 @@ final class ConversationStore: ObservableObject {
                             self.conversations[ci].messages[mi].content = visibleText
                         }
                         self.conversations[ci].messages[mi].toolCalls = calls
+                        // v9：结构化 parts 同步——toolCall 追加在已有 text 之后（真实产出顺序）
+                        var p2 = self.conversations[ci].messages[mi].effectiveParts
+                        // 去掉上一次残留的 toolCall（重发/重试场景），再按本次 calls 重建
+                        p2.removeAll { if case .toolCall = $0 { return true }; return false }
+                        for c in calls {
+                            p2.append(.toolCall(ToolCallPayload(
+                                id: c.id, name: c.name, arguments: c.arguments,
+                                result: nil, isError: false, durationMs: nil, previewImage: nil)))
+                        }
+                        self.conversations[ci].messages[mi].parts = p2
+                        ProjectedBlockCache.shared.invalidate(id: self.conversations[ci].messages[mi].id)
                         // v3.5.4：思考始终写入黄色气泡(message.thinking)，不再要求 content 为空——
                         // 此前 reasoning 被 v3.5.1 打进正文使 content 非空，导致 thinking 永不写入、黄泡为空。
                         // 与正文去重：部分中转把完整回答写进 reasoning_content，与 content 相同则不展示思考。
@@ -1631,6 +1724,20 @@ final class ConversationStore: ObservableObject {
                     } else {
                         // 无流式消息 (流式未开始就被 toolCalls 打断）：新建 assistant 消息
                         var am = ChatMessage(role: "assistant", content: visibleText, toolCalls: calls)
+                        // v9：直接给出结构化 parts（思考→正文→工具），渲染层无需再迁移
+                        var ap: [MessagePart] = []
+                        let rTrimA = reasoningText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let vTrimA = visibleText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !rTrimA.isEmpty, !(vTrimA == rTrimA || rTrimA.contains(vTrimA) || vTrimA.contains(rTrimA)) {
+                            ap.append(.reasoning(reasoningText))
+                        }
+                        if !visibleText.isEmpty { ap.append(.text(visibleText)) }
+                        for c in calls {
+                            ap.append(.toolCall(ToolCallPayload(
+                                id: c.id, name: c.name, arguments: c.arguments,
+                                result: nil, isError: false, durationMs: nil, previewImage: nil)))
+                        }
+                        am.parts = ap
                         let vTrim = visibleText.trimmingCharacters(in: .whitespacesAndNewlines)
                         let rTrim2 = reasoningText.trimmingCharacters(in: .whitespacesAndNewlines)
                         if !rTrim2.isEmpty, !(vTrim == rTrim2 || rTrim2.contains(vTrim) || vTrim.contains(rTrim2)) {
@@ -1859,6 +1966,10 @@ final class ConversationStore: ObservableObject {
             let nar = thinkText.trimmingCharacters(in: .whitespacesAndNewlines)
             runMsg.toolNarration = nar.isEmpty ? nil : thinkText
             runMsg.isRunning = true
+            // v9：给这张卡也补 parts（tool 消息 = 一个 text 段，结果未到前为空）——
+            // 渲染层已按 isConsumedTool 跳过它，这里只是保持数据模型一致，
+            // 避免"部分消息有 parts、部分没有"导致迁移逻辑反复触发。
+            runMsg.migrateToPartsIfNeeded()
             self.appendToCurrent(runMsg)
             self.pendingToolMsgID = runMsg.id
         }
@@ -1935,6 +2046,12 @@ final class ConversationStore: ObservableObject {
             // v3.1.72：不再写 toolMsg.thinking——思考已在 assistant 消息的 thinking 字段显示一次，
             // 旧逻辑把同一文本又塞进 tool 消息导致"回复内容和思考内容一模一样" (用户实测反馈）
             next.append(toolMsg)
+            // v9：先把结果内联进 ToolCallPayload.result（投影层据此显示每步耗时/结果摘要），
+            //     再把"启动即上屏"的 running 卡片更新为完成态；回填成功时那张卡片会被标记消费，
+            //     渲染层只显示过程区里的步骤，不会双份。
+            self.backfillToolResult(callId: call.id, toolName: call.name,
+                                    result: content, isError: false,
+                                    durationMs: Int((toolDuration * 1000).rounded()))
             // v3.5.10：原地更新"启动即上屏"的 running 步骤卡 → 完成卡（同一张，不再新增第二条）
             self.resolvePendingTool(content: content, toolDuration: toolDuration, isError: false, narration: toolMsg.toolNarration)
             // v2.9.127：轨迹——工具执行OK (结果摘要 200 字符，完整结果在 tool 消息里）
@@ -1967,6 +2084,10 @@ final class ConversationStore: ObservableObject {
             // v3.3.4：耗时显示
             failMsg.toolDuration = toolDuration
             next.append(failMsg)
+            // v9：失败结果同样回填，过程区显示红色步骤
+            self.backfillToolResult(callId: call.id, toolName: call.name,
+                                    result: content, isError: true,
+                                    durationMs: Int((toolDuration * 1000).rounded()))
             // v3.5.10：原地更新 running 步骤卡 → 出错卡
             self.resolvePendingTool(content: content, toolDuration: toolDuration, isError: true, narration: nil)
             // v2.9.127：轨迹——工具执行failed (四分类错误摘要）
@@ -2009,6 +2130,10 @@ final class ConversationStore: ObservableObject {
                                     isError: true, toolCallId: call.id, toolName: call.name)
             // v3.1.72：不再写 errMsg.thinking (思考只在 assistant 消息显示一次，避免重复）
             next.append(errMsg)
+            // v9：通用失败分支同样回填（过程区标红）
+            self.backfillToolResult(callId: call.id, toolName: call.name,
+                                    result: Self.jsonString(errBody), isError: true,
+                                    durationMs: Int((toolDuration * 1000).rounded()))
             // v3.5.10：原地更新 running 步骤卡 → 出错卡
             self.resolvePendingTool(content: Self.jsonString(errBody), toolDuration: toolDuration, isError: true, narration: nil)
             self.trailStep(.done(.result, call.name,
@@ -2053,6 +2178,45 @@ final class ConversationStore: ObservableObject {
         }
     }
 
+    /// v9：工具结果回填——把结果写进前文 ToolCallPayload.result，UI 立刻能看到
+    ///（旧实现要等下次 load 才合并，运行中过程区一直显示"执行中"）
+    @discardableResult
+    func backfillToolResult(callId: String, toolName: String,
+                            result: String, isError: Bool, durationMs: Int?) -> Bool {
+        guard let ci = activeConvIndex else { return false }
+        // 从后往前找最近的 assistant 消息，命中即改（并行调用按 id 精确匹配，不看顺序）
+        for mi in conversations[ci].messages.indices.reversed() {
+            guard var parts = conversations[ci].messages[mi].parts else { continue }
+            var hit = false
+            for pi in parts.indices {
+                guard case .toolCall(var payload) = parts[pi] else { continue }
+                if !callId.isEmpty {
+                    guard payload.id == callId else { continue }
+                } else {
+                    // 老数据缺 id：按同名且尚无结果兜底
+                    guard payload.name == toolName, payload.result == nil else { continue }
+                }
+                payload.result = result
+                payload.isError = isError
+                if let d = durationMs { payload.durationMs = d }
+                parts[pi] = .toolCall(payload)
+                hit = true
+                break
+            }
+            if hit {
+                conversations[ci].messages[mi].parts = parts
+                ProjectedBlockCache.shared.invalidate(id: conversations[ci].messages[mi].id)
+                // 结果已内联 → 独立的 tool 消息让位给过程区里的步骤（不删除，只标记；
+                // 搜索/导出/审计仍用它，渲染层按 isConsumedTool 跳过，避免双份）
+                if let ti = conversations[ci].messages.firstIndex(where: { $0.id == pendingToolMsgID }) {
+                    conversations[ci].messages[ti].isConsumedTool = true
+                }
+                return true
+            }
+        }
+        return false
+    }
+
     /// v3.5.10：工具结果回来后，原地更新"启动即上屏"的 running 步骤卡（同一张卡变完成/出错）。
     private func resolvePendingTool(content: String, toolDuration: Double, isError: Bool, narration: String?) {
         guard let mid = self.pendingToolMsgID, let ci = self.activeConvIndex,
@@ -2067,6 +2231,16 @@ final class ConversationStore: ObservableObject {
         if let n = narration, !n.isEmpty {
             self.conversations[ci].messages[mi].toolNarration = n
         }
+        // v9：同步该卡的 parts（tool 消息 = 一个 text 段）——回填失败时它仍会渲染，
+        // 不能留空正文
+        var tp = self.conversations[ci].messages[mi].effectiveParts
+        if let ti = tp.lastIndex(where: { if case .text = $0 { return true }; return false }) {
+            tp[ti] = .text(content)
+        } else {
+            tp.append(.text(content))
+        }
+        self.conversations[ci].messages[mi].parts = tp
+        ProjectedBlockCache.shared.invalidate(id: mid)
         self.pendingToolMsgID = nil
     }
 
@@ -2332,11 +2506,25 @@ final class ConversationStore: ObservableObject {
                 }
             }
         }
-        conversations = cleaned.sorted { $0.updatedAt > $1.updatedAt }
+        // v9：迁移到结构化 parts + 回填工具结果（一次到位，渲染层之后只认 parts）
+        //   · migrateToPartsIfNeeded：content/thinking/toolCalls → [MessagePart]（幂等）
+        //   · mergingToolResultsIsolated：role == "tool" 的结果内联进 ToolCallPayload.result，
+        //     并把那条 tool 消息标记 isConsumedTool（渲染层跳过，不物理删除——搜索/审计还要用）
+        // 迁移前先记一笔：有未迁移的消息就要落盘，否则每次启动都重跑一遍
+        //（isConsumedTool 也必须持久化，否则下次启动工具结果会双份显示）
+        let needsMigration = cleaned.contains { conv in
+            conv.messages.contains { $0.parts == nil }
+        }
+        var migrated = cleaned
+        for ci in migrated.indices {
+            migrated[ci].messages = migrated[ci].messages.mergingToolResultsIsolated()
+        }
+        conversations = migrated.sorted { $0.updatedAt > $1.updatedAt }
+        ProjectedBlockCache.shared.clear()
         selectedId = conversations.first?.id
-        // 若有悬挂工具卡被纠正，落盘一次保持持久一致
-        var needSave = false
-        for conv in decoded {
+        // 悬挂工具卡被纠正 / 首次迁移 → 落盘一次保持持久一致
+        var needSave = needsMigration
+        for conv in decoded where !needSave {
             if conv.messages.contains(where: { $0.isRunning }) { needSave = true; break }
         }
         if needSave { save() }
