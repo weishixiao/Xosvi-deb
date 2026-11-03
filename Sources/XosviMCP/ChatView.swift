@@ -508,7 +508,8 @@ struct ChatView: View {
     private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 12) {
+                // v8.5：消息间距 12 → ChatMetrics.messageGap(18)——与块内 10 / 段落 9 形成层次
+                LazyVStack(spacing: ChatMetrics.messageGap) {
                     if store.currentMessages.count > visibleMessageLimit {
                         Button {
                             visibleMessageLimit += 60
@@ -1758,24 +1759,47 @@ struct MessageBubble: View {
     // 容错流式打字机未闭合反引号(不配对则视为普通文本)。仅 assistant 生效, user 保持纯文本。
     // v4.4.12：正文 markdown 加粗(**xx**)→粗体(semibold)。代码段优先(橙色)，代码段外再匹配粗体。
     /// v7.4.1：分块渲染——普通文本块 + 黑色代码预览块。
-    /// 只在正文含 ``` 围栏时走这里；其余消息仍走 messageTextView（保留 UITextView 的选字能力）。
+    /// v8.5：完成态消息走这里（含代码围栏与普通段落统一处理）；
+    /// 流式/打字机期间仍走 messageTextView（轻量 Text，避免 UITextView 高频刷新）。
     @ViewBuilder
     private func messageBlocksView(_ shown: String) -> some View {
         let blocks = MessageBlockParser.parse(shown)
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(blocks) { block in
-                switch block.kind {
-                case .text(let t):
-                    Text(t.trimmingCharacters(in: .whitespacesAndNewlines))
-                        .font(.system(size: 16.5))
-                        .foregroundColor(.primary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                case .code(let lang, let body):
-                    CodeBlockView(lang: lang, code: body)
-                }
+        // v8.5：走 MessageBodyView（列表/标题/引用分块渲染 + 中文行距 + 段落间距 9），
+        // 块间距统一 ChatMetrics.blockGap(10)——不再与段落/消息间距相等。
+        // 正文文本块仍注入现有富文本路径（attributedBody + SelectableText），保住
+        // 加粗/行内代码/[cite:sN] 角标——否则分块渲染会丢掉 v4.5.0 的富文本样式。
+        let urls = isUser ? [:] : CitationRenderer.collectURLs(
+            around: message, in: ConversationStore.shared.currentMessages)
+        let body = self.attributedBody
+        let userFlag = self.isUser
+        return MessageBodyView(
+            blocks: blocks,
+            isUser: isUser,
+            citedURLs: urls,
+            textColor: .primary,
+            renderText: { s in
+                AnyView(
+                    Group {
+                        if userFlag {
+                            // v8.5：用户气泡是淡灰底（tertiarySystemFill）+ primary 文字，
+                            // 不走 attributedBody 白色富文本——保持原配色可读
+                            Text(s)
+                                .font(ChatType.body)
+                                .lineSpacing(ChatType.bodyLineSpacing)
+                                .foregroundColor(.primary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        } else {
+                            SelectableText(
+                                attributed: urls.isEmpty ? body(s)
+                                    : CitationRenderer.apply(to: body(s), urls: urls),
+                                textColor: .label)
+                        }
+                    }
+                )
             }
-        }
+        )
     }
 
     /// v4.4.21：消息文本视图——流式/打字机/用户消息用轻量 Text（避免 UITextView 高频刷新闪跳）；assistant 完成消息用 SelectableText(UITextView) 长按选字/划词/复制
@@ -1883,7 +1907,9 @@ struct MessageBubble: View {
     }
 
     private var textBubble: some View {
-        VStack(alignment: isUser ? .trailing : .leading, spacing: 2) {
+        // v8.5：块间距 2 → ChatMetrics.blockGap(10)——思考/工具卡/附件/正文之间
+        // 拉开层次（旧版全 2pt，视觉上挤成一坨，是"乱"的直接原因之一）
+        VStack(alignment: isUser ? .trailing : .leading, spacing: ChatMetrics.blockGap) {
             // v2.9.10：消息内图片缩略图（用户选择相册图片后，气泡里直接显示图片）
             if let imgs = message.imageDataURLs, !imgs.isEmpty {
                 messageImageStrip(imgs)
@@ -1908,17 +1934,36 @@ struct MessageBubble: View {
                 VStack(alignment: .leading, spacing: 3) {
                     // v7.4.1：含代码围栏的消息走分块渲染（普通文本块 + 黑色代码预览块）；
                     // 其余消息保持原渲染路径，避免影响普通对话的可选中/富文本行为。
-                    if !isUser && shown.contains("```") {
-                        messageBlocksView(shown)
-                    } else {
-                        // v4.4.21：完成消息用 SelectableText(UITextView) 长按划词/复制；流式打字机+用户消息用 Text(轻量)
+                    // v8.5：全部走分块渲染——列表/标题/引用/段落节奏一致；
+                    // 流式与打字机期间仍用轻量 Text（避免 UITextView 高频刷新闪跳），
+                    // 完成后才切富文本分块渲染（v6.4.0 的廉价渲染策略保留）。
+                    if isStreaming || forceType {
                         messageTextView(shown)
                             .padding(.horizontal, 14)
                             .padding(.vertical, 10)
-                            // v3.3.4：AI 回复气泡从左拉伸到右（全宽）；用户气泡保持靠右自适应
                             .frame(maxWidth: isUser ? nil : .infinity, alignment: .leading)
-                            // v6.2.8：对齐 OpenMinis 会话样式——用户气泡改淡灰 tertiarySystemFill + 常规文字色
-                            // （原巨魔蓝渐变），AI 回复去气泡背景（纯文本，更干净）。字号 16.5 见 messageTextView
+                            .background(
+                                Group {
+                                    if isUser {
+                                        Color(UIColor.tertiarySystemFill)
+                                    } else if message.isError {
+                                        Color.red.opacity(0.15)
+                                    } else {
+                                        Color.clear
+                                    }
+                                }
+                            )
+                            .foregroundColor(.primary)
+                            .cornerRadius(18)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18)
+                                    .strokeBorder(isSelected ? Color.secondary.opacity(0.5) : Color.clear, lineWidth: 2)
+                            )
+                    } else {
+                        messageBlocksView(shown)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .frame(maxWidth: isUser ? nil : .infinity, alignment: .leading)
                             .background(
                                 Group {
                                     if isUser {
@@ -1948,7 +1993,8 @@ struct MessageBubble: View {
     /// v2.9.20：思考记录（reasoning）折叠视图
     private func thinkingView(_ text: String, message: ChatMessage) -> some View {
         // v7.7.0：统一走 ReasoningBlock（preview 渐变折叠 / 展开全量 + 代码块渲染）
-        ReasoningBlock(
+        // v8.5：思考块视觉权重最轻——水平内缩 6、与正文之间留 blockGap（由外层 VStack 统一给）
+        return ReasoningBlock(
             text: text,
             isStreaming: isStreaming,
             expanded: thinkingExpandedBinding,
@@ -1957,7 +2003,6 @@ struct MessageBubble: View {
             tokens: message.reasoningTokens
         )
             .padding(.horizontal, 6)
-            .padding(.bottom, 4)
     }
 
     /// v2.9.10：data URL → UIImage

@@ -742,20 +742,22 @@ jobs:
           merge-multiple: true
         continue-on-error: true
 
-      - name: Compute version (single source = Info.plist base + commit count)
+      - name: Compute version (single source = Info.plist base + run number)
         run: |
-          # v8.2：RELEASE_VERSION 不再写死在 env——每次构建必变（base-b<commit 数>），
-          # 打 tag 发版用 tag 名。Build IPA / Publish release 两个步骤统一从这里取。
+          # v8.5：build 数改用 GITHUB_RUN_NUMBER——每次 workflow 运行严格递增，
+          # 且不需要完整 git 历史（checkout 默认 fetch-depth:1，用 rev-list --count HEAD
+          # 会恒等于 1，产物版本永远是 -b1，手机端永远判不出新旧；实测踩过）。
           BASE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Support/Info.plist 2>/dev/null || echo "1.0.0")
-          BUILD=$(git rev-list --count HEAD)
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             VER="${GITHUB_REF#refs/tags/}"          # 打 tag 发版用 tag 名
+            BUILD="${GITHUB_RUN_NUMBER:-0}"
           else
+            BUILD="${GITHUB_RUN_NUMBER:-$(git rev-list --count HEAD 2>/dev/null || echo 1)}"
             VER="${BASE}-b${BUILD}"                 # 日常构建: 7.17.0-b1423，每次必变
           fi
           echo "RELEASE_VERSION=$VER" >> "$GITHUB_ENV"
           echo "BUILD_NUM=$BUILD" >> "$GITHUB_ENV"
-          echo ">>> version = $VER"
+          echo ">>> version = $VER (build $BUILD)"
 
       - name: Build IPA (with native Python integration)
         run: |

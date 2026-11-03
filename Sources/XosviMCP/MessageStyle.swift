@@ -12,10 +12,39 @@ import UIKit
 
 // MARK: - 文本分块（普通文本 / 代码块）
 
+// MARK: - v8.5：排版体系（一次定死，全局复用）
+//
+// 「乱」的三个根因：块内/段落/消息三级间距全用同一个值、中文没有行距、列表/标题/
+// 引用全被压进 text 块。这里把三级间距显式区分开，并把结构块从 text 里拆出来。
+
+enum ChatType {
+    // 字号：正文 16（中文阅读舒适区）、次要 13、元信息 11.5
+    static let body      = Font.system(size: 16, weight: .regular)
+    static let bodyEm    = Font.system(size: 16, weight: .semibold)
+    static let code      = Font.system(size: 13.5, design: .monospaced)
+    static let secondary = Font.system(size: 13)
+    static let meta      = Font.system(size: 11.5)
+
+    // 行距：中文正文 6.5 最舒服；代码 3
+    static let bodyLineSpacing: CGFloat = 6.5
+    static let codeLineSpacing: CGFloat = 3
+}
+
+enum ChatMetrics {
+    static let bubbleMaxWidth: CGFloat = 0.86     // 屏宽占比
+    static let blockGap: CGFloat = 10             // 气泡内各块之间的间距
+    static let messageGap: CGFloat = 18           // 消息之间的间距
+    static let paragraphGap: CGFloat = 9          // 正文段落间距
+}
+
 struct MessageBlock: Identifiable {
     enum Kind {
         case text(String)
         case code(lang: String, body: String)
+        // v8.5：结构块——列表/标题/引用从 text 里拆出来，才有层级
+        case list(items: [String], ordered: Bool)
+        case heading(level: Int, text: String)
+        case quote(String)
     }
     let id = UUID()
     var kind: Kind
@@ -43,16 +72,16 @@ enum MessageBlockParser {
     }
 
     private static func parseUncached(_ raw: String) -> [MessageBlock] {
-        guard raw.contains("```") else { return [MessageBlock(kind: .text(raw))] }
+        guard raw.contains("```") else { return classify(raw.components(separatedBy: "\n")) }
         var blocks: [MessageBlock] = []
         var buffer: [String] = []
         var inCode = false
         var lang = ""
 
         func flushText() {
-            let t = buffer.joined(separator: "\n")
-            let trimmed = t.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty { blocks.append(MessageBlock(kind: .text(t))) }
+            // v8.5：文本缓冲交给行级分类器（拆出列表/标题/引用），不再整坨当 text
+            let classified = classify(buffer)
+            if !classified.isEmpty { blocks.append(contentsOf: classified) }
             buffer.removeAll()
         }
 
@@ -74,10 +103,68 @@ enum MessageBlockParser {
         }
         // 收尾：未闭合的代码块按普通文本处理（流式中途）
         if inCode {
-            blocks.append(MessageBlock(kind: .text(buffer.joined(separator: "\n"))))
+            blocks.append(contentsOf: classify(buffer))
         } else {
             flushText()
         }
+        return blocks
+    }
+
+    // MARK: - v8.5 行级分类（列表 / 标题 / 引用 / 段落）
+
+    private static func classify(_ lines: [String]) -> [MessageBlock] {
+        var blocks: [MessageBlock] = []
+        var para: [String] = []
+        var items: [String] = []
+        var ordered = false
+
+        func flushPara() {
+            let t = para.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { blocks.append(MessageBlock(kind: .text(t))) }
+            para.removeAll()
+        }
+        func flushItems() {
+            if !items.isEmpty { blocks.append(MessageBlock(kind: .list(items: items, ordered: ordered))) }
+            items.removeAll()
+        }
+
+        for line in lines {
+            let l = line.trimmingCharacters(in: .whitespaces)
+            if l.isEmpty { flushItems(); flushPara(); continue }
+
+            // 标题（# / ## / ###）
+            if let m = l.range(of: #"^#{1,3}\s+"#, options: .regularExpression) {
+                flushItems(); flushPara()
+                let level = l.prefix(while: { $0 == "#" }).count
+                blocks.append(MessageBlock(kind: .heading(level: level,
+                                                          text: String(l[m.upperBound...]))))
+                continue
+            }
+            // 无序列表
+            if l.hasPrefix("- ") || l.hasPrefix("* ") || l.hasPrefix("• ") {
+                if !items.isEmpty && ordered { flushItems() }
+                ordered = false
+                items.append(String(l.dropFirst(2)))
+                continue
+            }
+            // 有序列表
+            if l.range(of: #"^\d+[.)]\s+"#, options: .regularExpression) != nil {
+                if !items.isEmpty && !ordered { flushItems() }
+                ordered = true
+                items.append(l.replacingOccurrences(of: #"^\d+[.)]\s+"#, with: "",
+                                                     options: .regularExpression))
+                continue
+            }
+            // 引用
+            if l.hasPrefix("> ") {
+                flushItems(); flushPara()
+                blocks.append(MessageBlock(kind: .quote(String(l.dropFirst(2)))))
+                continue
+            }
+            flushItems()
+            para.append(line)
+        }
+        flushItems(); flushPara()
         return blocks
     }
 }
@@ -124,6 +211,88 @@ enum CitationRenderer {
             if let c = m.citedURLs { urls.merge(c) { _, new in new } }
         }
         return urls
+    }
+}
+
+// MARK: - v8.5：正文渲染器（按块类型渲染 + 中文行距 + 段落间距）
+//
+// 三条中文排版铁律：
+//   1) .lineSpacing(6.5)——默认行距对中文太挤，这是"读起来乱"第一元凶
+//   2) .fixedSize(horizontal: false, vertical: true)——否则多行 Text 在某些容器里被压缩/截断
+//   3) 段落之间用 VStack(spacing: 9) 显式给间距，不靠 \n\n 空行（空行高度随字号浮动）
+
+struct MessageBodyView: View {
+    let blocks: [MessageBlock]
+    let isUser: Bool
+    let citedURLs: [String: String]
+    let textColor: Color
+    /// v8.5：正文文本块的渲染闭包——由 MessageBubble 注入现有富文本路径
+    /// （attributedBody + SelectableText，保住加粗/行内代码/[cite:sN] 角标）。
+    /// 默认退回纯 Text（无富文本样式）。
+    var renderText: ((String) -> AnyView)? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: ChatMetrics.paragraphGap) {
+            ForEach(blocks) { block in
+                switch block.kind {
+                case .text(let s):
+                    if let renderText = renderText {
+                        renderText(s)
+                    } else {
+                        Text(s)
+                            .font(ChatType.body)
+                            .lineSpacing(ChatType.bodyLineSpacing)
+                            .foregroundColor(textColor)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                case .code(let lang, let body):
+                    CodeBlockView(lang: lang, code: body)   // 现有黑底块，不动
+
+                case .list(let items, let ordered):
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(items.enumerated()), id: \.offset) { i, item in
+                            HStack(alignment: .top, spacing: 8) {
+                                Text(ordered ? "\(i + 1)." : "•")
+                                    .font(ChatType.body)
+                                    .foregroundColor(.secondary)
+                                    .frame(minWidth: 16, alignment: .trailing)
+                                if let renderText = renderText {
+                                    renderText(item)
+                                } else {
+                                    Text(item)
+                                        .font(ChatType.body)
+                                        .lineSpacing(ChatType.bodyLineSpacing)
+                                        .foregroundColor(textColor)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
+                    }
+
+                case .heading(let level, let s):
+                    Text(s)
+                        .font(.system(size: level == 1 ? 18 : level == 2 ? 17 : 16, weight: .semibold))
+                        .foregroundColor(textColor)
+                        .padding(.top, 3)
+
+                case .quote(let t):
+                    HStack(alignment: .top, spacing: 9) {
+                        RoundedRectangle(cornerRadius: 1.5)
+                            .fill(DoubaoTheme.hairline)
+                            .frame(width: 3)
+                        Text(t)
+                            .font(ChatType.secondary)
+                            .lineSpacing(4)
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
