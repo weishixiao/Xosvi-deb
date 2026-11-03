@@ -1623,6 +1623,8 @@ struct MessageBubble: View {
     // v6.0.28：工具结果默认折叠，用户手动点才展开
     @State private var expanded = false
     @State private var expandedToolIds: Set<String> = []
+    // v8.6：点 [cite:sN] 角标 → 待打开的引用原文（确认后走系统浏览器）
+    @State private var pendingCitation: CitationLink?
     /// v7.6.0：工具结果半屏面板是否打开
     @State private var showToolResult = false
     // v3.4.5：打字机效果——已显示字符数 + 定时器（显示与网络解耦，逐字稳定刷出）
@@ -1684,7 +1686,7 @@ struct MessageBubble: View {
     private var isTool: Bool { message.isTool }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        HStack(alignment: .top, spacing: 8) {
             if isUser {
                 if selectionMode { selectionBadge }
                 Spacer(minLength: 50)
@@ -1697,7 +1699,8 @@ struct MessageBubble: View {
             }
 
             if !isUser {
-                // v3.4.0：AI 输出不追加右侧 Spacer —— 气泡随 .frame(maxWidth:.infinity) 填满整个可用宽度
+                // v8.6：气泡自身已卡 86% 屏宽（bubbleChrome），这里留极少余量即可
+                Spacer(minLength: 0)
                 if selectionMode { selectionBadge }
             }
         }
@@ -1746,13 +1749,54 @@ struct MessageBubble: View {
         .onChange(of: message.content) { _ in
             if revealedCount < message.content.count { startTypeTimer() }
         }
+        // v8.6：点引用角标 → 确认后打开原文（先确认再离开 App，避免误触）
+        .alert(item: $pendingCitation) { link in
+            Alert(title: Text("打开引用来源"),
+                  message: Text(link.url.host ?? link.url.absoluteString),
+                  primaryButton: .default(Text("打开")) {
+                      _ = UIThreadBridge.openURL(link.url, timeout: 3)
+                  },
+                  secondaryButton: .cancel(Text("取消")))
+        }
+    }
+
+    /// v8.6：分层气泡容器（文档要求）——
+    ///   · 用户：accent 实色 + 白字
+    ///   · AI：卡片底 + 0.6pt 描边
+    ///   两者都贴合内容宽度、上限 86% 屏宽（ChatMetrics.bubbleMaxWidth），
+    ///   长文在 86% 处换行，短句不会拉成一条空卡片。
+    private func bubbleChrome<V: View>(_ content: V) -> some View {
+        let cap = UIScreen.main.bounds.width * ChatMetrics.bubbleMaxWidth
+        // 统一链路：内边距 → 背景/圆角（贴合内容）→ 宽度上限 86%
+        // 顺序很关键：background 在 frame 之前，短消息的气泡才不会被拉成一条空卡片。
+        return content
+            .padding(.horizontal, ChatMetrics.bubblePaddingH)
+            .padding(.vertical, ChatMetrics.bubblePaddingV)
+            .background(bubbleFill)
+            .clipShape(RoundedRectangle(cornerRadius: ChatMetrics.bubbleRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: ChatMetrics.bubbleRadius, style: .continuous)
+                    .strokeBorder(isSelected ? Color.secondary.opacity(0.5) : bubbleStroke,
+                                  lineWidth: isSelected ? 2 : 0.6)
+            )
+            .frame(maxWidth: cap, alignment: isUser ? .trailing : .leading)
+    }
+
+    /// v8.6：气泡正文——流式/打字机走轻量 Text，完成态走分块富文本
+    @ViewBuilder
+    private func bubbleContent(_ shown: String) -> some View {
+        if isStreaming || forceType {
+            messageTextView(shown)
+        } else {
+            messageBlocksView(shown)
+        }
     }
 
     private var selectionBadge: some View {
         Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
             .font(.system(size: 20))
             .foregroundColor(isSelected ? .primary : Color.secondary)
-            .padding(.bottom, 10)
+            .padding(.top, 8)   // v8.6：HStack 改 .top 对齐后徽标贴顶部，与气泡首行齐平
     }
 
     // v4.4.11：AI 正文行内代码(反引号)→橙色(与"已深度思考"同色)。手动正则解析，
@@ -1776,25 +1820,28 @@ struct MessageBubble: View {
             blocks: blocks,
             isUser: isUser,
             citedURLs: urls,
-            textColor: .primary,
+            // v8.6：用户气泡是 accent 实色 → 结构块（标题/列表/引用）也用白字，避免深字糊蓝底
+            textColor: isUser ? .white : .primary,
             renderText: { s in
                 AnyView(
                     Group {
                         if userFlag {
-                            // v8.5：用户气泡是淡灰底（tertiarySystemFill）+ primary 文字，
-                            // 不走 attributedBody 白色富文本——保持原配色可读
+                            // v8.5：用户气泡是 accent 实色 + 白字（v8.6 按文档改为强调色气泡）
                             Text(s)
                                 .font(ChatType.body)
                                 .lineSpacing(ChatType.bodyLineSpacing)
-                                .foregroundColor(.primary)
+                                .foregroundColor(.white)
                                 .fixedSize(horizontal: false, vertical: true)
                                 .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
                         } else {
                             SelectableText(
                                 attributed: urls.isEmpty ? body(s)
                                     : CitationRenderer.apply(to: body(s), urls: urls),
-                                textColor: .label)
+                                textColor: .label,
+                                onTapCitation: { url in
+                                    // v8.6：点角标 → 确认后打开引用原文（外部 Safari）
+                                    pendingCitation = CitationLink(url: url)
+                                })
                         }
                     }
                 )
@@ -1814,15 +1861,19 @@ struct MessageBubble: View {
             // v6.4.0（对齐 OpenMinis：流式期间用廉价渲染，完成后才上富文本）：
             // 旧实现在每个 delta 都跑 coloredBody（正则解析代码段/加粗）→ 长输出卡顿。
             // 流式期间直接 Text(纯文本)，完成后再走 attributed/SelectableText 富文本路径。
-            Text(isUser ? AttributedString(capped) : AttributedString(capped))
+            Text(AttributedString(capped))
                 .font(.system(size: 16.5))
+                // v8.6：用户气泡是 accent 实色，正文必须白字（否则黑字糊在蓝底上）
+                .foregroundColor(isUser ? .white : .primary)
                 .textSelection(.enabled)
         } else {
             // v4.5.0：完成消息用原生 NSAttributedString 富文本（加粗/橙色/暗黑模式都正确渲染），避免 SwiftUI AttributedString 桥接丢失样式
             // v8：正文含 [cite:sN] 时替换为引用角标（本轮 web.search 结果命中蓝标，未命中灰标）
             if capped.contains("[cite:") {
                 let urls = CitationRenderer.collectURLs(around: message, in: ConversationStore.shared.currentMessages)
-                SelectableText(attributed: CitationRenderer.apply(to: attributedBody(capped), urls: urls), textColor: .label)
+                SelectableText(attributed: CitationRenderer.apply(to: attributedBody(capped), urls: urls),
+                               textColor: .label,
+                               onTapCitation: { url in pendingCitation = CitationLink(url: url) })
             } else {
                 SelectableText(attributed: attributedBody(capped), textColor: .label)
             }
@@ -1906,86 +1957,64 @@ struct MessageBubble: View {
         return ms
     }
 
+    /// v8.6：分层气泡背景填充——用户 accent 实色、AI 卡片色、出错红底
+    @ViewBuilder
+    private var bubbleFill: some View {
+        if isUser {
+            DoubaoTheme.accent
+        } else if message.isError {
+            Color.red.opacity(0.15)
+        } else {
+            // 浅色用 secondarySystemBackground（白底页面上能看出卡片），
+            // 深色用比页面底色亮一档的灰——两种模式下卡片边界都成立。
+            Color(UIColor { trait in
+                trait.userInterfaceStyle == .dark
+                    ? UIColor(white: 0.15, alpha: 1)
+                    : UIColor.secondarySystemBackground
+            })
+        }
+    }
+
+    /// v8.6：气泡描边色——AI 卡片 0.6pt 细描边；用户/accent 底不需要
+    private var bubbleStroke: Color {
+        if isUser { return .clear }
+        if message.isError { return Color.red.opacity(0.35) }
+        return Color(UIColor.separator).opacity(0.45)
+    }
+
+    /// v8.6：分层气泡容器（文档要求）——思考块 / 附件 / 正文同处一张卡片
+    ///   · 用户：accent 实色 + 白字
+    ///   · AI：卡片底 + 0.6pt 描边
+    ///   两者都贴合内容宽度、上限 86% 屏宽（ChatMetrics.bubbleMaxWidth）。
     private var textBubble: some View {
-        // v8.5：块间距 2 → ChatMetrics.blockGap(10)——思考/工具卡/附件/正文之间
-        // 拉开层次（旧版全 2pt，视觉上挤成一坨，是"乱"的直接原因之一）
-        VStack(alignment: isUser ? .trailing : .leading, spacing: ChatMetrics.blockGap) {
-            // v2.9.10：消息内图片缩略图（用户选择相册图片后，气泡里直接显示图片）
-            if let imgs = message.imageDataURLs, !imgs.isEmpty {
-                messageImageStrip(imgs)
-            }
-            // v2.9.20：思考记录（reasoning）可展开显示
-            // v3.5.31：加 thinkEnabled —— 思考关时即使 API 返回 thinking 也一律不显示
-            if !isUser, thinkEnabled, let th = message.thinking, !th.isEmpty {
-                thinkingView(th, message: message)
-            }
-            // v3.0.2: 去掉旧的 TrailCard，改用 toolBubble 显示工具调用
-            // v3.0.2e：如果 content 是空的，就不显示气泡（避免空白气泡）
-            // v3.5.12 修订：解说=单独长气泡(一长)。模型"先解说后执行"的正文就作为普通 assistant 气泡
-            // 显示在工具卡上方；工具卡标题=机械短标签(一短,见 toolShortLabel)，两者分开、不重复。
-            // 模型本轮没写解说(content空)则无气泡，卡片标题仍显示机械短标签，不落空。
-            if !message.content.isEmpty {
-                // v3.4.5：打字机——流式中按 revealedCount 逐字显示；完成后显示全文
-                // v3.5.4：打字机——isStreaming 或 forceType 都按 revealedCount 逐字显示；
-                // 此前只有 isStreaming 才走前缀，forceType(内容在出现前已定好、isStreaming=false)走了全文分支，
-                // 导致"打字机一下有一下没有"(用户实测反馈)。修复后非流式完成的消息也逐字打出来。
-                let shown = (isStreaming || forceType) ? String(message.content.prefix(revealedCount)) : message.content
-                // v4.4.11：assistant 行内代码橙色高亮, user 纯文本
-                VStack(alignment: .leading, spacing: 3) {
-                    // v7.4.1：含代码围栏的消息走分块渲染（普通文本块 + 黑色代码预览块）；
-                    // 其余消息保持原渲染路径，避免影响普通对话的可选中/富文本行为。
-                    // v8.5：全部走分块渲染——列表/标题/引用/段落节奏一致；
-                    // 流式与打字机期间仍用轻量 Text（避免 UITextView 高频刷新闪跳），
-                    // 完成后才切富文本分块渲染（v6.4.0 的廉价渲染策略保留）。
-                    if isStreaming || forceType {
-                        messageTextView(shown)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
-                            .frame(maxWidth: isUser ? nil : .infinity, alignment: .leading)
-                            .background(
-                                Group {
-                                    if isUser {
-                                        Color(UIColor.tertiarySystemFill)
-                                    } else if message.isError {
-                                        Color.red.opacity(0.15)
-                                    } else {
-                                        Color.clear
-                                    }
-                                }
-                            )
-                            .foregroundColor(.primary)
-                            .cornerRadius(18)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 18)
-                                    .strokeBorder(isSelected ? Color.secondary.opacity(0.5) : Color.clear, lineWidth: 2)
-                            )
-                    } else {
-                        messageBlocksView(shown)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
-                            .frame(maxWidth: isUser ? nil : .infinity, alignment: .leading)
-                            .background(
-                                Group {
-                                    if isUser {
-                                        Color(UIColor.tertiarySystemFill)
-                                    } else if message.isError {
-                                        Color.red.opacity(0.15)
-                                    } else {
-                                        Color.clear
-                                    }
-                                }
-                            )
-                            .foregroundColor(.primary)
-                            .cornerRadius(18)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 18)
-                                    .strokeBorder(isSelected ? Color.secondary.opacity(0.5) : Color.clear, lineWidth: 2)
-                            )
+        let shown = (isStreaming || forceType)
+            ? String(message.content.prefix(revealedCount))
+            : message.content
+        let imgs = message.imageDataURLs ?? []
+        let hasImages = !imgs.isEmpty
+        let thinkingText = (thinkEnabled && !isUser) ? (message.thinking ?? "") : ""
+        let hasThinking = !thinkingText.isEmpty
+        let hasBody = !message.content.isEmpty
+
+        return Group {
+            if hasImages || hasThinking || hasBody {
+                bubbleChrome(
+                    VStack(alignment: isUser ? .trailing : .leading,
+                           spacing: ChatMetrics.blockGap) {
+                        // ① 附件（图片排在正文前，缩略图横排）
+                        if hasImages {
+                            messageImageStrip(imgs)
+                        }
+                        // ② 思考块（最轻：无边框、灰字、默认折叠）
+                        if hasThinking {
+                            thinkingView(thinkingText, message: message)
+                        }
+                        // ③ 正文（最重：字号 16 / 中文行距 6.5）
+                        if hasBody {
+                            bubbleContent(shown)
+                        }
                     }
-                    // v8.4：朗读喇叭按钮已删（TTS 功能整体移除）
-                }
-                .frame(maxWidth: isUser ? nil : .infinity, alignment: .leading)
-                // v8.4：自动朗读（autoSpeak + onChange）已随 TTS 删除
+                )
             }
         }
     }
@@ -2068,7 +2097,8 @@ struct MessageBubble: View {
                     .padding(.leading, 27)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // v8.6：工具卡与气泡同一宽度上限（86% 屏宽），整列视觉对齐
+        .frame(maxWidth: UIScreen.main.bounds.width * ChatMetrics.bubbleMaxWidth, alignment: .leading)
         .sheet(isPresented: $showToolResult) {
             ToolResultSheet(message: message)
         }

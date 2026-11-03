@@ -35,6 +35,9 @@ enum ChatMetrics {
     static let blockGap: CGFloat = 10             // 气泡内各块之间的间距
     static let messageGap: CGFloat = 18           // 消息之间的间距
     static let paragraphGap: CGFloat = 9          // 正文段落间距
+    static let bubbleRadius: CGFloat = 18         // 气泡圆角
+    static let bubblePaddingH: CGFloat = 14       // 气泡左右内边距
+    static let bubblePaddingV: CGFloat = 10       // 气泡上下内边距
 }
 
 struct MessageBlock: Identifiable {
@@ -45,6 +48,8 @@ struct MessageBlock: Identifiable {
         case list(items: [String], ordered: Bool)
         case heading(level: Int, text: String)
         case quote(String)
+        // v8.6：表格块——| a | b | + | --- | --- |，横向可滚不撑爆气泡
+        case table(rows: [[String]])
     }
     let id = UUID()
     var kind: Kind
@@ -128,9 +133,48 @@ enum MessageBlockParser {
             items.removeAll()
         }
 
-        for line in lines {
+        // v8.6：表格探测——本行含 | 且下一行是分隔行（|---|:--:|）。
+        // 不强制首列前有 |：模型常输出 "A | B" / "--- | ---" 这种无前导竖线的表，
+        // 分隔行（每格只由 - 和 : 组成）已经把误判概率压得很低。
+        func isTableRow(_ s: String) -> Bool {
+            let t = s.trimmingCharacters(in: .whitespaces)
+            return t.contains("|")
+                && !t.hasPrefix("```")
+        }
+        func isTableSeparator(_ s: String) -> Bool {
+            let t = s.trimmingCharacters(in: .whitespaces)
+            guard t.contains("|") else { return false }
+            let cells = MessageBlockParser.splitTableRow(t)
+            guard cells.count > 1 else { return false }
+            return cells.allSatisfy { c in
+                let d = c.filter { !$0.isWhitespace }
+                return !d.isEmpty && d.allSatisfy { $0 == "-" || $0 == ":" } && d.contains("-")
+            }
+        }
+
+        var i = 0
+        while i < lines.count {
+            let line = lines[i]
             let l = line.trimmingCharacters(in: .whitespaces)
-            if l.isEmpty { flushItems(); flushPara(); continue }
+
+            // 表格：本行是表格行 + 下一行是分隔行（Markdown 表格必须分隔行才算）
+            if isTableRow(l), i + 1 < lines.count, isTableSeparator(lines[i + 1]) {
+                flushItems(); flushPara()
+                var rows: [[String]] = [MessageBlockParser.splitTableRow(l)]
+                var j = i + 2
+                while j < lines.count {
+                    let next = lines[j].trimmingCharacters(in: .whitespaces)
+                    // 表格在空行 / 非表格行处结束（分隔行之后的行按表体处理）
+                    guard !next.isEmpty, next.contains("|"), !next.hasPrefix("```") else { break }
+                    rows.append(MessageBlockParser.splitTableRow(next))
+                    j += 1
+                }
+                blocks.append(MessageBlock(kind: .table(rows: rows)))
+                i = j
+                continue
+            }
+
+            if l.isEmpty { flushItems(); flushPara(); i += 1; continue }
 
             // 标题（# / ## / ###）
             if let m = l.range(of: #"^#{1,3}\s+"#, options: .regularExpression) {
@@ -138,6 +182,7 @@ enum MessageBlockParser {
                 let level = l.prefix(while: { $0 == "#" }).count
                 blocks.append(MessageBlock(kind: .heading(level: level,
                                                           text: String(l[m.upperBound...]))))
+                i += 1
                 continue
             }
             // 无序列表
@@ -145,6 +190,7 @@ enum MessageBlockParser {
                 if !items.isEmpty && ordered { flushItems() }
                 ordered = false
                 items.append(String(l.dropFirst(2)))
+                i += 1
                 continue
             }
             // 有序列表
@@ -153,19 +199,47 @@ enum MessageBlockParser {
                 ordered = true
                 items.append(l.replacingOccurrences(of: #"^\d+[.)]\s+"#, with: "",
                                                      options: .regularExpression))
+                i += 1
                 continue
             }
             // 引用
             if l.hasPrefix("> ") {
                 flushItems(); flushPara()
                 blocks.append(MessageBlock(kind: .quote(String(l.dropFirst(2)))))
+                i += 1
                 continue
             }
             flushItems()
             para.append(line)
+            i += 1
         }
         flushItems(); flushPara()
         return blocks
+    }
+
+    /// v8.6：表格行切分——去掉首尾竖线，按未转义的 | 切，trim 每个单元格
+    static func splitTableRow(_ s: String) -> [String] {
+        var t = s.trimmingCharacters(in: .whitespaces)
+        if t.hasPrefix("|") { t.removeFirst() }
+        if t.hasSuffix("|") { t.removeLast() }
+        var cells: [String] = []
+        var cur = ""
+        var escaped = false
+        for ch in t {
+            if escaped {
+                cur.append(ch == "|" ? "|" : ch)
+                escaped = false
+            } else if ch == "\\" {
+                escaped = true
+            } else if ch == "|" {
+                cells.append(cur.trimmingCharacters(in: .whitespaces))
+                cur = ""
+            } else {
+                cur.append(ch)
+            }
+        }
+        cells.append(cur.trimmingCharacters(in: .whitespaces))
+        return cells
     }
 }
 
@@ -189,13 +263,19 @@ enum CitationRenderer {
         let out = NSMutableAttributedString(attributedString: attributed)
         for m in matches.reversed() {
             let id = ns.substring(with: m.range(at: 1))
-            let hit = urls[id] != nil
+            let target = urls[id].flatMap { URL(string: $0) }
+            let hit = target != nil
             let marker = NSMutableAttributedString(string: " \(id) ")
             marker.addAttributes([
                 .font: UIFont.systemFont(ofSize: 11, weight: .semibold),
                 .foregroundColor: hit ? UIColor.white : UIColor.secondaryLabel,
                 .backgroundColor: hit ? UIColor.systemBlue : UIColor.systemGray5
             ], range: NSRange(location: 0, length: marker.length))
+            // v8.6：命中条目带上跳转 URL——SelectableText 点击命中测试用（未命中的灰标不可点）
+            if let target {
+                marker.addAttribute(.citationURL, value: target,
+                                    range: NSRange(location: 0, length: marker.length))
+            }
             out.replaceCharacters(in: m.range, with: marker)
         }
         return out
@@ -212,6 +292,19 @@ enum CitationRenderer {
         }
         return urls
     }
+}
+
+// MARK: - v8：NSAttributedString 自定义属性键（引用角标跳转）
+
+extension NSAttributedString.Key {
+    /// v8.6：[cite:sN] 角标携带的目标 URL（点击时由 SelectableText 弹出确认后打开）
+    static let citationURL = NSAttributedString.Key("xosvi.citationURL")
+}
+
+/// v8.6：可点引用（`Identifiable` 供 SwiftUI `.alert(item:)` 使用）
+struct CitationLink: Identifiable {
+    let id = UUID()
+    let url: URL
 }
 
 // MARK: - v8.5：正文渲染器（按块类型渲染 + 中文行距 + 段落间距）
@@ -257,7 +350,7 @@ struct MessageBodyView: View {
                             HStack(alignment: .top, spacing: 8) {
                                 Text(ordered ? "\(i + 1)." : "•")
                                     .font(ChatType.body)
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(isUser ? textColor.opacity(0.8) : .secondary)
                                     .frame(minWidth: 16, alignment: .trailing)
                                 if let renderText = renderText {
                                     renderText(item)
@@ -281,18 +374,84 @@ struct MessageBodyView: View {
                 case .quote(let t):
                     HStack(alignment: .top, spacing: 9) {
                         RoundedRectangle(cornerRadius: 1.5)
-                            .fill(DoubaoTheme.hairline)
+                            .fill(isUser ? textColor.opacity(0.45) : DoubaoTheme.hairline)
                             .frame(width: 3)
                         Text(t)
                             .font(ChatType.secondary)
                             .lineSpacing(4)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(isUser ? textColor.opacity(0.85) : .secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+
+                case .table(let rows):
+                    MarkdownTable(rows: rows, textColor: textColor)
                 }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // v8.6：不再强制撑满——短内容贴合自身宽度（气泡才不会变成一条长卡片），
+        // 长内容由父级给的 width 上限（86% 屏宽）自然换行。
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+// MARK: - v8.6：Markdown 表格（横向可滚，不撑爆气泡）
+
+struct MarkdownTable: View {
+    let rows: [[String]]
+    /// v8.6：文字色——用户气泡（accent 底）传白字，AI 气泡传主色
+    var textColor: Color = .primary
+
+    private var columnCount: Int { rows.map(\.count).max() ?? 0 }
+
+    var body: some View {
+        if columnCount == 0 {
+            EmptyView()
+        } else {
+            ScrollView(.horizontal, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, row in
+                        HStack(alignment: .top, spacing: 0) {
+                            ForEach(0..<columnCount, id: \.self) { c in
+                                Text(c < row.count ? row[c] : "")
+                                    .font(rowIndex == 0
+                                          ? .system(size: 13, weight: .semibold)
+                                          : .system(size: 13))
+                                    .foregroundColor(textColor.opacity(rowIndex == 0 ? 1 : 0.9))
+                                    .lineSpacing(3)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    // v8.6：单列限宽——超长单元格在列内换行，不再把表格拉成一条长龙
+                                    .frame(minWidth: 64, maxWidth: 200, alignment: .leading)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 7)
+                                    .overlay(alignment: .trailing) {
+                                        if c < columnCount - 1 {
+                                            Rectangle()
+                                                .fill(textColor.opacity(0.12))
+                                                .frame(width: 0.6)
+                                        }
+                                    }
+                            }
+                        }
+                        .background(rowIndex == 0
+                                    ? Color(UIColor.tertiarySystemFill).opacity(0.35)
+                                    : Color.clear)
+                        .overlay(alignment: .bottom) {
+                            if rowIndex < rows.count - 1 {
+                                Rectangle()
+                                    .fill(textColor.opacity(0.12))
+                                    .frame(height: 0.6)
+                            }
+                        }
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(textColor.opacity(0.15), lineWidth: 0.6)
+                )
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
 

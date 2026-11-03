@@ -163,6 +163,9 @@ struct ReasoningRichText: View {
                             .foregroundColor(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
+                // v8.6：表格块（思考内容里同样横向可滚；字号 13 略大于思考正文，仍属次要信息）
+                case .table(let rows):
+                    MarkdownTable(rows: rows)
                 }
             }
         }
