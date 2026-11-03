@@ -15,9 +15,17 @@ struct BalanceResult {
     var via: String           // 命中的策略名
 }
 
+/// Result 的 Failure 必须遵循 Error——String 不行，包一层
+enum BalanceError: Error, CustomStringConvertible {
+    case message(String)
+    var description: String {
+        switch self { case .message(let m): return m }
+    }
+}
+
 final class BalanceChecker {
     /// 按策略依次尝试，任一成功即返回
-    static func check(config: ModelConfig, completion: @escaping (Result<BalanceResult, String>) -> Void) {
+    static func check(config: ModelConfig, completion: @escaping (Result<BalanceResult, BalanceError>) -> Void) {
         // 策略 1：DeepSeek 官方余额接口
         if config.provider.lowercased().contains("deepseek")
             || config.baseURL.lowercased().contains("deepseek") {
@@ -32,7 +40,7 @@ final class BalanceChecker {
                         completion(.success(BalanceResult(remaining: "\(symbol)\(total)", via: "deepseek")))
                         return
                     }
-                    completion(.failure("响应解析失败"))
+                    completion(.failure(.message("响应解析失败")))
                 case .failure(let e):
                     completion(.failure(e))
                 }
@@ -45,7 +53,7 @@ final class BalanceChecker {
             switch r {
             case .success(let json):
                 guard let limit = json["hard_limit_usd"] as? Double else {
-                    completion(.failure("该服务商不支持余额查询，请到控制台查看"))
+                    completion(.failure(.message("该服务商不支持余额查询，请到控制台查看")))
                     return
                 }
                 BalanceChecker.getJSON(config, path: "/dashboard/billing/usage") { r2 in
@@ -71,10 +79,10 @@ final class BalanceChecker {
 
     /// 统一 GET：base + path，鉴权按 config.authMethod（与 ModelRow.speedTest 同一模式）
     private static func getJSON(_ config: ModelConfig, path: String,
-                                completion: @escaping (Result<[String: Any], String>) -> Void) {
+                                completion: @escaping (Result<[String: Any], BalanceError>) -> Void) {
         let base = config.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: base + path) else {
-            completion(.failure("Base URL 无效"))
+            completion(.failure(.message("Base URL 无效")))
             return
         }
         var req = URLRequest(url: url, timeoutInterval: 15)
@@ -88,12 +96,12 @@ final class BalanceChecker {
         }
         URLSession.shared.dataTask(with: req) { data, resp, error in
             DispatchQueue.main.async {
-                if let error = error { completion(.failure(error.localizedDescription)); return }
+                if let error = error { completion(.failure(.message(error.localizedDescription))); return }
                 let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
                 guard let data, status == 200,
                       let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                     let raw = String(data: data ?? Data(), encoding: .utf8) ?? ""
-                    completion(.failure("HTTP \(status): \(raw.prefix(120))"))
+                    completion(.failure(.message("HTTP \(status): \(raw.prefix(120))")))
                     return
                 }
                 completion(.success(json))
