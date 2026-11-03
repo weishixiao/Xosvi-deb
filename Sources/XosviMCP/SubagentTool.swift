@@ -14,6 +14,28 @@ import Foundation
 //   3. 轮次上限 max_rounds（默认 12），超了强制要求它给出结论
 //   4. 上下文按字符预算裁剪（默认 12 万字符），防止子代理自己爆
 //   5. 同步执行（MCP 工具只能同步返回），但每轮都有进度回调 → UI 实时可见
+//   6. v8.1：执行核心抽成 executeCore(task:...) —— 串行版 invoke 与并行派发器
+//      （SubagentDispatcher）共用同一套循环/轮次上限/熔断消费/上下文裁剪逻辑
+
+/// v8.1：任务参数白名单（并行派发与单任务共用）
+enum SubagentSandbox {
+    /// 子代理绝不能碰的写操作/系统级工具（并发跑写操作会互相踩）
+    static let forbidden = Set<String>([
+        "inject", "app", "control", "package", "subagent", "jbplot",
+        "app_write_file", "bind_app_write", "macro", "automation", "project",
+        "rescue", "root", "engine", "control_console"
+    ])
+    /// 工具名是否允许：显式 allow 白名单优先，否则按黑名单过滤
+    static func allow(_ originalName: String, allowList: Set<String>?) -> Bool {
+        let root = originalName.components(separatedBy: ".").first ?? originalName
+        if forbidden.contains(originalName) || forbidden.contains(root) { return false }
+        if let allow = allowList {
+            return allow.contains(originalName) || allow.contains(root)
+        }
+        return true
+    }
+}
+
 final class SubagentTool: MCPTool {
 
     /// 进度回调：runLoop 里挂上，用来在会话里更新"子代理运行中"卡片
@@ -23,13 +45,16 @@ final class SubagentTool: MCPTool {
         name: "subagent",
         summary: """
         通用子代理：把一件**需要多轮探索**的事整套甩给它，它自己调工具跑完，只把结论交回来。 \
-        Use for: 翻很多文件/试多条命令/查一堆网页/对比多个方案才得出结论的任务；或者你想省主上下文时。 \
-        Don't use for: 一步就能完成的动作（直接调对应工具）、需要用户拍板的选择。 \
-        写法要求：task 必须自包含——子代理看不到本段对话，要把目标、已知路径/URL、约束、要它返回什么写清楚。 \
-        Example: 用户问"项目里哪些地方用了旧浏览器 API" → subagent {task:'在 Sources 下找出所有仍引用 BrowserManager / FloatingBrowser 的文件与行号，按文件分组返回', tools:'rg'}
+        支持两种用法：单任务（task 参数，串行）或多任务并行（tasks 数组，≤6 个并发跑、各自独立上下文）。 \
+        Use for: 翻很多文件/试多条命令/查一堆网页/对比多个方案才得出结论的任务；或 3 个以上互不依赖的子任务（用 tasks 并行）；或者你想省主上下文时。 \
+        Don't use for: 一步就能完成的动作（直接调对应工具）、需要用户拍板的选择、彼此有依赖的步骤（有依赖就先做 A 再派 B）。 \
+        写法要求：task/每个子任务的 prompt 必须自包含——子代理看不到本段对话，要把目标、已知路径/URL、约束、要它返回什么写清楚。 \
+        Example: 用户问"项目里哪些地方用了旧浏览器 API" → subagent {task:'在 Sources 下找出所有仍引用 BrowserManager / FloatingBrowser 的文件与行号，按文件分组返回', tools:'rg'}；\
+        多个独立检索 → subagent {tasks:'[{"title":"查A","prompt":"..."},{"title":"查B","prompt":"..."}]'}
         """,
         parameters: [
             "task": "完整任务书（自包含：目标 + 已知路径/URL + 约束 + 期望返回格式）",
+            "tasks": "可选：并行派发多任务，JSON 数组 [{\"title\":..., \"prompt\":..., \"tools\":[\"web.search\",\"file\"]}]（≤6 个，各自独立上下文并发跑，只回摘要）",
             "context": "可选：要原样交给子代理的素材（文件片段、报错输出、候选链接）",
             "tools": "可选：只给子代理这几个工具，逗号分隔（如 shell.exec,workspace,web.search）；不填=用当前已启用的全部工具",
             "exclude": "可选：禁用某些工具，逗号分隔（默认自动排除 subagent 自己，防止套娃）",
@@ -49,6 +74,16 @@ final class SubagentTool: MCPTool {
     )
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
+        // v8.1：tasks 数组 → 并行派发；否则走原来的单任务串行路径
+        if let raw = params["tasks"] as? String, !raw.trimmingCharacters(in: .whitespaces).isEmpty {
+            return try invokeParallel(raw)
+        }
+        if let arr = params["tasks"] as? [[String: Any]], !arr.isEmpty {
+            let encoded = try? JSONSerialization.data(withJSONObject: arr)
+            if let s = encoded.flatMap({ String(data: $0, encoding: .utf8) }) {
+                return try invokeParallel(s)
+            }
+        }
         let task = (params["task"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !task.isEmpty else { throw MCPError.invalidParams("task required（要写自包含的任务书）") }
 
@@ -58,16 +93,41 @@ final class SubagentTool: MCPTool {
             throw MCPError.failed("没有可用的模型配置：请先在设置里添加模型，或用 model 参数指定")
         }
         let maxRounds = min(max(params["max_rounds"] as? Int ?? 12, 1), 40)
-        let budget = 120_000
         let reasoning = min(max(params["reasoning"] as? Int ?? 1, 0), 4)
+
+        // v8.1：执行核心抽出为静态方法，单任务与并行派发共用（返回结构化结果）
+        let core = Self.executeCore(task: task, context: params["context"] as? String,
+                                    tools: params["tools"] as? String,
+                                    exclude: params["exclude"] as? String,
+                                    maxRounds: maxRounds, config: config,
+                                    reasoning: reasoning,
+                                    progress: { round, note in
+                                        SubagentTool.progressHandler?(round, note)
+                                    })
+        return core
+    }
+
+    // MARK: - v8.1 执行核心（单任务与并行派发共用）
+
+    /// 一次受限的多轮工具循环。串行版 invoke 与 SubagentDispatcher 都走这里，
+    /// 保证轮次上限 / 熔断消费 / 上下文裁剪 / 工具黑名单行为一致。
+    static func executeCore(task: String,
+                            context: String?,
+                            tools: String?,
+                            exclude: String?,
+                            maxRounds: Int,
+                            config: ModelConfig,
+                            reasoning: Int,
+                            progress: ((Int, String) -> Void)?) -> [String: Any] {
+        let budget = 120_000
 
         // 工具集：白名单 / 黑名单
         let allowed: Set<String>? = {
-            guard let s = params["tools"] as? String, !s.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+            guard let s = tools, !s.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
             return Set(s.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
         }()
         var excluded: Set<String> = ["subagent"]
-        if let s = params["exclude"] as? String {
+        if let s = exclude {
             s.split(separator: ",").forEach { excluded.insert($0.trimmingCharacters(in: .whitespaces)) }
         }
 
@@ -95,8 +155,17 @@ final class SubagentTool: MCPTool {
         """
 
         var userText = "任务：\n\(task)"
-        if let ctx = params["context"] as? String, !ctx.isEmpty {
+        if let ctx = context, !ctx.isEmpty {
             userText += "\n\n参考素材（原样提供）：\n\(ctx)"
+        }
+
+        // v8.1：工具黑名单兜底（与并行派发共用 SubagentSandbox）
+        // —— 单任务串行版同样禁止把写操作工具交给子代理
+        schemas = schemas.filter { schema in
+            guard let fn = schema["function"] as? [String: Any],
+                  let name = fn["name"] as? String else { return false }
+            let original = ToolRegistry.shared.tool(named: name)?.definition.name ?? name
+            return SubagentSandbox.allow(original, allowList: nil)
         }
 
         var history: [ChatMessage] = [
@@ -111,7 +180,7 @@ final class SubagentTool: MCPTool {
 
         while round <= maxRounds {
             round += 1
-            SubagentTool.progressHandler?(round, round == 1 ? "子代理开始" : "第 \(round) 轮")
+            progress?(round, round == 1 ? "子代理开始" : "第 \(round) 轮")
 
             // 上下文预算裁剪：保留 system + 最后若干条（工具结果可能很长）
             history = Self.trim(history, budget: budget)
@@ -178,8 +247,7 @@ final class SubagentTool: MCPTool {
                 }
                 step["output_chars"] = toolOutput.count
                 steps.append(step)
-                SubagentTool.progressHandler?(round, "\(call.name)：\(Self.shortArgs(args))")
-
+                progress?(round, "\(call.name)：\(Self.shortArgs(args))")
                 history.append(ChatMessage(role: "tool", content: toolOutput,
                                            toolCallId: call.id, toolName: call.name))
                 // 如果模型一次批了多个调用，剩下的按"未执行"补空结果，保持历史合法
@@ -204,6 +272,62 @@ final class SubagentTool: MCPTool {
         if let f = failure { out["error"] = f }
         AuditLog.shared.log("subagent", detail: "rounds=\(round) chars=\(finalText.count)")
         return out
+    }
+
+    // MARK: - v8.1 并行派发（tasks 数组）
+
+    /// tasks: JSON 数组 [{title, prompt, tools?}]，最多 6 个；白名单交集后交给 SubagentDispatcher。
+    private func invokeParallel(_ raw: String) throws -> [String: Any] {
+        guard let data = raw.data(using: .utf8),
+              let arr = try? JSONDecoder().decode([SubagentTask].self, from: data),
+              !arr.isEmpty else {
+            throw MCPError.invalidParams("tasks 必须是 JSON 数组：[{\"title\":..., \"prompt\":..., \"tools\":[...]}]")
+        }
+        guard arr.count <= 6 else {
+            throw MCPError.invalidParams("最多 6 个子任务，超出请分批派发")
+        }
+        // 白名单交集：prompt 里声明的 tools 与安全名单求交；结果为空则给默认只读组合
+        let tasks: [SubagentTask] = arr.map { t in
+            var c = t
+            let requested = Set(c.tools.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty })
+            c.tools = requested.filter { SubagentSandbox.allow($0, allowList: nil) }.sorted()
+            if c.tools.isEmpty { c.tools = ["web.search", "web.fetch"] }
+            c.prompt = """
+            【子任务：\(c.title.isEmpty ? "(未命名)" : c.title)】
+            \(c.prompt)
+            （提示：你没有主对话历史，本 prompt 必须自包含；可用工具：\(c.tools.joined(separator: ", "))）
+            """
+            return c
+        }
+
+        guard let config = ModelStore.shared.defaultConfig else {
+            throw MCPError.failed("没有可用的模型配置：请先在 设置 → 模型API 添加")
+        }
+
+        AuditLog.shared.log("subagent.parallel", detail: "tasks=\(tasks.count)")
+
+        let sem = DispatchSemaphore(value: 0)
+        var out: [SubagentTask] = []
+        // 进度：借用 progressHandler（runLoop 已挂到状态栏），把每个子任务的状态变化推给 UI
+        SubagentDispatcher.runAll(tasks: tasks, config: config, onUpdate: { idx, t in
+            SubagentTool.progressHandler?(idx + 1, "[\(t.status)] \(t.title)")
+        }, completion: { results in
+            out = results
+            sem.signal()
+        })
+        if sem.wait(timeout: .now() + 3600) == .timedOut {
+            throw MCPError.failed("并行子代理整体超时（3600 秒）")
+        }
+
+        let done = out.filter { $0.status == "done" }.count
+        return [
+            "ok": done > 0,
+            "total": out.count,
+            "done": done,
+            "failed": out.filter { $0.status == "failed" }.count,
+            "results": out.map { ["title": $0.title, "status": $0.status, "result": $0.result] },
+            "note": "各子任务独立上下文并发执行；结果为各任务摘要，由你综合后答复用户。"
+        ]
     }
 
     // MARK: - 辅助

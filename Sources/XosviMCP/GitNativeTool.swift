@@ -7,19 +7,19 @@ final class GitNativeTool: MCPTool {
         name: "git",
         summary: "Git operations WITHOUT any subprocess — works on jailed/rootHide devices where real git and python3 are blocked (ENOSYS 85). "
             + "Talks to GitHub REST API over URLSession with a real Authorization header (the built-in curl drops -H, web.fetch goes through a proxy that strips auth). "
-            + "Commands: status / login / whoami / clone / pull / commit / build / log / branch / repos. "
+            + "Commands: status / login / whoami / clone / pull / commit / push_all / auth_status / build / log / branch / repos. "
             + "BUILD GATE (hard rule): if `build` shows the latest run failed, commit is REJECTED unless you pass build_red_ack=\"<run id>\" — i.e. you must fix that red build first, not stack unrelated changes. "
             + "Use for: read or write a GitHub repo from this device (clone source, review code, edit files, commit & push). "
             + "Don't use for: local-only git history (this keeps a lightweight manifest, not a .git directory). "
-            + "AUTH: token comes from env vars (GITHUB_TOKEN / GH_TOKEN / GIT_TOKEN / GITHUB_PAT) or Keychain automatically — do NOT ask the user for a token; run git command:status first (ready:true means just clone). "
-            + "Typical flow: git command:status → git command:clone repo:https://github.com/owner/name → edit files → git command:commit message:\"fix: ...\"。",
+            + "AUTH: token comes from env vars (GITHUB_TOKEN / GH_TOKEN / GIT_TOKEN / GITHUB_PAT) or Keychain automatically — do NOT ask the user for a token; run git command:status first (ready:true means just clone). On 401/403 run git command:auth_status (returns only configured yes/no, never the token) before asking the user. "
+            + "push_all = one-shot commit (auto-merge remote first, translate common failures into actionable Chinese hints). Typical flow: git command:status → git command:clone repo:https://github.com/owner/name → edit files → git command:push_all message:\"fix: ...\"。",
         parameters: [
-            "command": "status / login / whoami / clone / pull / commit / build / log / branch / repos",
+            "command": "status / login / whoami / clone / pull / commit / push_all / auth_status / build / log / branch / repos",
             "token": "for login: GitHub PAT (fine-grained 需 Contents: Read and write；classic 需 repo)",
             "repo": "for clone/repos: owner/name，例如 weishixiao/Xosvi",
             "path": "本地目录（默认 Workspace/<repo 名>），可相对或绝对",
             "branch": "分支（默认 main）",
-            "message": "for commit: 提交信息",
+            "message": "for commit/push_all: 提交信息",
             "files": "for commit: 只提交这些相对路径（逗号分隔，留空=全部改动）",
             "limit": "for log: 条数（默认 10）",
             "build_red_ack": "for commit: 最近一次构建失败时必须传它的 run id，否则拒绝提交"
@@ -233,8 +233,66 @@ final class GitNativeTool: MCPTool {
             }
             throw MCPError.failed("创建分支失败：HTTP \(r.status) \(r.error ?? "")")
 
+        // v8.1：提交+推送打包成原子命令——模型手动串 commit→push 容易漏（没 add、远端领先没合并）。
+        // 步骤：status 收集变更 → commit（复用现有提交管线，含自动合并远端）→ 返回结构化结果。
+        // （GitNative 的 commit 本身就是"提交并更新远端 ref"的原子实现，push_all = 包装常见失败翻译成可读中文）
+        case "push_all":
+        let msg = (params["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !msg.isEmpty else {
+            throw MCPError.invalidParams("message required（提交信息，英文 conventional commits，如 \"fix: ...\"）")
+        }
+        let root = try resolveRoot(params)
+        // commit 内部已完成：BUILD GATE 检查 → 远端领先自动合并 → blobs/tree/commit/ref 全链
+        do {
+            var out = try GitNative.commit(root, message: msg,
+                                           only: nil,
+                                           redAck: params["build_red_ack"] as? String,
+                                           progress: { _ in })
+            if let cs = out["changed"] as? Int, cs == 0 {
+                out["note"] = "没有需要提交的改动（工作区与远端一致）。"
+            }
+            out["pushed"] = true
+            return out
+        } catch let e as MCPError {
+            let raw = e.description
+            // 可读化：把常见失败翻译成模型能自我修复的中文指引
+            if raw.contains("401") || raw.lowercased().contains("unauthorized") || raw.lowercased().contains("bad credentials") {
+                throw MCPError.failed("推送被拒（401 鉴权失败）。先调 git.auth_status 检查凭证；已配置 → token 可能过期，提示用户在 设置→环境变量 更新 GITHUB_TOKEN；未配置 → 引导用户去 设置→环境变量 添加，绝不让用户把 token 发到对话里。")
+            }
+            if raw.contains("403") {
+                throw MCPError.failed("推送被拒（403 无权限）。检查该 token 对此仓库是否有 Contents: Read and write 权限（fine-grained PAT 需在 GitHub 设置里勾选）。")
+            }
+            if raw.contains("422") {
+                throw MCPError.failed("更新分支失败（422，远端又有新提交）。先 git command:pull 同步远端（本地改动会被保留合并），再重试 push_all。")
+            }
+            throw e
+        }
+
+        // v8.1：凭证存在性探针（只答 yes/no + 变量名，永不回显 token 值）。
+        // 模型在 401/403 后先调这个，而不是向用户索要明文 token。
+        case "auth_status":
+        let raw = (params["repo"] as? String) ?? (params["url"] as? String) ?? ""
+        let env = EnvVars.current()
+        let envKeys = ["GITHUB_TOKEN", "GH_TOKEN", "GIT_TOKEN", "GITHUB_PAT"]
+            .filter { env[$0]?.isEmpty == false }
+        if GitNative.token != nil {
+            return [
+                "ok": true,
+                "authenticated": true,
+                "source": envKeys.isEmpty ? "keychain" : "env:\(envKeys.joined(separator: ","))",
+                "masked": GitNative.mask(GitNative.token!),
+                "note": "凭证已配置，git 工具的 clone/commit/push 会自动带上，你不需要也不要向用户索要 token。"
+            ]
+        }
+        return [
+            "ok": true,
+            "authenticated": false,
+            "hint": "未配置凭证。请提示用户：设置 → 环境变量 → 添加 GITHUB_TOKEN（GitHub PAT，fine-grained 需勾 Contents: Read and write）；或让用户执行 git command:login token:<PAT>（存 Keychain）。绝不让明文 token 出现在对话里。\(raw.isEmpty ? "" : "（目标：\(raw)）")"
+        ]
+
+
         default:
-            throw MCPError.invalidParams("未知子命令 \(cmd)。可用：status/login/whoami/clone/pull/commit/log/branch/repos")
+            throw MCPError.invalidParams("未知子命令 \(cmd)。可用：status/login/whoami/clone/pull/commit/push_all/auth_status/log/branch/repos")
         }
     }
 

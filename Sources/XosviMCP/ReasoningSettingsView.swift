@@ -7,6 +7,8 @@ import SwiftUI
 struct ReasoningSettingsView: View {
     @State private var selectedModel: String = ""
     @State private var spec = ReasoningSpec()
+    /// v8.1：深度思考专用模型选择（"" = 跟随当前模型）
+    @State private var deepThinkSelection: String = ReasoningSettings.shared.deepThinkModelIdRaw ?? ""
 
     private var models: [ModelConfig] { ModelStore.shared.configs }
 
@@ -41,6 +43,31 @@ struct ReasoningSettingsView: View {
                 Text("回答质量")
             } footer: {
                 Text("开启后，长回答（>120 字）且思考开启时，会再请求一次模型做「批判 → 改进」，把改进内容追加到同一条消息末尾。会增加约一倍 token 消耗。")
+                    .font(.caption2)
+            }
+
+            // v8.1：深度思考专用模型——跟随当前模型（默认）或手动锁定某个配置。
+            // 动态解析方案：请求时才解析用哪个配置，切换当前模型无需重新配置。
+            Section {
+                Picker("深度思考模型", selection: $deepThinkSelection) {
+                    Text("跟随当前模型（自动）").tag("")
+                    ForEach(models) { m in
+                        Text(m.name).tag(m.id.uuidString)
+                    }
+                }
+                if deepThinkSelection.isEmpty {
+                    Text("深度思考将自动使用你当前选中的模型；切换模型时无需重新配置。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("已锁定指定模型，不再跟随当前模型切换。")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                }
+            } header: {
+                Text("专用模型")
+            } footer: {
+                Text("上面逐模型的参数方言按「模型名」生效；这里只决定深度思考请求发给哪个配置。")
                     .font(.caption2)
             }
 
@@ -131,6 +158,10 @@ struct ReasoningSettingsView: View {
             guard !selectedModel.isEmpty else { return }
             let proto = models.first { $0.model == selectedModel }?.apiProtocol ?? "OpenAI Chat Completions"
             ReasoningSettings.shared.setSpec(newValue, for: selectedModel, protocol: proto)
+        }
+        // v8.1：深度思考专用模型选择落库（"" → nil = 跟随当前模型）
+        .onChange(of: deepThinkSelection) { v in
+            ReasoningSettings.shared.deepThinkModelIdRaw = v.isEmpty ? nil : v
         }
     }
 

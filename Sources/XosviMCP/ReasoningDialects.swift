@@ -253,6 +253,49 @@ final class ReasoningSettings {
             UserDefaults.standard.set(data, forKey: key)
         }
     }
+
+    // MARK: - v8.1：深度思考专用模型（nil = 跟随当前模型）
+    //
+    // 设计（对齐 Kelivo）：不用"切换时同步改选择"的事件方案（activate/markUsed/顶栏三个
+    // 切换入口都要埋钩子，漏一处就串），而是**请求时动态解析**——任何时刻不存在需要同步的
+    // 状态，天然免疫悬空引用/导入顺序问题。
+    //
+    //   deepThinkModelIdRaw == nil  → 跟随 ModelStore.defaultConfig（isDefault→最近使用→第一个）
+    //   非 nil                      → 手动锁定；对应配置被删则自动回退跟随
+
+    /// 深度思考专用模型配置 id（原始存储；nil/空 = 跟随当前模型）
+    var deepThinkModelIdRaw: String? {
+        get {
+            let s = UserDefaults.standard.string(forKey: "xosvi.deep_think_model_id")
+            return (s?.isEmpty == true) ? nil : s
+        }
+        set {
+            if let v = newValue, !v.isEmpty {
+                UserDefaults.standard.set(v, forKey: "xosvi.deep_think_model_id")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "xosvi.deep_think_model_id")
+            }
+        }
+    }
+
+    /// 是否处于"跟随当前模型"模式（设置页说明文案用）
+    var isFollowCurrent: Bool { deepThinkModelIdRaw == nil }
+
+    /// 请求时解析深度思考用哪个配置：手动锁定 > 跟随当前
+    /// 锁定的配置已被删除时自动回退跟随（不悬空）。
+    func effectiveDeepThinkConfig() -> ModelConfig? {
+        let store = ModelStore.shared
+        if let id = deepThinkModelIdRaw,
+           let m = store.configs.first(where: { $0.id.uuidString == id }) {
+            return m
+        }
+        // 跟随：defaultConfig 已含 isDefault → 最近使用 → 第一个 的回退链。
+        // 当前模型本身就是推理系列时也用它自己（避免"聊天用 A、思考用 B"的怪组合；
+        // 保留分支便于以后给推理模型加差异化参数，如自动拉高 reasoning 档）。
+        let current = store.defaultConfig
+        if current?.isReasoningModel == true { return current }
+        return current
+    }
 }
 
 // MARK: - 写入请求体
