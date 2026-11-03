@@ -13,13 +13,13 @@
 //  这个 entitlement 在 Support/Xosvi.entitlements 里声明。
 //
 //  重要：iOS 的 Swift overlay 把 xpc_connection_create_mach_service /
-//  xpc_release 标成了 unavailable（只在 macOS 公开），所以这里全部走
-//  libxpc 的 C 符号，用 dlsym 绑定 —— 不影响 entitlement 校验逻辑，
-//  App 与守护之间的协议与 debsrc/src/xosvid.c 保持逐字节一致。
+//  xpc_release 标成 unavailable（只在 macOS 公开），所以这里全部经
+//  dlsym 绑定 libxpc 的 C 符号。XPC 对象一律用 UnsafeMutableRawPointer
+//  承载——@convention(c) 只接受 Objective-C 可表示的参数类型，Swift
+//  class 不行。协议与 debsrc/src/xosvid.c 保持逐字节一致。
 //
 
 import Foundation
-import Darwin.C
 
 enum XosviDaemonError: LocalizedError {
     case unavailable(String)
@@ -33,7 +33,7 @@ enum XosviDaemonError: LocalizedError {
     }
 }
 
-/// libxpc C 符号的 dlsym 绑定（iOS 的 Swift overlay 不公开这几个符号）。
+/// libxpc C 符号的 dlsym 绑定。
 private enum XPCShim {
     private static let handle = dlopen("/usr/lib/libxpc.dylib", RTLD_LAZY)
 
@@ -43,43 +43,36 @@ private enum XPCShim {
     }
 
     static let createMachService = bind("xpc_connection_create_mach_service",
-        as: (@convention(c) (UnsafePointer<CChar>, DispatchQueue, UInt64) -> XPCObject?).self)
+        as: (@convention(c) (UnsafePointer<CChar>, DispatchQueue, UInt64) -> UnsafeMutableRawPointer?).self)
     static let release = bind("xpc_release",
-        as: (@convention(c) (XPCObject) -> Void).self)
+        as: (@convention(c) (UnsafeMutableRawPointer) -> Void).self)
     static let setEventHandler = bind("xpc_connection_set_event_handler",
-        as: (@convention(c) (XPCObject, @escaping () -> Void) -> Void).self)
+        as: (@convention(c) (UnsafeMutableRawPointer, @convention(block) (UnsafeMutableRawPointer) -> Void) -> Void).self)
     static let setTargetQueue = bind("xpc_connection_set_target_queue",
-        as: (@convention(c) (XPCObject, DispatchQueue?) -> Void).self)
+        as: (@convention(c) (UnsafeMutableRawPointer, DispatchQueue?) -> Void).self)
     static let resume = bind("xpc_connection_resume",
-        as: (@convention(c) (XPCObject) -> Void).self)
+        as: (@convention(c) (UnsafeMutableRawPointer) -> Void).self)
     static let sendMessageWithReply = bind("xpc_connection_send_message_with_reply",
-        as: (@convention(c) (XPCObject, XPCObject, DispatchQueue?,
-                             @escaping (XPCObject) -> Void) -> Void).self)
+        as: (@convention(c) (UnsafeMutableRawPointer, UnsafeMutableRawPointer, DispatchQueue?,
+                             @convention(block) (UnsafeMutableRawPointer) -> Void) -> Void).self)
     static let dictionaryCreate = bind("xpc_dictionary_create",
         as: (@convention(c) (UnsafePointer<UnsafePointer<CChar>?>?,
-                             UnsafePointer<XPCObject?>?, Int) -> XPCObject).self)
+                             UnsafePointer<UnsafeMutableRawPointer?>?, Int) -> UnsafeMutableRawPointer).self)
     static let dictionarySetString = bind("xpc_dictionary_set_string",
-        as: (@convention(c) (XPCObject, UnsafePointer<CChar>, UnsafePointer<CChar>) -> Void).self)
+        as: (@convention(c) (UnsafeMutableRawPointer, UnsafePointer<CChar>, UnsafePointer<CChar>) -> Void).self)
     static let dictionarySetValue = bind("xpc_dictionary_set_value",
-        as: (@convention(c) (XPCObject, UnsafePointer<CChar>, XPCObject) -> Void).self)
+        as: (@convention(c) (UnsafeMutableRawPointer, UnsafePointer<CChar>, UnsafeMutableRawPointer) -> Void).self)
     static let dictionaryGetString = bind("xpc_dictionary_get_string",
-        as: (@convention(c) (XPCObject, UnsafePointer<CChar>) -> UnsafePointer<CChar>?).self)
+        as: (@convention(c) (UnsafeMutableRawPointer, UnsafePointer<CChar>) -> UnsafePointer<CChar>?).self)
     static let dictionaryGetInt64 = bind("xpc_dictionary_get_int64",
-        as: (@convention(c) (XPCObject, UnsafePointer<CChar>) -> Int64).self)
+        as: (@convention(c) (UnsafeMutableRawPointer, UnsafePointer<CChar>) -> Int64).self)
     static let arrayCreate = bind("xpc_array_create",
-        as: (@convention(c) (UnsafePointer<XPCObject>?, Int) -> XPCObject).self)
+        as: (@convention(c) (UnsafePointer<UnsafeMutableRawPointer>?, Int) -> UnsafeMutableRawPointer).self)
     static let arraySetString = bind("xpc_array_set_string",
-        as: (@convention(c) (XPCObject, Int, UnsafePointer<CChar>) -> Void).self)
-
-    /// 轻量句柄：只在 deinit 时调一次 xpc_release。
-    final class XPCObject {
-        let raw: UnsafeMutableRawPointer
-        init(_ raw: UnsafeMutableRawPointer) { self.raw = raw }
-        deinit { Self.release?(self) }
-    }
+        as: (@convention(c) (UnsafeMutableRawPointer, Int, UnsafePointer<CChar>) -> Void).self)
 }
 
-/// xosvid 的最小客户端。只依赖 libxpc（dlsym 绑定），不引入第三方库。
+/// xosvid 的最小客户端。
 final class XosviDaemonClient {
     static let shared = XosviDaemonClient()
 
@@ -87,7 +80,7 @@ final class XosviDaemonClient {
     static let clientEntitlement = "wiki.qaq.xosvi.client"
 
     private let queue = DispatchQueue(label: "wiki.qaq.xosvi.daemonclient")
-    private var connection: XPCShim.XPCObject?
+    private var connection: UnsafeMutableRawPointer?
 
     private init() {
         guard XPCShim.createMachService != nil else {
@@ -97,20 +90,21 @@ final class XosviDaemonClient {
 
     // MARK: - 连接
 
-    private func connectionIfNeeded() -> XPCShim.XPCObject? {
+    private func connectionIfNeeded() -> UnsafeMutableRawPointer? {
         if let c = connection { return c }
-        guard let create = XPCShim.createMachService else { return nil }
-        let raw = create(Self.serviceName, queue, 0)
-        guard let raw else { return nil }
-        let object = XPCShim.XPCObject(raw)
-        let handler: () -> Void = { [weak self] in
-            // 连接被取消 / 服务退出：下次调用时重建
-            self?.connection = nil
+        guard let create = XPCShim.createMachService,
+              let setHandler = XPCShim.setEventHandler,
+              let resume = XPCShim.resume else { return nil }
+        guard let raw = create(Self.serviceName, queue, 0) else { return nil }
+        // 连接出错时清缓存，下次调用重建。XPC 对象由 libxpc 持有，
+        // 这里不 retain 不 release，符合 connection-handler 的借用语义。
+        let handler: @convention(block) (UnsafeMutableRawPointer) -> Void = { [weak self] _ in
+            DispatchQueue.main.async { self?.connection = nil }
         }
-        XPCShim.setEventHandler?(object, handler)
-        XPCShim.resume?(object)
-        connection = object
-        return object
+        setHandler(raw, handler)
+        resume(raw)
+        connection = raw
+        return raw
     }
 
     // MARK: - 底层请求
@@ -122,7 +116,8 @@ final class XosviDaemonClient {
                          timeout: TimeInterval = 10) throws -> [String: Any] {
         guard let createDict = XPCShim.dictionaryCreate,
               let setString = XPCShim.dictionarySetString,
-              let sendReply = XPCShim.sendMessageWithReply else {
+              let sendReply = XPCShim.sendMessageWithReply,
+              let release = XPCShim.release else {
             throw XosviDaemonError.unavailable("libxpc 符号缺失")
         }
         guard let conn = connectionIfNeeded() else {
@@ -140,33 +135,37 @@ final class XosviDaemonClient {
             let array = createArray(nil, 0)
             for arg in args { arg.withCString { setArrayString(array, 0, $0) } }
             setValue(message, "args", array)
+            release(array)
         }
 
         let semaphore = DispatchSemaphore(value: 0)
         var result: [String: Any] = [:]
         var failure: String?
 
-        let replyHandler: (XPCShim.XPCObject) -> Void = { reply in
+        let replyHandler: @convention(block) (UnsafeMutableRawPointer) -> Void = { reply in
             defer { semaphore.signal() }
-            guard let getString = XPCShim.dictionaryGetString else {
+            guard let getString = XPCShim.dictionaryGetString,
+                  let getInt64 = XPCShim.dictionaryGetInt64 else {
                 failure = "libxpc 符号缺失（get）"
                 return
             }
-            // 错误对象与普通字典的区分：错误对象上取 error 键为 nil，
-            // 这里统一按字典读，读不到关键字段就按失败处理。
+            // 错误对象与普通回复统一按字典读：读到 error 键即失败
             if let err = getString(reply, "error") {
                 failure = String(cString: err)
                 return
             }
-            result["ok"] = getString(reply, "status") != nil
-            result["exit_code"] = XPCShim.dictionaryGetInt64?(reply, "exit_code") ?? 0
+            if let s = getString(reply, "status") {
+                result["status"] = String(cString: s)
+                result["ok"] = true
+            }
             if let s = getString(reply, "stdout") { result["stdout"] = String(cString: s) }
-            if let s = getString(reply, "status") { result["status"] = String(cString: s) }
-            result["pid"] = XPCShim.dictionaryGetInt64?(reply, "pid") ?? 0
-            result["uid"] = XPCShim.dictionaryGetInt64?(reply, "uid") ?? 0
+            result["exit_code"] = getInt64(reply, "exit_code")
+            result["pid"] = getInt64(reply, "pid")
+            result["uid"] = getInt64(reply, "uid")
         }
 
         sendReply(conn, message, queue, replyHandler)
+        release(message)
 
         if semaphore.wait(timeout: .now() + timeout) == .timedOut {
             throw XosviDaemonError.unavailable("请求超时（\(Int(timeout))s）")
