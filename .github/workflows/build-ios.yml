@@ -792,19 +792,24 @@ jobs:
         run: |
           ls -la Xosvi.tipa
           python3 scripts/verify_entitlements.py Xosvi.tipa | tee /tmp/ent.txt
-          echo "--- ldid 复核（若可用）---"
+          rm -rf /tmp/gate && mkdir -p /tmp/gate && cd /tmp/gate && unzip -q "$GITHUB_WORKSPACE/Xosvi.tipa"
+          REQUIRE="platform-application com.apple.private.security.no-sandbox com.apple.private.security.container-manager com.apple.private.MobileContainerManager.allowed task_for_pid-allow jb.pmap_cs.custom_trust"
+
+          echo "--- Security 层复核（TrollStore 判沙盒走的同一条路径）---"
+          codesign -dv Payload/Xosvi.app/Xosvi 2>&1 | head -8 || true
+          codesign -d --entitlements :- Payload/Xosvi.app/Xosvi > /tmp/sec_ent.plist 2>&1 || true
+          for k in $REQUIRE; do
+            if grep -q "<key>$k</key>" /tmp/sec_ent.plist; then echo "security OK   : $k"; else echo "::error::Security 读不到 $k（TrollStore 会按沙盒装）"; exit 1; fi
+          done
+
+          echo "--- ldid 复核（原始 blob）---"
           if command -v ldid >/dev/null 2>&1; then
-            rm -rf /tmp/entcheck && mkdir -p /tmp/entcheck && cd /tmp/entcheck
-            unzip -q "$GITHUB_WORKSPACE/Xosvi.tipa"
             ldid -e Payload/Xosvi.app/Xosvi > /tmp/ent.plist
-            for k in platform-application com.apple.private.security.no-sandbox \
-                     com.apple.private.security.container-manager \
-                     com.apple.private.MobileContainerManager.allowed \
-                     task_for_pid-allow jb.pmap_cs.custom_trust; do
-              if grep -q "<key>$k</key>" /tmp/ent.plist; then echo "ldid OK   : $k"; else echo "ldid MISS : $k"; exit 1; fi
+            for k in $REQUIRE; do
+              if grep -q "<key>$k</key>" /tmp/ent.plist; then echo "ldid OK   : $k"; else echo "::error::ldid 读不到 $k"; exit 1; fi
             done
-            cd "$GITHUB_WORKSPACE"
           fi
+          cd "$GITHUB_WORKSPACE"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

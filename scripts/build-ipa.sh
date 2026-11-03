@@ -186,7 +186,7 @@ if [ -d "Resources/bin" ]; then
                         codesign -s - -f --entitlements "Support/bin-entitlements.plist" "$t" 2>/dev/null || true
                     else
                         # xerub ldid 语法：-S 后必须紧跟文件名（-Sent.plist）
-                        "$SIGN_TOOL" -S"Support/bin-entitlements.plist" "$t" 2>/dev/null || true
+                        "$SIGN_TOOL" -Cadhoc -S"Support/bin-entitlements.plist" "$t" 2>/dev/null || true
                     fi
                 else
                     # 普通 ad-hoc 签名（不带任何特权 entitlements）
@@ -468,7 +468,7 @@ CEOF
     if xcrun -sdk iphoneos clang -arch arm64 -isysroot "$SDK" -miphoneos-version-min=15.0 \
         /tmp/appex_min.c -o "$APP/PlugIns/VpnTunnel.appex/VpnTunnel" 2>&1 | tail -5; then
         cp "Support/VpnTunnel-Info.plist" "$APP/PlugIns/VpnTunnel.appex/Info.plist"
-        if command -v ldid >/dev/null 2>&1 && ldid -S"Support/VpnTunnel.entitlements" "$APP/PlugIns/VpnTunnel.appex/VpnTunnel"; then
+        if command -v ldid >/dev/null 2>&1 && ldid -Cadhoc -S"Support/VpnTunnel.entitlements" "$APP/PlugIns/VpnTunnel.appex/VpnTunnel"; then
             echo ">>> signed C-minimal appex (diagnostic)"
         else
             echo "!!! C appex sign FAILED" >&2
@@ -516,7 +516,7 @@ elif [ -d "openssl-stage/lib" ] && [ -f "openssl-stage/lib/libssl.a" ]; then
             cp "$VT_BIN" "$APP/PlugIns/VpnTunnel.appex/VpnTunnel"
             cp "Support/VpnTunnel-Info.plist" "$APP/PlugIns/VpnTunnel.appex/Info.plist"
             if command -v ldid >/dev/null 2>&1; then
-                if ldid -S"Support/VpnTunnel.entitlements" "$APP/PlugIns/VpnTunnel.appex/VpnTunnel"; then
+                if ldid -Cadhoc -S"Support/VpnTunnel.entitlements" "$APP/PlugIns/VpnTunnel.appex/VpnTunnel"; then
                     echo ">>> signed VpnTunnel appex (自研 hev 引擎)"
                 else
                     echo "!!! VpnTunnel appex sign FAILED — removing (VPN mode unavailable)"
@@ -543,7 +543,7 @@ elif [ -d "Resources/fuck_vpn/VpnTunnel.appex" ]; then
         [ -d "$fw" ] && cp -R "$fw" "$APP/Frameworks/"
     done
     if command -v ldid >/dev/null 2>&1; then
-        if ldid -S"Support/VpnTunnel.entitlements" "$APP/PlugIns/VpnTunnel.appex/VpnTunnel"; then
+        if ldid -Cadhoc -S"Support/VpnTunnel.entitlements" "$APP/PlugIns/VpnTunnel.appex/VpnTunnel"; then
             echo ">>> signed VpnTunnel appex (Fuck 引擎 fallback)"
         else
             echo "!!! VpnTunnel appex sign FAILED — removing (VPN mode unavailable)"
@@ -575,9 +575,38 @@ if [ -f "Support/Xosvi.entitlements" ]; then
         echo "!!! ldid not available; cannot inject entitlements" >&2
         exit 1
     fi
-    "$LDID" -S"Support/Xosvi.entitlements" "$APP/Xosvi"
-    echo ">>> signed main binary with ldid"
-    # fix3eq: 签完立刻复核——缺任何一项特权 entitlement 就当场失败，
+    # fix3er: 必须带 -Cadhoc。
+    # TrollStore 用 SecCodeCopySigningInformation(kSecCSRequirementInformation) 读 entitlements，
+    # 那是「带校验」的读取；ldid 默认不置 CS_ADHOC(0x2) 位、也不带 CMS，Security 判签名无效
+    # → entitlements 返回 nil → TrollStore 用 fallback（get-task-allow 那套）重签
+    # → 装出来的 App 就是沙盒的（截图里 "The app runs sandboxed" 的真因）。
+    "$LDID" -Cadhoc -S"Support/Xosvi.entitlements" "$APP/Xosvi"
+    echo ">>> signed main binary with ldid -Cadhoc"
+
+    # fix3er: 用 Security.framework 自己的解析器复核（macOS 才有 codesign）。
+    # 读不到 no-sandbox 就用 codesign 重签（带 DER），再验一次，仍失败则拒绝出包。
+    if command -v codesign >/dev/null 2>&1; then
+        ent_ok() { codesign -d --entitlements :- "$1" 2>&1 | grep -q "com.apple.private.security.no-sandbox"; }
+        if ent_ok "$APP/Xosvi"; then
+            echo ">>> Security 层复核通过（codesign -d 能读到 no-sandbox）"
+        else
+            echo ">>> Security 层读不到 entitlements —— 改用 codesign 重签（--generate-entitlement-der）"
+            codesign -f -s - --entitlements "Support/Xosvi.entitlements" \
+                     --generate-entitlement-der "$APP/Xosvi" || {
+                echo "!!! codesign 重签失败" >&2; exit 1; }
+            if ent_ok "$APP/Xosvi"; then
+                echo ">>> codesign 重签后 Security 层复核通过"
+            else
+                echo "!!! 重签后 Security 仍读不到 no-sandbox —— 拒绝出包" >&2
+                codesign -d --entitlements :- "$APP/Xosvi" 2>&1 | head -20 >&2 || true
+                exit 1
+            fi
+        fi
+    else
+        echo ">>> codesign 不可用（非 macOS），跳过 Security 层复核"
+    fi
+
+    # fix3eq: 原始 blob 复核——缺任何一项特权 entitlement 就当场失败，
     # 不要让"沙盒包装进设备"这种事再流到发布环节。
     if [ -f scripts/verify_entitlements.py ]; then
         python3 scripts/verify_entitlements.py "$APP" || {
