@@ -10,6 +10,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 typedef void  (*fn_Initialize)(void);
 typedef int   (*fn_IsInitialized)(void);
@@ -31,6 +33,57 @@ static void seterr(char *err, size_t cap, const char *msg) {
 
 int pyx_ready(void) {
     return g_run != NULL && g_isInit != NULL && g_isInit();
+}
+
+// ---------------------------------------------------------------
+// fd 级输出捕获（v8.4）
+// 进程内跑的代码除了 print，还可能经由 C 扩展 printf / os.write(1, ...)
+// 直接写 fd 1/2——这些不经过 sys.stdout，只靠 StringIO 抓不到。
+// 做法：执行前把 fd1/fd2 dup2 到临时文件，执行后 fflush(NULL) 再恢复 fd，最后回读追加。
+// 顺序必须是：执行 → flush → 恢复 fd → 回读。
+// ---------------------------------------------------------------
+static int  g_cap_fd = -1, g_cap_saved_out = -1, g_cap_saved_err = -1;
+static char g_cap_path[1024];
+
+static void cap_begin(const char *outPath) {
+    snprintf(g_cap_path, sizeof g_cap_path, "%s.cap", outPath);
+    g_cap_fd = open(g_cap_path, O_CREAT | O_RDWR | O_TRUNC, 0600);
+    if (g_cap_fd < 0) return;
+    fflush(NULL);
+    g_cap_saved_out = dup(STDOUT_FILENO);
+    g_cap_saved_err = dup(STDERR_FILENO);
+    dup2(g_cap_fd, STDOUT_FILENO);
+    dup2(g_cap_fd, STDERR_FILENO);
+}
+
+static void cap_end(void) {
+    if (g_cap_fd < 0) return;
+    fflush(NULL);                    // 缓冲先落盘，再恢复 fd（顺序反过来会丢尾巴）
+    if (g_cap_saved_out >= 0) { dup2(g_cap_saved_out, STDOUT_FILENO); close(g_cap_saved_out); g_cap_saved_out = -1; }
+    if (g_cap_saved_err >= 0) { dup2(g_cap_saved_err, STDERR_FILENO); close(g_cap_saved_err); g_cap_saved_err = -1; }
+    close(g_cap_fd);
+    g_cap_fd = -1;
+}
+
+static void cap_append(const char *outPath) {
+    int fd = open(g_cap_path, O_RDONLY);
+    if (fd < 0) return;
+    int of = open(outPath, O_WRONLY | O_CREAT | O_APPEND, 0600);
+    if (of >= 0) {
+        char buf[8192];
+        ssize_t n;
+        while ((n = read(fd, buf, sizeof buf)) > 0) {
+            ssize_t off = 0;
+            while (off < n) {
+                ssize_t w = write(of, buf + off, (size_t)(n - off));
+                if (w <= 0) break;
+                off += w;
+            }
+        }
+        close(of);
+    }
+    close(fd);
+    unlink(g_cap_path);
 }
 
 int pyx_init(const char *frameworkPath, const char *home, const char *pythonPath,
@@ -99,24 +152,31 @@ int pyx_run_file(const char *codePath, const char *outPath, const char *envPath,
         "    except Exception:\n"
         "        pass\n"
         "_buf = io.StringIO()\n"
-        "_old = sys.stdout\n"
-        "sys.stdout = _buf\n"
+        "_old_out, _old_err = sys.stdout, sys.stderr\n"
+        "sys.stdout = sys.stderr = _buf\n"
+        "sys.argv = [_code_path]\n"
         "try:\n"
         "    _src = open(_code_path, encoding='utf-8').read()\n"
-        "    exec(compile(_src, '<py.eval>', 'exec'), {'__name__': '__main__'})\n"
+        "    exec(compile(_src, '<py.eval>', 'exec'), {'__name__': '__main__', '__file__': _code_path})\n"
         "except BaseException:\n"
         "    traceback.print_exc(file=_buf)\n"
         "finally:\n"
-        "    sys.stdout = _old\n"
+        "    for _s in (_old_out, _old_err):\n"
+        "        try: _s.flush()\n"
+        "        except Exception: pass\n"
+        "    sys.stdout, sys.stderr = _old_out, _old_err\n"
         "    try:\n"
         "        open(_out_path, 'w', encoding='utf-8').write(_buf.getvalue())\n"
         "    except Exception:\n"
         "        pass\n",
         '\'', codePath, '\'', '\'', outPath, '\'', '\'', envPath ? envPath : "", '\'');
 
+    cap_begin(outPath);          // fd1/fd2 → 临时文件（兜住 C 扩展/os.write 的输出）
     int gil = g_gilEnsure();
     int rc = g_run(code);
     g_gilRelease(gil);
+    cap_end();                   // flush → 恢复 fd
+    cap_append(outPath);         // 恢复之后再回读，追加到 Python 侧输出后面
 
     if (rc != 0) {
         seterr(err, errCap, "PyRun_SimpleString 返回非 0");

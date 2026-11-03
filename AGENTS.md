@@ -22,7 +22,7 @@ Shell 分为 **iOS 原生**（直接读写真实文件系统）与 **iSH Alpine*
 |---|---|---|---|---|
 | `trollStore` | 未越狱且 iOS ≤17.0 | persona / setuid | 静态（ct_bypass ≤17.0） | App 内置 |
 | `jailbroken` | rootless 越狱 | JB 侧二进制 + native 直写 | 静态重打包 + appinst/jbctl | **/var/jb 优先** |
-| `rootHide` | Relaxin / rootHide | JB 侧 + native 直写；persona 不可用 | 静态；App 内 `bin/` 二进制可用**绝对路径** exec（实测 jq/python3/bsdtar 正常） | **/var/jb 优先** |
+| `rootHide` | Relaxin / rootHide | JB 侧 + native 直写；persona 不可用 | 静态；App 内 `bin/` 二进制可用**绝对路径** exec（实测 jq/bsdtar/ldid 正常；python3 走进程内解释器，不 exec 内置壳） | **/var/jb 优先** |
 | `containerOnly` | 无提权路径 | 仅 native 直写 | 不可 | App 内置 |
 
 - 任何时候先读 `device.probe` 的 `execution_strategy`（tier / spawn_probe 四类 / prefer_jb_toolchain），再决定路径。
@@ -105,6 +105,13 @@ Shell 分为 **iOS 原生**（直接读写真实文件系统）与 **iSH Alpine*
 - **单向桥**：Alpine 写 `/tmp` 会落到 iOS 侧；**iOS 侧后写的文件 Alpine 看不到**。
   跨环境数据的正确姿势：iSH 侧先建占位文件 → iOS 侧覆盖写入 → iSH 侧读取。
 - **spawn 失败先看 errno**：2=路径不存在、8=不是可执行文件（拿 .dylib/.a 当命令）、13=无执行权限、85=真的被策略拦。只有 85 才改用进程内方案；不要一见失败就说「被越狱拦」。
+- **路由**：裸命令默认走 iOS 原生；`apk`/`pip`/`pip3`/`npm`/`npx` 自动转 iSH Alpine；
+  要 Linux 工具链也可显式 `runtime:"alpine"`。
+- **两套 Python 不互通**：进程内 CPython 3.14（有 numpy/pandas，无 pip）vs iSH Python 3.12
+  （pip3 属于它）。在 Alpine 里装的包，进程内 `import` 照样 ModuleNotFoundError；
+  科学计算走进程内，装第三方包走 Alpine 并接受只在 Alpine 生效。
+- **node 是 v12.19.0（2020/EOL）**：只够跑老脚本，不支持 `??`/`fetch`/ESM，
+  vite/esbuild 等现代前端工具会失败——别把「node 在」当成「前端能构建」。
 - 工具输出可能走 `tool_spill` 落盘（`Workspace/tool_spill/`），读时用返回的绝对路径。
 
 ## 结果与证据契约

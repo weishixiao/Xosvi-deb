@@ -32,7 +32,7 @@ final class SaveDataTool: MCPTool {
         category: "file",
         prerequisites: [
             "只读操作无需任何权限；写入需要 App 数据容器可写（通常已满足）",
-            "不依赖 Alpine 引擎 / posix_spawn / 注入（当前设备这些全部不可用）"
+            "不依赖 Alpine 引擎 / posix_spawn / 注入（纯文件写入，环境怎么变都能用）"
         ])
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {

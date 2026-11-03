@@ -80,6 +80,9 @@ final class SystemPrompts {
                 - 装包/解包/编译/复杂脚本 → runtime="alpine"（完整Linux工具链，只能访问绑定目录）
                 - 不确定就 runtime="auto"（默认），结果里看 `runtime_actual` 字段确认实际环境
                 - 结果返回空/0字节时先检查：是不是走了Alpine但路径不在绑定范围？换 runtime="ios" 重试
+                - 两套 Python 不互通: 进程内 CPython 3.14(有 numpy/pandas) vs iSH Alpine python3.12
+                  (pip3 24.3.1 属于它)；在 Alpine 里 pip install 的包，进程内 import 依旧 ModuleNotFoundError
+                - node 是 v12.19.0(2020, EOL): 只够跑老脚本, 不支持 ??/fetch/ESM, vite/esbuild 等会失败
               * combos: screenshot+OCR → control screenshot → multimodal vision; web+content → web.search → web.fetch（拿全文）;
                 inject → inject list(find bundle_id) → inject → app launch(verify); tap button → control screenshot
                 (read coords) → control tap
