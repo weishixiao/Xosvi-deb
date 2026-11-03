@@ -38,10 +38,20 @@ enum WebFetchService {
     /// preferProvider 仍保留（工具参数 provider= 显式指定时优先，压过设置）
     static func fetchForSettings(url: String, preferProvider: SearchProvider? = nil) -> WebPage? {
         if let forced = preferProvider {
+            // 工具参数显式指定了服务商 → 用它的 reader，失败再本地（不走公共 Jina，免得掩盖 Key 失效）
             return fetch(url: url, preferProvider: forced, allowJina: false)
         }
-        guard let plan = SearchSettings.shared.resolveFetchPlan() else { return nil }
-        return fetch(url: url, service: plan.service, allowLocalFallback: plan.allowLocalFallback)
+        let mode = SearchSettings.shared.effectiveWebFetchMode
+        switch mode {
+        case .off:
+            return nil
+        case .local:
+            // 用户明确选了「本地直连」→ 就本地，别偷偷走 Jina Reader
+            return fetchLocal(url: url)
+        case .follow, .provider:
+            guard let plan = SearchSettings.shared.resolveFetchPlan() else { return nil }
+            return fetch(url: url, service: plan.service, allowLocalFallback: plan.allowLocalFallback)
+        }
     }
 
     /// v9：按实例配置取页（provider reader 用实例自己的 Key / 地址）
@@ -171,6 +181,9 @@ enum WebFetchService {
     }
 
     // MARK: ③ 本地直连
+
+    /// 强制本地直连（不看服务商 reader）。设置里选「本地直连」或调用方明确要静态抓取时用。
+    static func fetchLocal(url: String) -> WebPage { localFetch(url: url) }
 
     private static func localFetch(url: String) -> WebPage {
         let (html, err) = WebSearchService.getText(url)

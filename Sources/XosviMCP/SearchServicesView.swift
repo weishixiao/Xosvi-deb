@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 // MARK: - v9：搜索服务设置页（移植 Kelivo search_services_page）
 //
@@ -28,6 +29,8 @@ struct SearchServicesView: View {
     @State private var testQuery = "TrollStore 最新版本"
     @State private var testResult = ""
     @State private var showDeleteConfirm: SearchServiceOptions?
+    /// 跟随模式下当前服务商不支持 reader 时的显示名（抽出来，避免字符串插值里嵌字面量）
+    private var fallbackFollowName: String { "本地抓取" }
 
     var body: some View {
         List {
@@ -55,7 +58,7 @@ struct SearchServicesView: View {
                                     onDone: { apply($0) })
         }
         .confirmationDialog("网页读取方式", isPresented: $showFetchModeSheet, titleVisibility: .visible) {
-            Button("跟随搜索 · \(cfg.followTarget?.displayName ?? "本地抓取")") {
+            Button("跟随搜索 · \(cfg.followTarget?.displayName ?? fallbackFollowName)") {
                 cfg.webFetchModeValue = nil
                 cfg.save()
             }
@@ -94,6 +97,7 @@ struct SearchServicesView: View {
 
     // MARK: 搜索服务商
 
+    @ViewBuilder
     private var servicesSection: some View {
         Section {
             ForEach(Array(cfg.services.enumerated()), id: \.element.id) { idx, svc in
@@ -113,9 +117,13 @@ struct SearchServicesView: View {
             .onDelete { offsets in
                 // 至少留一个：删到只剩 0 个时直接拒绝（文档：至少保留一个服务商）
                 guard cfg.services.count > offsets.count else { return }
-                for i in offsets.sorted(by: >) where cfg.services.indices.contains(i) {
-                    cfg.delete(id: cfg.services[i].id)
+                // 先把要删的 id 收集出来再删——每删一个数组就变短，
+                // 边删边按下标取会拿到错的元素（甚至越界）
+                let ids = offsets.compactMap { i -> String? in
+                    guard cfg.services.indices.contains(i) else { return nil }
+                    return cfg.services[i].id
                 }
+                for id in ids { cfg.delete(id: id) }
             }
             if cfg.services.isEmpty {
                 Text("还没有服务商。点右上角 + 添加；必应 / DuckDuckGo 免费无需 Key。")
@@ -132,6 +140,7 @@ struct SearchServicesView: View {
 
     // MARK: 网页读取
 
+    @ViewBuilder
     private var fetchModeSection: some View {
         Section {
             Button { showFetchModeSheet = true } label: {
@@ -176,6 +185,7 @@ struct SearchServicesView: View {
 
     // MARK: 通用设置
 
+    @ViewBuilder
     private var generalSection: some View {
         Section {
             Toggle(isOn: Binding(get: { cfg.autoTestOnLaunch },
@@ -217,6 +227,7 @@ struct SearchServicesView: View {
 
     // MARK: 实测
 
+    @ViewBuilder
     private var testSection: some View {
         Section {
             HStack {

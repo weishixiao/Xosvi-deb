@@ -849,24 +849,28 @@ jobs:
           # v7.16.4：不再 delete + create——tag "latest" 受保护/被引用时 delete 会静默失败，
           # 紧接着 create 报 "tag already exists"，导致构建成功但 Release 一直是旧包（2026-10-30 事故）。
           # 改成幂等更新：存在就 clobber 上传 + 改标题，不存在才 create。
-          NOTES="滚动构建（main 分支最新，版本 $VER）。供 App 内多源自动更新使用：GitHub 被墙时经镜像前缀或 Releases 直链下载。下载地址（版本化文件名，绕 CDN 缓存）：https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/Xosvi-${VER}.tipa"
+          NOTES="滚动构建（main 分支最新，版本 $VER）。供 App 内多源自动更新使用：GitHub 被墙时经镜像前缀或 Releases 直链下载。下载地址：https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/Xosvi.tipa"
           set -e
-          # v8.2：版本化文件名双资产——固定名 Xosvi.tipa 的 URL 恒定，ghfast/gh-proxy 等
-          # 镜像与 GitHub 资产重定向会长期缓存它，clobber 后手机端仍可能拉到旧包；
-          # 版本化文件名 URL 每次都变，天然无缓存问题。固定名保留作外部直链兜底。
-          FNAME="Xosvi-${VER}.tipa"
-          cp Xosvi.tipa "$FNAME"
+          # v9：只发布单一资产 Xosvi.tipa（用户要求）——不再生成 Xosvi-<版本>.tipa 副本，
+          #     旧版本化资产在发布时统一清理（见下方 delete-assets 段）。
           if gh release view latest >/dev/null 2>&1; then
             echo "release latest exists -> update in place"
-            gh release upload latest "$FNAME" Xosvi.tipa --clobber
+            gh release upload latest Xosvi.tipa --clobber
             gh release edit latest --title "Xosvi latest (v${VER})" --notes "$NOTES"
             gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/latest" -f make_latest=true >/dev/null || true
           else
-            # v6.6.7：只上传双资产（Bundle ID 已改 com.xosvi.app，老用户需卸载重装）
-            gh release create latest "$FNAME" Xosvi.tipa \
+            gh release create latest Xosvi.tipa \
               --title "Xosvi latest (v${VER})" \
               --notes "$NOTES" --latest
           fi
+          # v9：清理历史版本化资产——保持资产列表只有 Xosvi.tipa（和 dSYM 包）
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/latest" \
+            --jq '.assets[] | select(.name != "Xosvi.tipa" and .name != "dsyms.zip") | "\(.id) \(.name)"' 2>/dev/null |
+          while read -r AID NAME; do
+            [ -z "$AID" ] && continue
+            echo "delete stale asset: $NAME (id=$AID)"
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/$AID" >/dev/null || true
+          done
           # v6.6.27：dSYM 随包发布——崩溃栈不再靠 base= 手工换算偏移
           DSYM=$(find "$GITHUB_WORKSPACE" -maxdepth 3 -name "*.app.dSYM" -type d 2>/dev/null | head -1)
           if [ -n "$DSYM" ]; then

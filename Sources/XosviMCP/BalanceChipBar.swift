@@ -47,15 +47,15 @@ struct BalanceChipBar: View {
     private var mode: BalanceDisplayMode { BalanceDisplayMode(rawValue: modeRaw) ?? .capsule }
 
     var body: some View {
-        if let cfg = config, !hidden {
+        // 形态 C 的显示处是输入卡内右下角（BalanceCornerOverlay），这一行整条不渲染
+        if mode == .corner {
+            EmptyView()
+        } else if let cfg = config, !hidden {
             Group {
-                switch mode {
-                case .capsule:
-                    capsuleRow(cfg)
-                case .lowOnly:
+                if mode == .lowOnly {
                     lowOnlyRow(cfg)
-                case .corner:
-                    cornerRow(cfg)
+                } else {
+                    capsuleRow(cfg)
                 }
             }
             .padding(.horizontal, 14)
@@ -92,29 +92,6 @@ struct BalanceChipBar: View {
                 balanceChip
             }
             Spacer(minLength: 4)
-        }
-    }
-
-    // MARK: 形态 C：输入框右下角小字
-
-    private func cornerRow(_ cfg: ModelConfig) -> some View {
-        HStack {
-            Spacer(minLength: 0)
-            if querying {
-                Text("余额 …")
-                    .font(.system(size: 9.5, design: .monospaced))
-                    .foregroundColor(.secondary.opacity(0.55))
-            } else if let b = balance {
-                Text(b.text)
-                    .font(.system(size: 9.5, design: .monospaced))
-                    .foregroundColor(b.isLow ? .orange.opacity(0.9) : .secondary.opacity(0.55))
-                    .onTapGesture { refresh(force: true) }
-            } else if errorText != nil {
-                Text("余额 ?")
-                    .font(.system(size: 9.5, design: .monospaced))
-                    .foregroundColor(.secondary.opacity(0.5))
-                    .onTapGesture { refresh(force: true) }
-            }
         }
     }
 
@@ -238,7 +215,7 @@ struct BalanceChipBar: View {
             return
         }
         querying = true
-        BalanceChecker.shared.check(config: cfg, force: force) { result in
+        BalanceChecker.shared.check(cfg, force: force) { result in
             querying = false
             switch result {
             case .success(let info):
@@ -299,6 +276,57 @@ struct BalanceSettingsSection: View {
                     .frame(width: 130)
                     .onAppear { uidText = newAPIUserID }
                     .onChange(of: uidText) { v in newAPIUserID = v }
+            }
+        }
+    }
+}
+
+
+// MARK: - 形态 C：输入框右下角小字（独立视图，挂在输入框内 overlay）
+
+struct BalanceCornerOverlay: View {
+    let config: ModelConfig?
+    @AppStorage("xosvi.balance_display") private var modeRaw: Int = 0
+
+    @State private var balance: BalanceInfo?
+    @State private var errorText: String?
+    @State private var querying = false
+
+    var body: some View {
+        if modeRaw == BalanceDisplayMode.corner.rawValue, let cfg = config {
+            Group {
+                if querying {
+                    Text("余额 …")
+                } else if let b = balance {
+                    Text(b.text)
+                        .foregroundColor(b.isLow ? .orange.opacity(0.9) : .secondary.opacity(0.55))
+                        .onTapGesture { refresh(cfg, force: true) }
+                } else if errorText != nil {
+                    Text("余额 ?")
+                        .onTapGesture { refresh(cfg, force: true) }
+                }
+            }
+            .font(.system(size: 9.5, design: .monospaced))
+            .foregroundColor(.secondary.opacity(0.55))
+            .padding(.trailing, 12)
+            .padding(.bottom, 6)
+            .onAppear { refresh(cfg) }
+            .onChange(of: cfg.id) { _ in refresh(cfg, force: true) }
+            .onReceive(NotificationCenter.default.publisher(for: .xosviRequestFinished)) { note in
+                let id = (note.userInfo?["configID"] as? String) ?? ""
+                if id.isEmpty || id == cfg.id.uuidString { refresh(cfg, force: true) }
+            }
+        }
+    }
+
+    private func refresh(_ cfg: ModelConfig, force: Bool = false) {
+        if !force, let c = BalanceChecker.shared.cached(cfg.id) { balance = c; return }
+        querying = true
+        BalanceChecker.shared.check(cfg, force: force) { result in
+            querying = false
+            switch result {
+            case .success(let info): balance = info; errorText = nil
+            case .failure(let e): if balance == nil { errorText = e.description }
             }
         }
     }

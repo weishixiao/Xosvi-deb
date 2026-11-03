@@ -700,7 +700,7 @@ struct ChatView: View {
                     // 联网检索仍然默认全开，这个胶囊只用来「临时换一家服务商」和看读取方式。
                     DeepSeekPillButton(
                         icon: "magnifyingglass",
-                        title: "搜索·\(searchCfg.selectedService?.displayName ?? "必应")",
+                        title: "搜索·\(searchCfg.selectedService?.displayName ?? Self.defaultSearchName)",
                         isOn: true
                     ) {
                         showSearchQuickSheet = true
@@ -768,6 +768,10 @@ struct ChatView: View {
                     .stroke(Color(UIColor.separator).opacity(0.6), lineWidth: 0.6)
             )
             .shadow(color: Color.black.opacity(0.06), radius: 8, x: 0, y: 2)
+            // v9：余额形态 C（最轻）——小字挂在输入卡内右下角，不额外占一行
+            .overlay(alignment: .bottomTrailing) {
+                BalanceCornerOverlay(config: modelStore.defaultConfig)
+            }
             .padding(.horizontal, 12)
             .padding(.top, 8)
 
@@ -787,6 +791,9 @@ struct ChatView: View {
     /// v6.9.15：推理档位名（思考胶囊长按菜单用）
     /// v7.8.0：档位改用 ReasoningLevel（自动/关/最低/低/中/高/最高/极限）
     private var reasoningNames: [String] { ReasoningLevel.allCases.map { $0.displayName } }
+
+    /// v9：搜索胶囊的兜底名（抽成常量，避免字符串插值里嵌字面量）
+    private static let defaultSearchName = "必应"
 
     private func reasoningLabel() -> String {
         // v7.8.0：直接读 ReasoningSettings（兼容旧 chat_reasoning 整数）
