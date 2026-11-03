@@ -786,6 +786,26 @@ jobs:
             exit 1
           fi
 
+      # fix3eq: entitlements 硬门禁——解析最终 tipa 的 LC_CODE_SIGNATURE，
+      # 6 项特权 entitlement 缺任意一项即判定"会被 TrollStore 当沙盒 App 装"，直接红。
+      - name: Assert entitlements in tipa (hard gate)
+        run: |
+          ls -la Xosvi.tipa
+          python3 scripts/verify_entitlements.py Xosvi.tipa | tee /tmp/ent.txt
+          echo "--- ldid 复核（若可用）---"
+          if command -v ldid >/dev/null 2>&1; then
+            rm -rf /tmp/entcheck && mkdir -p /tmp/entcheck && cd /tmp/entcheck
+            unzip -q "$GITHUB_WORKSPACE/Xosvi.tipa"
+            ldid -e Payload/Xosvi.app/Xosvi > /tmp/ent.plist
+            for k in platform-application com.apple.private.security.no-sandbox \
+                     com.apple.private.security.container-manager \
+                     com.apple.private.MobileContainerManager.allowed \
+                     task_for_pid-allow jb.pmap_cs.custom_trust; do
+              if grep -q "<key>$k</key>" /tmp/ent.plist; then echo "ldid OK   : $k"; else echo "ldid MISS : $k"; exit 1; fi
+            done
+            cd "$GITHUB_WORKSPACE"
+          fi
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

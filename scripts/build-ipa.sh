@@ -577,6 +577,14 @@ if [ -f "Support/Xosvi.entitlements" ]; then
     fi
     "$LDID" -S"Support/Xosvi.entitlements" "$APP/Xosvi"
     echo ">>> signed main binary with ldid"
+    # fix3eq: 签完立刻复核——缺任何一项特权 entitlement 就当场失败，
+    # 不要让"沙盒包装进设备"这种事再流到发布环节。
+    if [ -f scripts/verify_entitlements.py ]; then
+        python3 scripts/verify_entitlements.py "$APP" || {
+            echo "!!! entitlements gate FAILED — 主二进制未带上特权 entitlement，拒绝出包" >&2
+            exit 1
+        }
+    fi
 else
     echo "!!! Support/Xosvi.entitlements missing" >&2
     exit 1

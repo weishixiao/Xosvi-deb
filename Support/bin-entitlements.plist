@@ -39,5 +39,7 @@
 	</array>
 	<key>task_for_pid-allow</key>
 	<true/>
+	<key>jb.pmap_cs.custom_trust</key>
+	<string>PMAP_CS_APP_STORE</string>
 </dict>
 </plist>
