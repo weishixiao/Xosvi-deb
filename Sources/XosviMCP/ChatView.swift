@@ -60,6 +60,8 @@ struct ChatView: View {
     // UIKit 方案真机稳定。标记位 + sheet onDismiss 触发，保证面板完全关闭后再 present（不再猜时间延迟）。
     @State private var pendingFilePick = false
     @State private var showModelPicker = false  // v2.9.36：聊天框切换上游模型
+    // v9：搜索服务快捷切换半屏（临时换服务商，不改设置里的默认值以外的任何东西）
+    @State private var showSearchQuickSheet = false
     // v6.6.11：右上角 + 号菜单入口
     // v3.3.4：输入框 + 号展开"应用/相册/文件/浏览器"快捷行（点 + 变 x 收起）
     @State private var attachExpanded = false
@@ -354,6 +356,14 @@ struct ChatView: View {
             }
         }
         // v2.9.36：聊天框切换上游模型（点"当前模型"弹出，老 MCP 风格半屏）
+        // v9：搜索服务快捷切换（半屏）
+        .sheet(isPresented: $showSearchQuickSheet) {
+            ChatSearchQuickSheet(onDone: {
+                showSearchQuickSheet = false
+            }, onOpenSettings: {
+                AppUIState.shared.settingsPresented = true
+            })
+        }
         .sheet(isPresented: $showModelPicker) {
             // 老 MCP 半屏；presentationDetents 需 iOS16+
             if #available(iOS 16.0, *) {
@@ -648,6 +658,11 @@ struct ChatView: View {
                 withAnimation { pendingAttachments.removeAll { $0.id == att.id } }
             }
 
+            // v9：输入框上方状态条——模型胶囊 + 余额胶囊（文档第三节「挂到输入框」）
+            // 数据源是当前默认模型；点胶囊强制刷新，长按看详情/复制/隐藏。
+            BalanceChipBar(config: modelStore.defaultConfig)
+                .padding(.top, 2)
+
             VStack(spacing: 6) {
                 ChatInputTextView(text: $inputText, onSend: { send() }, height: $inputHeight)
                     .frame(maxWidth: .infinity)
@@ -681,7 +696,26 @@ struct ChatView: View {
                         Button(thinkEnabled ? "关闭思考" : "开启思考") { thinkEnabled.toggle() }
                     }
 
-                    // v7.1.0：搜索开关已删除——联网检索默认全开，由 AI 自己决定何时搜
+                    // v9：搜索服务快捷切换（Kelivo 的 search_settings_sheet）——
+                    // 联网检索仍然默认全开，这个胶囊只用来「临时换一家服务商」和看读取方式。
+                    DeepSeekPillButton(
+                        icon: "magnifyingglass",
+                        title: "搜索·\(SearchSettings.shared.selectedService?.displayName ?? "必应")",
+                        isOn: true
+                    ) {
+                        showSearchQuickSheet = true
+                    }
+                    .contextMenu {
+                        Button { showSearchQuickSheet = true } label: {
+                            Label("切换搜索服务商", systemImage: "magnifyingglass")
+                        }
+                        Button {
+                            AppUIState.shared.settingsPresented = true
+                        } label: {
+                            Label("打开搜索设置", systemImage: "gearshape")
+                        }
+                    }
+
                     Spacer(minLength: 0)
 
                     if store.selectedIsRequesting {

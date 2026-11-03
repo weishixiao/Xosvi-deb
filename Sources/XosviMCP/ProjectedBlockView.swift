@@ -84,15 +84,15 @@ struct ProcessStepsView: View {
     private var allTools: Bool { steps.allSatisfy { $0.isTool } }
 
     private var toolCount: Int {
-        steps.reduce(0) { acc, s in
-            if case .tool(_, let r) = s { _ = r; return acc + 1 }
+        steps.reduce(0) { (acc: Int, s: ProjectedStep) -> Int in
+            if case .tool = s { return acc + 1 }
             if case .toolGroup(_, let refs, let h, _) = s { return acc + refs.count + h }
             return acc
         }
     }
 
     private var hasError: Bool {
-        steps.contains { s in
+        steps.contains { (s: ProjectedStep) -> Bool in
             if case .tool(_, let r) = s { return r.isError }
             if case .toolGroup(_, let refs, _, _) = s { return refs.contains(where: \.isError) }
             return false
@@ -100,12 +100,9 @@ struct ProcessStepsView: View {
     }
 
     private var anyRunning: Bool {
-        steps.contains { s in
+        steps.contains { (s: ProjectedStep) -> Bool in
             if case .tool(_, let r) = s { return r.isRunning }
-            if case .toolGroup(_, let refs, let h, _) = s {
-                _ = h
-                return refs.contains(where: \.isRunning)
-            }
+            if case .toolGroup(_, let refs, _, _) = s { return refs.contains(where: \.isRunning) }
             return false
         }
     }
@@ -222,6 +219,11 @@ struct ProcessStepsView: View {
 struct MessageImageView: View {
     let payload: ImagePayload
     @State private var showFull = false
+    /// v9：解码前先按固定占位高度布局，避免 LazyVStack 里高度抖动导致滚动跳
+    private var placeholderHeight: CGFloat {
+        TimelineHeightEstimator.imageHeight(width: 240,
+                                            aspectRatio: TimelineHeightEstimator.aspectRatio(for: payload))
+    }
 
     private var uiImage: UIImage? {
         if payload.uri.hasPrefix("data:") {
@@ -241,11 +243,13 @@ struct MessageImageView: View {
                     Text("图片不可用").font(ChatType.meta)
                 }
                 .foregroundColor(.secondary)
+                .frame(height: min(placeholderHeight, 120))
             } else if let img = uiImage {
                 Image(uiImage: img)
                     .resizable()
                     .scaledToFit()
-                    .frame(maxWidth: 240, maxHeight: 240)
+                    // v9：占位与最终高度一致（按 4:3 预估、上限 240）——解码完成不跳
+                    .frame(maxWidth: 240, maxHeight: 240, minHeight: min(placeholderHeight, 240))
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     .onTapGesture { showFull = true }
             }

@@ -30,13 +30,41 @@ enum WebFetchService {
     /// 单页最多返回多少字符（Kelivo 用 100000，这里按上下文预算收到 60000）
     static let maxChars = 60000
 
-    static func fetch(url: String, preferProvider: SearchProvider? = nil) -> WebPage {
+    /// v9：按「网页读取方式」取页。
+    ///   · 关闭 → 返回 nil（调用方只给 snippet）
+    ///   · 指定实例 → 用该实例的 reader；失败降级本地
+    ///   · 跟随 → 当前搜索实例支持 reader 就用它，否则本地
+    ///   · 本地 → 直接本地抓取
+    /// preferProvider 仍保留（工具参数 provider= 显式指定时优先，压过设置）
+    static func fetchForSettings(url: String, preferProvider: SearchProvider? = nil) -> WebPage? {
+        if let forced = preferProvider {
+            return fetch(url: url, preferProvider: forced, allowJina: false)
+        }
+        guard let plan = SearchSettings.shared.resolveFetchPlan() else { return nil }
+        return fetch(url: url, service: plan.service, allowLocalFallback: plan.allowLocalFallback)
+    }
+
+    /// v9：按实例配置取页（provider reader 用实例自己的 Key / 地址）
+    static func fetch(url: String,
+                      service: SearchServiceOptions?,
+                      allowLocalFallback: Bool = true) -> WebPage? {
+        if let s = service, s.supportsReader,
+           let page = providerFetch(s.kind, url: url, key: s.primaryKey) {
+            return page
+        }
+        guard allowLocalFallback else { return nil }
+        // 公共 Jina Reader（能读 JS 渲染页）
+        if let page = jinaReader(url: url) { return page }
+        return localFetch(url: url)
+    }
+
+    static func fetch(url: String, preferProvider: SearchProvider? = nil, allowJina: Bool = true) -> WebPage {
         // ① 服务商专属 reader
         if let p = preferProvider ?? providerWithFetch() {
             if let page = providerFetch(p, url: url) { return page }
         }
         // ② 公共 Jina Reader（能读 JS 渲染页）
-        if let page = jinaReader(url: url) { return page }
+        if allowJina, let page = jinaReader(url: url) { return page }
         // ③ 本地直连 + 原生抽取
         return localFetch(url: url)
     }
@@ -53,8 +81,9 @@ enum WebFetchService {
 
     // MARK: ① 服务商 reader
 
-    private static func providerFetch(_ p: SearchProvider, url: String) -> WebPage? {
-        let key = SearchSettings.shared.nextKey(for: p)
+    /// v9：key 可由实例传入（多实例并存时按实例的 Key 走，不再全局轮询）
+    private static func providerFetch(_ p: SearchProvider, url: String, key explicitKey: String? = nil) -> WebPage? {
+        let key = explicitKey ?? SearchSettings.shared.nextKey(for: p)
         guard !key.isEmpty else { return nil }
 
         switch p {

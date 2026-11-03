@@ -59,6 +59,19 @@ struct ModelsView: View {
                         }
                     }
                 }
+                // v9：余额显示参数（文档第五节）——new-api 系各站 quotaPerUnit 不同，
+                // 换算错了余额会差几个数量级，必须让用户能改。
+                Section {
+                    QuotaPerUnitRow()
+                } header: {
+                    HStack {
+                        Text("余额显示").font(.subheadline.weight(.semibold))
+                        Spacer()
+                    }
+                } footer: {
+                    Text("new-api 系中转站默认 500000 单位 = $1。若余额数字与实际差很多，改这里（部分站是 1000000 或 100000）。部分站要求 New-Api-User 头，填一次用户 ID 即可。")
+                        .font(.caption2)
+                }
             }
             .listStyle(.insetGrouped)
         .deepseekList()
@@ -203,7 +216,8 @@ struct ModelRow: View {
                 } else if !balanceText.isEmpty {
                     Text(balanceText)
                         .font(.system(size: 10.5))
-                        .foregroundColor(balanceLow ? .red : .green)
+                        .foregroundColor(balanceLow ? .red
+                                         : (balanceText == "余额 ?" ? .secondary : .green))
                 }
             }
 
@@ -282,24 +296,21 @@ struct ModelRow: View {
         return link
     }
 
-    /// v8.2：查询余额（分级策略：DeepSeek 官方 → new-api/one-api 中转 → 统一失败文案）
+    /// v9：查询余额（策略链：DeepSeek → new-api /api/user/self → one-api billing → 兜底）
+    /// 与输入栏胶囊共用同一个 BalanceChecker（5 分钟缓存 + inflight 去重）。
     private func checkBalance() {
         checkingBalance = true
         balanceText = ""
-        BalanceChecker.check(config: config) { result in
+        BalanceChecker.shared.check(config: config, force: true) { result in
             checkingBalance = false
             switch result {
             case .success(let r):
-                balanceText = "余额 \(r.remaining)（\(r.via)）"
-                // 低于 $1 变红提示（配合熔断器状态显示）
-                balanceLow = r.remaining.contains("$") && {
-                    let nums = r.remaining.split(separator: " ")
-                        .compactMap { Double($0.replacingOccurrences(of: "$", with: "")) }
-                    return nums.first.map { $0 < 1.0 } ?? false
-                }()
-                AuditLog.shared.log("balance.check", detail: "\(config.name) OK: \(r.remaining)")
+                balanceText = "余额 \(r.text)（\(r.via)）"
+                balanceLow = r.isLow
+                AuditLog.shared.log("balance.check", detail: "\(config.name) OK: \(r.text)")
             case .failure(let e):
-                balanceText = "余额查询失败"
+                // 失败静默（文档第七节）：不弹错误、不影响发消息，行内灰字即可
+                balanceText = "余额 ?"
                 balanceLow = false
                 AuditLog.shared.log("balance.check", detail: "\(config.name) 失败: \(e)", level: .warning)
             }

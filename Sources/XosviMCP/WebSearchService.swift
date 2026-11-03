@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 // MARK: - v7.5.0 联网检索（移植自 Kelivo 的 search services）
 //
@@ -33,7 +34,7 @@ struct SearchResponse {
 
 // MARK: - 服务商
 
-enum SearchProvider: String, CaseIterable, Identifiable {
+enum SearchProvider: String, CaseIterable, Identifiable, Codable {
     // 免费本地引擎（无需 Key）
     case bing
     case duckduckgo
@@ -112,89 +113,26 @@ enum SearchProvider: String, CaseIterable, Identifiable {
     }
 }
 
-// MARK: - 配置（UserDefaults 持久化，多 Key 轮询）
-
-struct SearchProviderConfig: Codable, Equatable {
-    var apiKeys: [String] = []       // 第一个是主 Key，其余轮询
-    var endpoint: String = ""        // SearXNG 实例地址
-    var basicUser: String = ""
-    var basicPassword: String = ""
-    var enabled: Bool = true
-
-    var primaryKey: String { apiKeys.first ?? "" }
-}
-
-final class SearchSettings {
-    static let shared = SearchSettings()
-
-    /// 默认开启哪个服务商（用户可在设置里选）
-    /// v7.16.11：默认固定为必应——它免费、无需 Key、开箱即用。
-    /// 只有用户显式改过才读 UserDefaults（原来 "" 会落到 .bing，行为一致，
-    /// 但这里显式写出来，避免以后有人把兜底改成需要 Key 的服务商）。
-    var defaultProvider: SearchProvider {
-        get {
-            let raw = UserDefaults.standard.string(forKey: "websearch.provider") ?? ""
-            if let p = SearchProvider(rawValue: raw) { return p }
-            return .bing
-        }
-        set { UserDefaults.standard.set(newValue.rawValue, forKey: "websearch.provider") }
-    }
-
-    var resultSize: Int {
-        get { max(1, min(UserDefaults.standard.integer(forKey: "websearch.size") == 0 ? 8 : UserDefaults.standard.integer(forKey: "websearch.size"), 20)) }
-        set { UserDefaults.standard.set(newValue, forKey: "websearch.size") }
-    }
-
-    /// 搜索后是否自动读取前 N 条结果的正文字数（0 = 不读）
-    var autoFetchTop: Int {
-        get { UserDefaults.standard.integer(forKey: "websearch.autofetch") }
-        set { UserDefaults.standard.set(newValue, forKey: "websearch.autofetch") }
-    }
-
-    private var roundRobin: [String: Int] = [:]
-
-    func config(for p: SearchProvider) -> SearchProviderConfig {
-        guard let data = UserDefaults.standard.data(forKey: "websearch.cfg.\(p.rawValue)"),
-              let cfg = try? JSONDecoder().decode(SearchProviderConfig.self, from: data) else {
-            return SearchProviderConfig()
-        }
-        return cfg
-    }
-
-    func setConfig(_ cfg: SearchProviderConfig, for p: SearchProvider) {
-        if let data = try? JSONEncoder().encode(cfg) {
-            UserDefaults.standard.set(data, forKey: "websearch.cfg.\(p.rawValue)")
-        }
-    }
-
-    /// 轮询取下一个可用 Key（Kelivo 的多 Key 负载均衡）
-    func nextKey(for p: SearchProvider) -> String {
-        let keys = config(for: p).apiKeys.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-        guard !keys.isEmpty else { return "" }
-        let idx = (roundRobin[p.rawValue] ?? 0) % keys.count
-        roundRobin[p.rawValue] = idx + 1
-        return keys[idx]
-    }
-
-    /// 列出已配置好、可直接用的服务商
-    func usableProviders() -> [SearchProvider] {
-        SearchProvider.allCases.filter { p in
-            let cfg = config(for: p)
-            if p.needsEndpoint { return !cfg.endpoint.trimmingCharacters(in: .whitespaces).isEmpty }
-            if p.needsKey { return !cfg.apiKeys.filter { !$0.isEmpty }.isEmpty }
-            return true
-        }
-    }
-}
+// v9：配置层已迁到 SearchSettings.swift（多实例服务商 + 网页读取模式 + 兼容层）。
 
 // MARK: - 执行
 
 enum WebSearchService {
 
     /// 统一入口：指定服务商失败时按「可用服务商顺序」自动回退
+    /// v9：serviceOverride —— 用指定实例的凭据执行（测连 / 多实例并存时按实例走）
+    ///     allowFallback=false —— 只打这一家，失败就报错（测连必须这样，否则别家成功会掩盖失效的 Key）
     static func search(query: String,
                        provider preferred: SearchProvider?,
-                       limit: Int) -> SearchResponse {
+                       limit: Int,
+                       serviceOverride: SearchServiceOptions? = nil,
+                       allowFallback: Bool = true) -> SearchResponse {
+        if let ov = serviceOverride {
+            return SearchSettings.withServiceOverride(ov) {
+                let r = callProvider(ov.kind, query: query, limit: limit)
+                return r
+            }
+        }
         let settings = SearchSettings.shared
         var order: [SearchProvider] = [preferred ?? settings.defaultProvider]
         // v7.16.11：开箱可用（无需 Key）的引擎排在前面——用户没配任何 Key 时，
@@ -213,6 +151,7 @@ enum WebSearchService {
             if r.hits.count >= 2 || (r.answer?.isEmpty == false) { return r }
             if r.hits.count == 1, best == nil { best = r }
             lastErr = r.error ?? "无结果"
+            if !allowFallback { break }
         }
         if let b = best { return b }
         return SearchResponse(provider: preferred?.displayName ?? "本地", answer: nil, hits: [], error: lastErr)
@@ -242,7 +181,13 @@ enum WebSearchService {
 
     static let desktopUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
 
-    static func http(_ req: URLRequest, timeout: TimeInterval = 25) -> (Data?, Int, String) {
+    /// v9：全局超时（设置页可调 5–120s）。各 HTTP 调用默认走它，工具显式传参可覆盖。
+    static var defaultTimeout: TimeInterval {
+        let t = SearchSettings.shared.timeoutSeconds
+        return TimeInterval(max(5, min(t, 120)))
+    }
+
+    static func http(_ req: URLRequest, timeout: TimeInterval? = nil) -> (Data?, Int, String) {
         var data: Data?
         var code = -1
         var errText = ""
@@ -256,13 +201,13 @@ enum WebSearchService {
             }
             task.resume()
         }
-        _ = sem.wait(timeout: .now() + timeout)
+        _ = sem.wait(timeout: .now() + (timeout ?? defaultTimeout))
         return (data, code, errText)
     }
 
     static func getJSON(_ url: String, headers: [String: String] = [:]) -> (Any?, String) {
         guard let u = URL(string: url) else { return (nil, "URL 非法") }
-        var req = URLRequest(url: u, timeoutInterval: 25)
+        var req = URLRequest(url: u, timeoutInterval: defaultTimeout)
         req.setValue(desktopUA, forHTTPHeaderField: "User-Agent")
         for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
         let (data, code, err) = http(req)
@@ -274,14 +219,14 @@ enum WebSearchService {
 
     static func postJSON(_ url: String, body: [String: Any], headers: [String: String]) -> (Any?, String) {
         guard let u = URL(string: url) else { return (nil, "URL 非法") }
-        var req = URLRequest(url: u, timeoutInterval: 30)
+        var req = URLRequest(url: u, timeoutInterval: max(defaultTimeout, 30))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         req.setValue(desktopUA, forHTTPHeaderField: "User-Agent")
         for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        let (data, code, err) = http(req, timeout: 30)
+        let (data, code, err) = http(req)
         guard let d = data, code >= 200, code < 300 else {
             let detail = data.flatMap { String(data: $0, encoding: .utf8) }.map { String($0.prefix(200)) } ?? ""
             return (nil, "HTTP \(code) \(err) \(detail)")
@@ -291,7 +236,7 @@ enum WebSearchService {
 
     static func getText(_ url: String, headers: [String: String] = [:]) -> (String?, String) {
         guard let u = URL(string: url) else { return (nil, "URL 非法") }
-        var req = URLRequest(url: u, timeoutInterval: 25)
+        var req = URLRequest(url: u, timeoutInterval: defaultTimeout)
         req.setValue(desktopUA, forHTTPHeaderField: "User-Agent")
         for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
         let (data, code, err) = http(req)

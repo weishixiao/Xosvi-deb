@@ -75,8 +75,9 @@ enum TimelineHeightEstimator {
         // 中文按 1 字宽 ≈ fontSize，英文按 0.55；行高 ≈ fontSize * 1.45 + 行距
         var lines: CGFloat = 0
         for line in text.components(separatedBy: "\n") {
-            let visual = line.reduce(CGFloat(0)) { acc, ch in
-                acc + (ch.unicodeScalars.first.map { $0.value > 0x2E80 } == true ? 1.0 : 0.55)
+            let visual = line.reduce(CGFloat(0)) { (acc: CGFloat, ch: Character) -> CGFloat in
+                let wide = (ch.unicodeScalars.first?.value ?? 0) > 0x2E80
+                return acc + (wide ? 1.0 : 0.55)
             }
             lines += max(1, ceil(visual * fontSize / max(width, 1)))
         }

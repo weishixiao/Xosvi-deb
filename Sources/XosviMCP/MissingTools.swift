@@ -176,18 +176,24 @@ final class WebSearchTool: MCPTool {
             for h in hits.prefix(autoN) {
                 pg.enter()
                 DispatchQueue.global().async {
-                    let page = WebFetchService.fetch(url: h.url, preferProvider: preferred)
-                    let blocked = page.blocked   // v7.16.11：反爬挑战页不当正文
+                    // v9：按设置里的「网页读取方式」取页（跟随/本地/指定实例/关闭）。
+                    // 关闭时返回 nil → 这一轮不附正文，只给 snippet。
+                    let page = WebFetchService.fetchForSettings(url: h.url, preferProvider: preferred)
+                    let blocked = page?.blocked ?? false   // v7.16.11：反爬挑战页不当正文
                     lock.lock()
-                    if !blocked {
+                    if let page, !blocked {
                         pages.append(["id": h.id, "url": page.url, "title": page.title,
                                       "via": page.via,
                                       "content": String(page.content.prefix(4000))])
-                    } else {
+                    } else if let page {
                         pages.append(["id": h.id, "url": page.url, "title": page.title,
                                       "via": page.via,
                                       "error": "BLOCKED_BY_CHALLENGE",
                                       "hint": "该页被人机验证拦截，正文不可用；引用请退回 snippet 或换来源。"])
+                    } else {
+                        pages.append(["id": h.id, "url": h.url, "title": h.title,
+                                      "skipped": "WEB_FETCH_OFF",
+                                      "hint": "网页读取已关闭（设置 → 联网搜索 → 网页读取），只有摘要可用。"])
                     }
                     lock.unlock()
                     pg.leave()
@@ -244,7 +250,14 @@ final class WebFetchTool: MCPTool {
         let maxChars = min(max(params["maxChars"] as? Int ?? 12000, 500), WebFetchService.maxChars)
         let forced = (params["provider"] as? String).flatMap { SearchProvider(rawValue: $0.lowercased()) }
 
-        let page = WebFetchService.fetch(url: urlString, preferProvider: forced)
+        // v9：未显式指定 provider 时按设置的「网页读取方式」；关闭则明确报错（不能静默返回空正文）
+        guard let page = WebFetchService.fetchForSettings(url: urlString, preferProvider: forced) else {
+            return [
+                "error": "WEB_FETCH_DISABLED",
+                "url": urlString,
+                "hint": "网页读取已关闭（设置 → 联网搜索 → 网页读取）。需要正文请改成「跟随搜索」/「本地直连」/指定一个支持读取的服务商。"
+            ]
+        }
         AuditLog.shared.log("web.fetch", detail: "\(page.via) \(urlString.prefix(70)) len=\(page.content.count)")
 
         let body = String(page.content.prefix(maxChars))

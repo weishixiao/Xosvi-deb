@@ -30,7 +30,7 @@ struct WorkspaceToolsPane: View {
     private var filteredGroups: [(String, String, [ToolDefinition])] {
         let map = defs
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        return groups.compactMap { name, icon, names in
+        return groups.compactMap { (name: String, icon: String, names: [String]) -> (String, String, [ToolDefinition])? in
             var items = names.compactMap { map[$0] }
             if !q.isEmpty {
                 items = items.filter {

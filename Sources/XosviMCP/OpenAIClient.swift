@@ -258,6 +258,11 @@ final class OpenAIClient {
                 ModelStore.shared.breaker(for: self.config.id).recordFailure(usedHalfOpenPermit: self.usedHalfOpenPermit)
                 UsageRecorder.shared.end(config: self.config, ok: false, elapsedMs: el, error: e.localizedDescription)
             }
+            // v9：请求真正结束（不是 delta）→ 余额可能已变，通知输入栏刷新胶囊。
+            // 只发 finished，流式中途不发——中转站普遍限流。
+            NotificationCenter.default.post(name: .xosviRequestFinished,
+                                            object: nil,
+                                            userInfo: ["configID": self.config.id.uuidString])
         }
         attempt(level: start, isFirst: true, messages: messages, tools: tools, onStatus: onStatus, onDelta: onDelta, onThinking: onThinking, completion: wrappedCompletion)
     }

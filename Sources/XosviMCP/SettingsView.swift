@@ -183,9 +183,9 @@ struct SettingsView: View {
                 // v7.16.11：按用户要求删除「构建与注入」入口（JBPlotSettingsView 一并删除）
                 // v7.5.0：内置浏览器已删除；改为「联网搜索」（多服务商 + 全文读取）
                 SettingsItem(title: "联网搜索",
-                             subtitle: "服务商 / API Key / 自动读全文",
+                             subtitle: "服务商 / 读取方式 / 测连 / 超时",
                              icon: "magnifyingglass", color: .gray,
-                             destination: AnyView(WebSearchSettingsView())),
+                             destination: AnyView(SearchServicesView())),
                 // v8.4：知识库——FTS5 索引管理 + 试检索
                 SettingsItem(title: "知识库",
                              subtitle: "内置知识包 · FTS5 检索 · 试查询",

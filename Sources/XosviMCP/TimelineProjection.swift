@@ -106,9 +106,9 @@ enum TimelineProjector {
         }
 
         // 先统计工具总数，供 reasoning.toolCountAfter 使用
-        let totalTools = parts.reduce(0) {
-            if case .toolCall = $1 { return $0 + 1 }
-            return $0
+        let totalTools = parts.reduce(0) { (acc: Int, part: MessagePart) -> Int in
+            if case .toolCall = part { return acc + 1 }
+            return acc
         }
         var toolsSeen = 0
 
