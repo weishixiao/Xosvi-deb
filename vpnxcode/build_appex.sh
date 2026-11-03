@@ -65,7 +65,7 @@ BIN="$APPEX/VpnTunnel"
 file "$BIN"
 
 echo "==> ldid sign + verify"
-ldid -Sentitlements/VpnTunnel.entitlements "$BIN"
+ldid -Cadhoc -Sentitlements/VpnTunnel.entitlements "$BIN"
 DUMP=$(mktemp)
 ldid -e "$BIN" > "$DUMP" 2>/dev/null || true
 cat "$DUMP"
