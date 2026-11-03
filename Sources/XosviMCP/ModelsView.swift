@@ -417,6 +417,8 @@ struct ModelEditorView: View {
     @State private var fetchedModels: [String] = []
     @State private var showingModelPicker = false
     @State private var savedFlag = false
+    /// v8：表单校验错误提示（防呆——空配置不再落库）
+    @State private var validationError = ""
 
     private let providers = ["openai", "deepseek", "anthropic", "custom"]
 
@@ -480,6 +482,14 @@ struct ModelEditorView: View {
                     Text(L10n.t("ui_72"))
                         .font(.caption)
                         .foregroundColor(.blue)
+                }
+
+                if !validationError.isEmpty {
+                    Section {
+                        Label(validationError, systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
                 }
 
                 Section(header: sectionHeader("操作")) {
@@ -657,7 +667,8 @@ struct ModelEditorView: View {
         }
     }
 
-    private func makeConfig() -> ModelConfig {
+    /// v8：宽松构造（不做校验）——fetchUpstreamModels 也要用表单值拉列表
+    private func makeConfigRelaxed() -> ModelConfig {
         ModelConfig(
             id: config?.id ?? UUID(),
             name: name.isEmpty ? model : name,
@@ -665,7 +676,7 @@ struct ModelEditorView: View {
             apiProtocol: apiProtocol,
             baseURL: baseURL,
             apiKey: apiKey,
-            model: model,
+            model: model.trimmingCharacters(in: .whitespaces),
             authMethod: authMethod,
             isDefault: isDefault,
             temperature: temperature,
@@ -674,6 +685,25 @@ struct ModelEditorView: View {
             group: group,
             paramAliases: ModelEditorView.parseAliases(paramAliasesText)
         )
+    }
+
+    /// v8：可失败版本——名称/模型名/Base URL 校验不过返回 nil，杜绝空配置落库
+    private func makeConfig() -> ModelConfig? {
+        let finalName = name.isEmpty ? model : name
+        guard !finalName.trimmingCharacters(in: .whitespaces).isEmpty else {
+            validationError = "名称和模型名不能都为空，至少填一个"
+            return nil
+        }
+        guard !baseURL.trimmingCharacters(in: .whitespaces).isEmpty else {
+            validationError = "Base URL 不能为空"
+            return nil
+        }
+        guard !model.trimmingCharacters(in: .whitespaces).isEmpty else {
+            validationError = "模型名不能为空（可先填 Base URL 点「获取模型列表」再选）"
+            return nil
+        }
+        validationError = ""
+        return makeConfigRelaxed()
     }
 
     /// v3.5.13：字典 → 编辑文本（"key:value,key2:value2"）
@@ -696,16 +726,14 @@ struct ModelEditorView: View {
     }
 
     private func saveOnly() {
-        let cfg = makeConfig()
-        onSave(cfg)
-        savedFlag = true
+        guard let cfg = makeConfig() else { return }
+        onSave(cfg); savedFlag = true
         presentationMode.wrappedValue.dismiss()
     }
 
     private func saveAndTest() {
-        let cfg = makeConfig()
-        onSave(cfg)
-        savedFlag = true
+        guard let cfg = makeConfig() else { return }
+        onSave(cfg); savedFlag = true
         isTesting = true
         testStatus = "正在测试..."
         testColor = .secondary
@@ -723,9 +751,14 @@ struct ModelEditorView: View {
     }
 
     private func fetchUpstreamModels() {
-        let cfg = makeConfig()
-        onSave(cfg)
-        savedFlag = true
+        // v8：不再先落库——Base URL 校验通过后直接用表单值拉列表，保存交给用户点「保存」。
+        // （旧版一进来就 onSave(cfg)：新建后没填任何东西就点获取列表，空配置直接入库）
+        guard !baseURL.trimmingCharacters(in: .whitespaces).isEmpty else {
+            validationError = "Base URL 不能为空，先填好再获取模型列表"
+            return
+        }
+        validationError = ""
+        let cfg = makeConfigRelaxed()
         isTesting = true
         testStatus = "正在获取模型列表..."
         testColor = .secondary

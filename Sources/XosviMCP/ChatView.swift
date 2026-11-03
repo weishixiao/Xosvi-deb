@@ -1814,7 +1814,13 @@ struct MessageBubble: View {
                 .textSelection(.enabled)
         } else {
             // v4.5.0：完成消息用原生 NSAttributedString 富文本（加粗/橙色/暗黑模式都正确渲染），避免 SwiftUI AttributedString 桥接丢失样式
-            SelectableText(attributed: attributedBody(capped), textColor: .label)
+            // v8：正文含 [cite:sN] 时替换为引用角标（本轮 web.search 结果命中蓝标，未命中灰标）
+            if capped.contains("[cite:") {
+                let urls = CitationRenderer.collectURLs(around: message, in: ConversationStore.shared.currentMessages)
+                SelectableText(attributed: CitationRenderer.apply(to: attributedBody(capped), urls: urls), textColor: .label)
+            } else {
+                SelectableText(attributed: attributedBody(capped), textColor: .label)
+            }
         }
     }
 

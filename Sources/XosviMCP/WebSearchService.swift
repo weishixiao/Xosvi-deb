@@ -19,6 +19,8 @@ struct SearchHit {
     var title: String
     var url: String
     var snippet: String
+    /// v8：稳定短 id（s1/s2/...），搜索工具按 URL 去重后编号——模型引用时写 [cite:sN]
+    var id: String = ""
 }
 
 struct SearchResponse {

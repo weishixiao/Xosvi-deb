@@ -84,6 +84,49 @@ enum MessageBlockParser {
 
 // MARK: - 代码预览块（黑底）
 
+// MARK: - v8：[cite:sN] 引用角标（web.search 结果引用）
+
+/// web.search 结果带稳定 id（s1, s2, ...），模型在句末写 [cite:sN]；
+/// 这里把标记替换成彩色角标：命中本轮结果的蓝标，未命中的灰标。
+/// 走 NSAttributedString（与 v4.5.0 富文本路径一致，SwiftUI AttributedString 桥接会丢样式）。
+enum CitationRenderer {
+    private static let pattern = #"\[cite:(s\d+)\]"#
+
+    /// 在粗体/代码解析结果之上替换 [cite:sN]；urls 来自本轮 web.search 工具消息的 citedURLs
+    static func apply(to attributed: NSAttributedString, urls: [String: String]) -> NSAttributedString {
+        guard attributed.string.contains("[cite:") else { return attributed }
+        let ns = attributed.string as NSString
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return attributed }
+        let matches = regex.matches(in: attributed.string, range: NSRange(location: 0, length: ns.length))
+        guard !matches.isEmpty else { return attributed }
+        let out = NSMutableAttributedString(attributedString: attributed)
+        for m in matches.reversed() {
+            let id = ns.substring(with: m.range(at: 1))
+            let hit = urls[id] != nil
+            let marker = NSMutableAttributedString(string: " \(id) ")
+            marker.addAttributes([
+                .font: UIFont.systemFont(ofSize: 11, weight: .semibold),
+                .foregroundColor: hit ? UIColor.white : UIColor.secondaryLabel,
+                .backgroundColor: hit ? UIColor.systemBlue : UIColor.systemGray5
+            ], range: NSRange(location: 0, length: marker.length))
+            out.replaceCharacters(in: m.range, with: marker)
+        }
+        return out
+    }
+
+    /// 从消息流收集本轮可引用的 id→url：从当前 assistant 消息向前扫到上一条 user 消息为止，
+    /// 合并所有 tool 消息的 citedURLs（按会话轮次累积——第 2 轮仍可引用第 1 轮搜到的 sN）
+    static func collectURLs(around message: ChatMessage, in messages: [ChatMessage]) -> [String: String] {
+        guard let idx = messages.firstIndex(where: { $0.id == message.id }) else { return [:] }
+        var urls: [String: String] = [:]
+        for m in messages[...idx].reversed() {
+            if m.role == "user" { break }
+            if let c = m.citedURLs { urls.merge(c) { _, new in new } }
+        }
+        return urls
+    }
+}
+
 struct CodeBlockView: View {
     var lang: String
     var code: String

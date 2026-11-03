@@ -205,6 +205,7 @@ final class ModelStore: ObservableObject {
                 if let bak = ud.data(forKey: "\(key).bak.\(i)"),
                    let decoded = try? JSONDecoder().decode([ModelConfig].self, from: bak) {
                     configs = decoded
+                    _purgeBlankConfigs()   // v8：备份恢复同样过滤空白配置
                     break
                 }
             }
@@ -212,7 +213,21 @@ final class ModelStore: ObservableObject {
             return
         }
         configs = decoded
+        _purgeBlankConfigs()   // v8：清理历史遗留的空白配置（截图里那条 "custom ·"）
         _restoreApiKeysFromKeychain()
+    }
+
+    /// v8：清理 name+model 均空的废配置（旧版编辑器/深链/导入三处都能写入）；
+    /// 清掉后若没有默认项则把第一条设为默认，并落盘一次
+    private func _purgeBlankConfigs() {
+        let before = configs.count
+        configs.removeAll {
+            $0.name.trimmingCharacters(in: .whitespaces).isEmpty &&
+            $0.model.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+        guard configs.count != before else { return }
+        if !configs.contains(where: { $0.isDefault }), !configs.isEmpty { configs[0].isDefault = true }
+        save()
     }
 
     /// v6.1.5：apiKey Keychain 化——从 Keychain 恢复各 config 的 apiKey；
@@ -337,6 +352,12 @@ final class ModelStore: ObservableObject {
 
     func add(_ config: ModelConfig) {
         var c = config
+        // v8：防呆——name+model 均空的废配置拒收（编辑器校验漏网 / 导入文件缺字段）
+        if c.name.trimmingCharacters(in: .whitespaces).isEmpty,
+           c.model.trimmingCharacters(in: .whitespaces).isEmpty {
+            return
+        }
+        if c.name.isEmpty { c.name = c.model }
         if c.isDefault {
             for i in configs.indices { configs[i].isDefault = false }
         }
@@ -346,7 +367,9 @@ final class ModelStore: ObservableObject {
     }
 
     /// v2.9.126：深链导入专用——同 baseURL+model 去重 (重复导入不再堆积配置）
+    /// v8：model 为空的深链直接拒收（缺参数的链接不再造出废配置）
     func importFromDeepLink(_ config: ModelConfig) -> Bool {
+        guard !config.model.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
         let dup = configs.contains { $0.baseURL == config.baseURL && $0.model == config.model }
         guard !dup else { return false }
         add(config)
@@ -623,6 +646,8 @@ struct ChatMessage: Codable, Identifiable, Hashable {
     /// v3.5.10：工具是否仍在执行中——true 表示这是一张"启动即上屏"的 running 步骤卡，
     /// 结果回来后置 false 并填内容。UI 据此在徽章处显示"执行中…/转圈"而非"✓完成/✗出错"。
     var isRunning: Bool = false
+    /// v8：web.search 结果的 id→url 映射（挂在本条 tool 消息上）——UI 渲染 [cite:sN] 引用角标的命中态
+    var citedURLs: [String: String]? = nil
 
     var isTool: Bool { role == "tool" }
 }
@@ -1898,6 +1923,8 @@ final class ConversationStore: ObservableObject {
             toolMsg.toolArgs = Self.summarizeArgs(call.arguments)
             // v3.3.4：耗时显示
             toolMsg.toolDuration = toolDuration
+            // v8：web.search 结果 → id→url 映射挂在本条 tool 消息上（UI 渲染 [cite:sN] 角标）
+            if call.name == "web.search" { toolMsg.citedURLs = Self.extractCitedURLs(from: r) }
             // v3.5.8：存解说（模型写的"先解说后执行"正文）到工具消息——Minis 式工具卡当步骤标题
             toolMsg.toolNarration = thinkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : thinkText
             // v3.1.72：不再写 toolMsg.thinking——思考已在 assistant 消息的 thinking 字段显示一次，
@@ -2201,6 +2228,22 @@ final class ConversationStore: ObservableObject {
         guard let data = try? JSONSerialization.data(withJSONObject: dict),
               let s = String(data: data, encoding: .utf8) else { return "{}" }
         return s
+    }
+
+    /// v8：web.search 结果字典 → id→url 映射（results + pages），供 UI 渲染 [cite:sN] 引用角标
+    private static func extractCitedURLs(from result: [String: Any]) -> [String: String]? {
+        var urls: [String: String] = [:]
+        if let results = result["results"] as? [[String: Any]] {
+            for item in results {
+                if let id = item["id"] as? String, let u = item["url"] as? String { urls[id] = u }
+            }
+        }
+        if let pages = result["pages"] as? [[String: Any]] {
+            for item in pages {
+                if let id = item["id"] as? String, let u = item["url"] as? String { urls[id] = u }
+            }
+        }
+        return urls.isEmpty ? nil : urls
     }
 
     private func sortAndSave() {

@@ -30,11 +30,11 @@ struct WebSearchSettingsView: View {
                 Stepper("搜索后自动读前 \(SearchSettings.shared.autoFetchTop) 条正文",
                         value: Binding(get: { SearchSettings.shared.autoFetchTop },
                                        set: { SearchSettings.shared.autoFetchTop = $0 }),
-                        in: 0...10)
+                        in: 0...3)
             } header: {
                 Text("通用")
             } footer: {
-                Text("自动读正文会让结果里直接带上页面内容（最多 10 条、每条 6000 字），模型不用再调用一次。")
+                Text("自动读正文会让结果里直接带上页面内容（最多 3 条、每条 4000 字，并行抓取）；值越大回复越慢。")
                     .font(.caption2)
             }
 
