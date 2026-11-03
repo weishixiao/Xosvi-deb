@@ -182,7 +182,7 @@ let package = Package(
         .testTarget(
             name: "XosviTests",
             dependencies: ["Xosvi"],
-            path: "tests/XosviTests"
+            path: "tests/UnitTests"
         ),
     ]
 )
