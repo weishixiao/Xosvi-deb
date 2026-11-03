@@ -52,6 +52,8 @@ final class BalanceChecker {
     /// 内存缓存：configID → BalanceInfo
     private var cache: [UUID: BalanceInfo] = [:]
     private var inflight: Set<UUID> = []
+    /// 同一 config 的并发请求：正在飞的那次完成后统一回调，避免第二个调用静默丢失
+    private var pending: [UUID: [(Result<BalanceInfo, BalanceError>) -> Void]] = [:]
     private let lock = NSLock()
 
     /// new-api 默认 500000 单位 = $1，可在设置里改
@@ -95,19 +97,25 @@ final class BalanceChecker {
         lock.lock(); defer { lock.unlock() }
         cache.removeAll()
         inflight.removeAll()
+        pending.removeAll()
     }
 
     /// 查询余额；force=false 时 5 分钟内的缓存直接返回
-    func check(_ config: ModelConfig, force: Bool = false,
+    func check(config: ModelConfig, force: Bool = false,
                completion: @escaping (Result<BalanceInfo, BalanceError>) -> Void) {
         lock.lock()
         if !force, let c = cache[config.id],
            Date().timeIntervalSince(c.updatedAt) < Self.cacheTTL {
             lock.unlock(); completion(.success(c)); return
         }
-        // 同一配置并发只打一次：第二个调用直接返回（调用方用 isQuerying 显示转圈）
-        if inflight.contains(config.id) { lock.unlock(); return }
+        // 同一配置并发只打一次：后来的挂到 pending，飞完一起回调
+        if inflight.contains(config.id) {
+            pending[config.id, default: []].append(completion)
+            lock.unlock()
+            return
+        }
         inflight.insert(config.id)
+        pending[config.id, default: []].append(completion)
         lock.unlock()
 
         DispatchQueue.global(qos: .utility).async {
@@ -115,8 +123,11 @@ final class BalanceChecker {
             self.lock.lock()
             self.inflight.remove(config.id)
             if case .success(let info) = result { self.cache[config.id] = info }
+            let waiters = self.pending.removeValue(forKey: config.id) ?? []
             self.lock.unlock()
-            DispatchQueue.main.async { completion(result) }
+            DispatchQueue.main.async {
+                for cb in waiters { cb(result) }
+            }
         }
     }
 

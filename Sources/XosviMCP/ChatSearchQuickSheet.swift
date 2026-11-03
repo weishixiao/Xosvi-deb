@@ -10,8 +10,6 @@ struct ChatSearchQuickSheet: View {
     @Environment(\.presentationMode) private var presentationMode
 
     var onDone: () -> Void
-    /// 跳到完整设置页（外层负责 push/sheet）
-    var onOpenSettings: () -> Void = {}
 
     var body: some View {
         NavigationView {
@@ -73,9 +71,9 @@ struct ChatSearchQuickSheet: View {
                 }
 
                 Section {
-                    Button {
-                        presentationMode.wrappedValue.dismiss()
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { onOpenSettings() }
+                    // 文档同款：NavigationLink 直接推进完整设置页（本层已有 NavigationView）
+                    NavigationLink {
+                        SearchServicesView()
                     } label: {
                         Label("搜索设置", systemImage: "gearshape")
                     }
@@ -92,18 +90,7 @@ struct ChatSearchQuickSheet: View {
             }
         }
         .navigationViewStyle(.stack)
+        // 复用 UIComponents 里已有的 iOS15 兼容封装（别重复定义同名扩展）
         .sheetDetentsMedium()
-    }
-}
-
-extension View {
-    /// 半屏（iOS16+；iOS15 忽略）
-    @ViewBuilder
-    func sheetDetentsMedium() -> some View {
-        if #available(iOS 16.0, *) {
-            self.presentationDetents([.medium, .large])
-        } else {
-            self
-        }
     }
 }

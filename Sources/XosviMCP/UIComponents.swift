@@ -180,6 +180,16 @@ extension View {
             self
         }
     }
+
+    /// v9：中等/全屏两档（搜索快捷切换面板用）
+    @ViewBuilder
+    func sheetDetentsMedium() -> some View {
+        if #available(iOS 16.0, *) {
+            self.presentationDetents([.medium, .large])
+        } else {
+            self
+        }
+    }
 }
 
 // v2.9.248：iOS 15.6 兼容——URLRequest.timeoutInterval 的 Swift setter 是 iOS16+ ABI 符号

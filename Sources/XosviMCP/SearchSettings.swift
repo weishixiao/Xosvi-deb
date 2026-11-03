@@ -52,6 +52,10 @@ struct SearchServiceOptions: Codable, Identifiable, Hashable {
     }
 
     // 手写 init(from:) 只为容错：老/残缺 JSON 不该让整个设置页崩掉
+    private enum CodingKeys: String, CodingKey {
+        case id, kind, apiKeys, endpoint, basicUser, basicPassword, enabled, customName
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = (try? c.decode(String.self, forKey: .id)) ?? UUID().uuidString
@@ -313,6 +317,16 @@ final class SearchSettings: ObservableObject {
     }
 
     func config(for p: SearchProvider) -> SearchProviderConfig {
+        // v9：线程级实例覆盖优先（测连 / 工具 provider= 指定了具体实例）
+        if let ov = SearchSettings.threadOverride, ov.kind == p {
+            var c = SearchProviderConfig()
+            c.apiKeys = ov.apiKeys
+            c.endpoint = ov.endpoint
+            c.basicUser = ov.basicUser
+            c.basicPassword = ov.basicPassword
+            c.enabled = ov.enabled
+            return c
+        }
         if let s = services.first(where: { $0.kind == p && $0.isUsable })
             ?? services.first(where: { $0.kind == p }) {
             var c = SearchProviderConfig()
@@ -351,7 +365,7 @@ final class SearchSettings: ObservableObject {
     func nextKey(for p: SearchProvider) -> String {
         // v9：调用方显式指定了服务商实例（测连 / 工具 provider=）时，用该实例的 Key，
         // 不参与全局轮询——否则测 A 实例会打到 B 实例的 Key 上。
-        if let ov = Self.threadOverride, ov.kind == p, ov.hasKey {
+        if let ov = SearchSettings.threadOverride, ov.kind == p, ov.hasKey {
             return ov.primaryKey
         }
         let keys = config(for: p).apiKeys.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
@@ -367,17 +381,24 @@ final class SearchSettings: ObservableObject {
 
     private static let overrideKey = "xosvi.searchServiceOverride"
 
+    /// NSMutableDictionary 只能放对象，结构体需要装箱
+    private final class ServiceBox: NSObject {
+        let service: SearchServiceOptions
+        init(_ s: SearchServiceOptions) { service = s }
+    }
+
     static var threadOverride: SearchServiceOptions? {
-        Thread.current.threadDictionary[overrideKey] as? SearchServiceOptions
+        (Thread.current.threadDictionary[overrideKey] as? ServiceBox)?.service
     }
 
     static func withServiceOverride<T>(_ service: SearchServiceOptions?, _ body: () -> T) -> T {
         guard let service else { return body() }
         let dict = Thread.current.threadDictionary
         let previous = dict[overrideKey]
-        dict[overrideKey] = service
+        dict[overrideKey] = ServiceBox(service)
         defer {
-            if let previous { dict[overrideKey] = previous } else { dict.removeObject(forKey: overrideKey) }
+            if let previous { dict[overrideKey] = previous }
+            else { dict.removeObject(forKey: overrideKey) }
         }
         return body()
     }

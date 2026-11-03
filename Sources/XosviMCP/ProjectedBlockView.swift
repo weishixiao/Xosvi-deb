@@ -249,7 +249,10 @@ struct MessageImageView: View {
                     .resizable()
                     .scaledToFit()
                     // v9：占位与最终高度一致（按 4:3 预估、上限 240）——解码完成不跳
-                    .frame(maxWidth: 240, maxHeight: 240, minHeight: min(placeholderHeight, 240))
+                    // 注意 frame 的参数顺序是 minWidth/idealWidth/maxWidth/minHeight/idealHeight/maxHeight，
+                    // 混写会报参数顺序错，所以宽度、高度分开两次给。
+                    .frame(maxWidth: 240)
+                    .frame(minHeight: min(placeholderHeight, 240), maxHeight: 240)
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     .onTapGesture { showFull = true }
             }

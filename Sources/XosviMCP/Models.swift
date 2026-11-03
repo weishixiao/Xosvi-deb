@@ -829,7 +829,7 @@ final class ConversationStore: ObservableObject {
             conversations[idx].messages[mi].thinking = existing + tBuf
             // v9：思考单独成 reasoning part（在 text 之前插入，保持"先思考后正文"顺序）
             var parts = conversations[idx].messages[mi].effectiveParts
-            if parts.count > 1, case .reasoning(let last)? = parts[parts.count - 2],
+            if parts.count > 1, case .reasoning(let last) = parts[parts.count - 2],
                case .text = parts[parts.count - 1] {
                 parts[parts.count - 2] = .reasoning(last + tBuf)
             } else if case .reasoning(let last)? = parts.last {
@@ -1701,13 +1701,22 @@ final class ConversationStore: ObservableObject {
                         self.conversations[ci].messages[mi].toolCalls = calls
                         // v9：结构化 parts 同步——toolCall 追加在已有 text 之后（真实产出顺序）
                         var p2 = self.conversations[ci].messages[mi].effectiveParts
-                        // 去掉上一次残留的 toolCall（重发/重试场景），再按本次 calls 重建
-                        p2.removeAll { if case .toolCall = $0 { return true }; return false }
+                        // 去掉上一次残留的 toolCall 与 roundEnd（重发/重试场景），再按本次 calls 重建
+                        p2.removeAll {
+                            switch $0 {
+                            case .toolCall, .roundEnd: return true
+                            default: return false
+                            }
+                        }
                         for c in calls {
                             p2.append(.toolCall(ToolCallPayload(
                                 id: c.id, name: c.name, arguments: c.arguments,
                                 result: nil, isError: false, durationMs: nil, previewImage: nil)))
                         }
+                        // v9：一轮结束的结构边界（模型这一轮说完了，接下来执行工具）。
+                        // 不产生可见块，但让投影器按轮切段（任务视图也靠它分段）；
+                        // 也不会回传给模型（MessagePart.isModelInput == false）。
+                        p2.append(.roundEnd(reasoningDetails: nil))
                         self.conversations[ci].messages[mi].parts = p2
                         ProjectedBlockCache.shared.invalidate(id: self.conversations[ci].messages[mi].id)
                         // v3.5.4：思考始终写入黄色气泡(message.thinking)，不再要求 content 为空——
@@ -1737,6 +1746,7 @@ final class ConversationStore: ObservableObject {
                                 id: c.id, name: c.name, arguments: c.arguments,
                                 result: nil, isError: false, durationMs: nil, previewImage: nil)))
                         }
+                        ap.append(.roundEnd(reasoningDetails: nil))
                         am.parts = ap
                         let vTrim = visibleText.trimmingCharacters(in: .whitespacesAndNewlines)
                         let rTrim2 = reasoningText.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -128,9 +128,9 @@ enum WebSearchService {
                        serviceOverride: SearchServiceOptions? = nil,
                        allowFallback: Bool = true) -> SearchResponse {
         if let ov = serviceOverride {
+            // 单表达式闭包：多语句闭包在旧 Swift 上要显式标注返回类型
             return SearchSettings.withServiceOverride(ov) {
-                let r = callProvider(ov.kind, query: query, limit: limit)
-                return r
+                callProvider(ov.kind, query: query, limit: limit)
             }
         }
         let settings = SearchSettings.shared
@@ -145,9 +145,15 @@ enum WebSearchService {
         var lastErr = ""
         // v7.13.2：必应改版后经常只给 1 条，不该就此打住——少于 2 条继续问下一个引擎，
         // 全程都弱时退回"最好的那条"，不至于空手而归。
+        // v9：同 kind 可能有多个实例（一主一备），命中当前选中实例时必须用它自己的 Key，
+        // 否则「设为当前」在界面上生效、实际仍打第一套 Key。
+        let selected = settings.selectedService
         var best: SearchResponse?
         for p in order {
-            let r = callProvider(p, query: query, limit: limit)
+            let override: SearchServiceOptions? = (selected?.kind == p) ? selected : nil
+            let r: SearchResponse = SearchSettings.withServiceOverride(override) {
+                callProvider(p, query: query, limit: limit)
+            }
             if r.hits.count >= 2 || (r.answer?.isEmpty == false) { return r }
             if r.hits.count == 1, best == nil { best = r }
             lastErr = r.error ?? "无结果"

@@ -1,19 +1,42 @@
 import SwiftUI
 import UIKit
+import Combine
 
 // MARK: - v9：输入框顶部状态条（余额胶囊 + 模型胶囊）
 //
 // 文档第三节：金额显示在输入框上方那条「工具条」区域，点一下刷新，长按看详情。
-// 形态 A（胶囊）——最省空间，也是文档推荐的默认形态。
+// 三种展示形态（文档第六节）都实现了，用 @AppStorage 切换：
+//   0 胶囊（形态 A，默认，最省空间）
+//   1 仅低额时显示（形态 B，最克制）
+//   2 输入框右下角小字（形态 C，最轻）
 //
 // 行为约束（文档第七节）：
 //   · 不在 body 里查余额（网络请求会每帧触发）→ onAppear / onChange / 请求完成通知
 //   · 失败静默：只显示「余额 ?」灰胶囊，长按才看原因
 //   · 缓存 5 分钟（BalanceChecker 内），切模型 / 请求完成时 force 刷新
+//   · 只在请求「结束」时刷新，流式 delta 期间不刷（中转站普遍限流）
+
+enum BalanceDisplayMode: Int, CaseIterable, Identifiable {
+    case capsule = 0     // 形态 A
+    case lowOnly = 1     // 形态 B
+    case corner = 2      // 形态 C
+
+    var id: Int { rawValue }
+
+    var label: String {
+        switch self {
+        case .capsule: return "胶囊（推荐）"
+        case .lowOnly: return "仅低额时显示"
+        case .corner: return "输入框右下角小字"
+        }
+    }
+}
 
 struct BalanceChipBar: View {
     /// 当前生效的模型配置
     let config: ModelConfig?
+    /// 展示形态（默认胶囊）
+    @AppStorage("xosvi.balance_display") private var modeRaw: Int = 0
 
     @State private var balance: BalanceInfo?
     @State private var errorText: String?
@@ -21,12 +44,19 @@ struct BalanceChipBar: View {
     @State private var hidden = false
     @State private var copied = false
 
+    private var mode: BalanceDisplayMode { BalanceDisplayMode(rawValue: modeRaw) ?? .capsule }
+
     var body: some View {
         if let cfg = config, !hidden {
-            HStack(spacing: 8) {
-                modelChip(cfg)
-                balanceChip
-                Spacer(minLength: 4)
+            Group {
+                switch mode {
+                case .capsule:
+                    capsuleRow(cfg)
+                case .lowOnly:
+                    lowOnlyRow(cfg)
+                case .corner:
+                    cornerRow(cfg)
+                }
             }
             .padding(.horizontal, 14)
             .padding(.top, 8)
@@ -37,6 +67,53 @@ struct BalanceChipBar: View {
                 // 只刷新「刚刚真正发过请求」的那个配置，别被别的会话的请求带跑
                 let id = (note.userInfo?["configID"] as? String) ?? ""
                 if id.isEmpty || id == cfg.id.uuidString { refresh(force: true) }
+            }
+        }
+    }
+
+    // MARK: 形态 A：模型胶囊 + 余额胶囊
+
+    private func capsuleRow(_ cfg: ModelConfig) -> some View {
+        HStack(spacing: 8) {
+            modelChip(cfg)
+            balanceChip
+            Spacer(minLength: 4)
+        }
+    }
+
+    // MARK: 形态 B：余额充足时不显示余额（模型胶囊仍在，菜单里可查看/刷新）
+
+    private func lowOnlyRow(_ cfg: ModelConfig) -> some View {
+        HStack(spacing: 8) {
+            modelChip(cfg)
+            if let b = balance, b.isLow {
+                balanceChip
+            } else if errorText != nil {
+                balanceChip
+            }
+            Spacer(minLength: 4)
+        }
+    }
+
+    // MARK: 形态 C：输入框右下角小字
+
+    private func cornerRow(_ cfg: ModelConfig) -> some View {
+        HStack {
+            Spacer(minLength: 0)
+            if querying {
+                Text("余额 …")
+                    .font(.system(size: 9.5, design: .monospaced))
+                    .foregroundColor(.secondary.opacity(0.55))
+            } else if let b = balance {
+                Text(b.text)
+                    .font(.system(size: 9.5, design: .monospaced))
+                    .foregroundColor(b.isLow ? .orange.opacity(0.9) : .secondary.opacity(0.55))
+                    .onTapGesture { refresh(force: true) }
+            } else if errorText != nil {
+                Text("余额 ?")
+                    .font(.system(size: 9.5, design: .monospaced))
+                    .foregroundColor(.secondary.opacity(0.5))
+                    .onTapGesture { refresh(force: true) }
             }
         }
     }
@@ -60,9 +137,13 @@ struct BalanceChipBar: View {
                 }
             }
             Divider()
-            Button {
-                hidden = true
-            } label: { Label("隐藏余额", systemImage: "eye.slash") }
+            Button { refresh(force: true) } label: {
+                Label(balance == nil ? "查询余额" : "刷新余额", systemImage: "creditcard")
+            }
+            if let b = balance {
+                Text(b.detail ?? b.text)
+            }
+            Button { hidden = true } label: { Label("隐藏余额", systemImage: "eye.slash") }
         } label: {
             HStack(spacing: 4) {
                 Circle()
@@ -111,15 +192,11 @@ struct BalanceChipBar: View {
             }
             .buttonStyle(PlainButtonStyle())
             .contextMenu {
+                if let d = b.detail { Text(d) }
                 Button { refresh(force: true) } label: {
                     Label("刷新余额", systemImage: "arrow.clockwise")
                 }
                 Button { copy(b) } label: { Label("复制", systemImage: "doc.on.doc") }
-                if let d = b.detail {
-                    Button { UIPasteboard.general.string = d } label: {
-                        Label(d, systemImage: "info.circle")
-                    }
-                }
                 Button { hidden = true } label: { Label("隐藏", systemImage: "eye.slash") }
             }
         } else if errorText != nil {
@@ -160,9 +237,8 @@ struct BalanceChipBar: View {
             errorText = nil
             return
         }
-        if BalanceChecker.shared.isQuerying(cfg.id) { querying = true; return }
         querying = true
-        BalanceChecker.shared.check(cfg, force: force) { result in
+        BalanceChecker.shared.check(config: cfg, force: force) { result in
             querying = false
             switch result {
             case .success(let info):
@@ -182,11 +258,12 @@ struct BalanceChipBar: View {
     }
 }
 
-// MARK: - 额度换算设置行（文档第五节）
+// MARK: - 余额显示设置（文档第五节 + 第六节）
 
-struct QuotaPerUnitRow: View {
+struct BalanceSettingsSection: View {
     @AppStorage("xosvi.quota_per_unit") private var quotaPerUnit: Double = 500_000
     @AppStorage("xosvi.newapi_user_id") private var newAPIUserID: String = ""
+    @AppStorage("xosvi.balance_display") private var displayMode: Int = 0
     @State private var unitText: String = ""
     @State private var uidText: String = ""
 
@@ -207,6 +284,12 @@ struct QuotaPerUnitRow: View {
                     .foregroundColor(.secondary)
                     .font(.caption)
             }
+            Picker("展示形态", selection: $displayMode) {
+                ForEach(BalanceDisplayMode.allCases) { m in
+                    Text(m.label).tag(m.rawValue)
+                }
+            }
+            .pickerStyle(.menu)
             HStack {
                 Text("New-Api-User")
                 Spacer()

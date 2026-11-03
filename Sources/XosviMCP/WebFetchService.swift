@@ -59,9 +59,11 @@ enum WebFetchService {
     }
 
     static func fetch(url: String, preferProvider: SearchProvider? = nil, allowJina: Bool = true) -> WebPage {
-        // ① 服务商专属 reader
+        // ① 服务商专属 reader（多实例时用选中实例的 Key）
         if let p = preferProvider ?? providerWithFetch() {
-            if let page = providerFetch(p, url: url) { return page }
+            let selected = SearchSettings.shared.selectedService
+            let key = (selected?.kind == p) ? selected?.primaryKey : nil
+            if let page = providerFetch(p, url: url, key: key) { return page }
         }
         // ② 公共 Jina Reader（能读 JS 渲染页）
         if allowJina, let page = jinaReader(url: url) { return page }

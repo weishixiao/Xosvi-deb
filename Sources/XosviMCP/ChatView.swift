@@ -45,6 +45,8 @@ struct ChatView: View {
     @ObservedObject private var modelStore = ModelStore.shared
     // v8.4：TTSService 观察已随朗读功能删除
     @ObservedObject private var uiState = AppUIState.shared   // v7.1.2：抽屉开关（顶部栏 ≡ 键要用）
+    // v9：搜索服务（输入框「搜索·xx」胶囊要跟着设置页改）
+    @ObservedObject private var searchCfg = SearchSettings.shared
 
     @State private var inputText = ""
     @State private var inputHeight: CGFloat = 36
@@ -360,8 +362,6 @@ struct ChatView: View {
         .sheet(isPresented: $showSearchQuickSheet) {
             ChatSearchQuickSheet(onDone: {
                 showSearchQuickSheet = false
-            }, onOpenSettings: {
-                AppUIState.shared.settingsPresented = true
             })
         }
         .sheet(isPresented: $showModelPicker) {
@@ -659,9 +659,9 @@ struct ChatView: View {
             }
 
             // v9：输入框上方状态条——模型胶囊 + 余额胶囊（文档第三节「挂到输入框」）
+            // 形态 A/B 是独立一行；形态 C 由 BalanceChipBar 自己缩成右下角小字（仍是这一行，只是右对齐）
             // 数据源是当前默认模型；点胶囊强制刷新，长按看详情/复制/隐藏。
             BalanceChipBar(config: modelStore.defaultConfig)
-                .padding(.top, 2)
 
             VStack(spacing: 6) {
                 ChatInputTextView(text: $inputText, onSend: { send() }, height: $inputHeight)
@@ -700,7 +700,7 @@ struct ChatView: View {
                     // 联网检索仍然默认全开，这个胶囊只用来「临时换一家服务商」和看读取方式。
                     DeepSeekPillButton(
                         icon: "magnifyingglass",
-                        title: "搜索·\(SearchSettings.shared.selectedService?.displayName ?? "必应")",
+                        title: "搜索·\(searchCfg.selectedService?.displayName ?? "必应")",
                         isOn: true
                     ) {
                         showSearchQuickSheet = true

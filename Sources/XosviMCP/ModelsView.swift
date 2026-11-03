@@ -62,7 +62,7 @@ struct ModelsView: View {
                 // v9：余额显示参数（文档第五节）——new-api 系各站 quotaPerUnit 不同，
                 // 换算错了余额会差几个数量级，必须让用户能改。
                 Section {
-                    QuotaPerUnitRow()
+                    BalanceSettingsSection()
                 } header: {
                     HStack {
                         Text("余额显示").font(.subheadline.weight(.semibold))
@@ -301,7 +301,7 @@ struct ModelRow: View {
     private func checkBalance() {
         checkingBalance = true
         balanceText = ""
-        BalanceChecker.shared.check(config: config, force: true) { result in
+        BalanceChecker.shared.check(config, force: true) { result in
             checkingBalance = false
             switch result {
             case .success(let r):

@@ -101,6 +101,9 @@ final class ProjectedBlockCache {
         var contentCount: Int
         var thinkingCount: Int
         var partsCount: Int
+        /// v9：parts 的内容指纹——工具结果回填只改 result，不改条数，
+        /// 只按条数做键会让「执行中」永远停在缓存里，结果永远不显示。
+        var partsHash: Int
         var showReasoning: Bool
         var showTools: Bool
     }
@@ -109,10 +112,12 @@ final class ProjectedBlockCache {
     private let lock = NSLock()
 
     func blocks(for msg: ChatMessage, settings: TimelineSettings = .default) -> [ProjectedBlock] {
+        let parts = msg.effectiveParts
         let key = Key(id: msg.id,
                       contentCount: msg.content.count,
                       thinkingCount: (msg.thinking ?? "").count,
                       partsCount: msg.parts?.count ?? -1,
+                      partsHash: Self.hash(parts),
                       showReasoning: settings.showReasoning,
                       showTools: settings.showToolCalls)
         lock.lock()
@@ -122,13 +127,22 @@ final class ProjectedBlockCache {
         }
         lock.unlock()
 
-        let produced = TimelineProjector.project(msg.effectiveParts, settings: settings)
+        let produced = TimelineProjector.project(parts, settings: settings)
         lock.lock()
         store[msg.id] = (key, produced)
         // 会话长了以后清掉过期条目（只保留最近 400 条）
         if store.count > 400 { store.removeAll(keepingCapacity: true) }
         lock.unlock()
         return produced
+    }
+
+    /// 稳定指纹：MessagePart 自带 Hashable，但 hashValue 每次进程启动会变（无妨，只在内存里比较）。
+    /// 折叠成单个 Int 避免每次比较整个数组。
+    private static func hash(_ parts: [MessagePart]) -> Int {
+        var hasher = Hasher()
+        hasher.combine(parts.count)
+        for p in parts { hasher.combine(p) }
+        return hasher.finalize()
     }
 
     func invalidate(id: UUID) {

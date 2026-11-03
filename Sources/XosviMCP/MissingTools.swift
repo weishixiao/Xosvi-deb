@@ -98,7 +98,7 @@ final class DeviceSnapshotTool: MCPTool {
 
 final class WebSearchTool: MCPTool {
     let definition = ToolDefinition(name: "web.search",
-        summary: "Search the live web. Use it for anything that may have changed: news, prices, versions, docs, people, policies — or any fact you are unsure about. Write focused keywords, not a full sentence. Supports multiple alternative queries in parallel (param `queries`). Don't use for: reading a specific page (use web.fetch), local knowledge (use knowledge.search). Results carry stable ids (s1,s2,...) — cite them as [cite:sN] at the end of the sentence you base on them. Providers: Bing / DuckDuckGo / SearXNG (free, no key) and Tavily / Exa / Brave / Serper / 博查 / 秘塔 / 智谱 / Jina / Firecrawl / Perplexity / LinkUp / You.com (need API key, set in Settings → 联网搜索).",
+        summary: "Search the live web. Use it for anything that may have changed: news, prices, versions, docs, people, policies — or any fact you are unsure about. Write focused keywords, not a full sentence. Supports multiple alternative queries in parallel (param `queries`). Don't use for: reading a specific page (use web.fetch), local knowledge (use knowledge.search). Results carry stable ids (s1,s2,...) — cite them as [cite:sN] at the end of the sentence you base on them. Providers: Bing / DuckDuckGo / SearXNG (free, no key) and Tavily / Exa / Brave / Serper / 博查 / 秘塔 / 智谱 / Jina / Firecrawl / Perplexity / LinkUp / You.com (need API key, set in Settings → 联网搜索). The selected provider is used first; on failure the chain falls back to other usable engines.",
         parameters: ["query": "Primary search keywords (required)",
                      "queries": "Optional array of 2-3 alternative keyword sets, searched in parallel and merged (useful for ambiguous topics or multilingual lookups)",
                      "provider": "Optional provider name: bing/duckduckgo/searxng/tavily/exa/brave/serper/bocha/metaso/zhipu/jina/firecrawl/perplexity/linkup/you",
@@ -234,14 +234,14 @@ final class WebSearchTool: MCPTool {
 
 final class WebFetchTool: MCPTool {
     let definition = ToolDefinition(name: "web.fetch",
-        summary: "Read a web page and return its full text. Use for: read an article/doc after searching, quote exact content. Don't use for: search (use web.search). 三级回退：服务商 reader（Tavily/Jina/秘塔/Firecrawl/Exa，需 Key）→ 公共 Jina Reader → 本地直连抓取。本地抓取无法处理需要 JavaScript 渲染或有反爬限制的页面。",
+        summary: "Read a web page and return its full text. Use for: read an article/doc after searching, quote exact content. Don't use for: search (use web.search). 读取方式由设置决定（跟随搜索 / 本地直连 / 指定服务商 / 关闭）；跟随模式下：服务商 reader（Tavily/Jina/秘塔/Firecrawl/Exa，需 Key）→ 公共 Jina Reader → 本地直连抓取。本地抓取无法处理需要 JavaScript 渲染或有反爬限制的页面；设置为「关闭」时本工具直接返回 WEB_FETCH_DISABLED。",
         parameters: ["url": "Page URL",
                      "maxChars": "Max characters to return (default 12000)",
                      "provider": "Optional: force a provider's reader (tavily/jina/metaso/firecrawl/exa)"],
         returns: ["url": "Final URL", "title": "Page title", "text": "Full text",
                   "via": "Which channel produced it: provider / jina / local"],
         verified: true, category: "browser",
-        uiSummary: "读网页全文（三级回退，JS 页面走 reader）", annotations: .readOnlyNetwork, cache: ToolCachePolicy.none)
+        uiSummary: "读网页全文（按设置的读取方式：跟随/本地/指定服务商/关闭）", annotations: .readOnlyNetwork, cache: ToolCachePolicy.none)
 
     func invoke(_ params: [String: Any]) throws -> [String: Any] {
         guard let urlString = params["url"] as? String, !urlString.isEmpty else {

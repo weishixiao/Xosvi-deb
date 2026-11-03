@@ -635,7 +635,7 @@ struct SearchServiceEditorView: View {
 enum SearchClient {
     /// 用 1 条结果的最小查询验证连通性。
     /// 直接打该实例的接口（不走 WebSearchService 的回退链），否则别的引擎成功会掩盖这把 Key 失效。
-    static func testConnection(service: SearchServiceOptions, timeout: Int? = nil,
+    static func testConnection(service: SearchServiceOptions,
                                completion: @escaping (Bool) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async {
             let ok = probe(service)
@@ -669,7 +669,10 @@ enum SearchClient {
                                             provider: s.kind,
                                             limit: 1,
                                             serviceOverride: s)
-            return !r.hits.isEmpty || (r.answer?.isEmpty == false) || r.error == nil
+            // 有结果 / 有答案摘要 / 没报错（有的引擎空结果不报错）都算通
+            if !r.hits.isEmpty { return true }
+            if r.answer?.isEmpty == false { return true }
+            return r.error == nil
         }
     }
 }
