@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+	三个 helper 共用：够「跑构建脚本 / 让 dpkg 干活 / 读崩溃与二进制」即可。
+	刻意不抄 irisin-install 的 120 个 storage.*（报告第 8 节第 4 条的风险）。
+-->
+<plist version="1.0">
+<dict>
+	<key>platform-application</key>
+	<true/>
+	<key>com.apple.private.security.no-sandbox</key>
+	<true/>
+	<key>com.apple.private.security.storage.AppBundles</key>
+	<true/>
+	<key>com.apple.private.security.storage.AppDataContainers</key>
+	<true/>
+	<key>com.apple.private.security.storage.DiagnosticReports</key>
+	<true/>
+	<key>com.apple.private.security.storage.DiagnosticReports.read-only</key>
+	<true/>
+	<key>task_for_pid-allow</key>
+	<true/>
+	<key>proc_info-allow</key>
+	<true/>
+	<key>com.apple.private.mobileinstall.allowedSPI</key>
+	<array>
+		<string>Browse</string>
+		<string>Lookup</string>
+		<string>Install</string>
+		<string>Uninstall</string>
+	</array>
+</dict>
+</plist>

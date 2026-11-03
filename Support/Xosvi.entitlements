@@ -223,6 +223,10 @@
 	<true/>
 	<key>task_for_pid-allow</key>
 	<true/>
+	<!-- deb 版新增：允许本 App 连接 wiki.qaq.xosvi.service（xosvid 用
+	     xpc_copy_entitlement_for_token 校验对端，缺这一项会被直接 cancel） -->
+	<key>wiki.qaq.xosvi.client</key>
+	<true/>
 	<!-- fix3eq: PMAP_CS 信任链——TrollStore 安装时主二进制必须是 PMAP_CS_APP_STORE 级信任，
 	     否则运行期 spawn 的 Bundle/bin 下工具会被 AMFI/pmap 拦（表现为"权限都变了"）。 -->
 	<key>jb.pmap_cs.custom_trust</key>

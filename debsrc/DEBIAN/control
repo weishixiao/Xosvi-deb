@@ -1,0 +1,17 @@
+Package: com.xosvi.app
+Name: Xosvi
+Version: @VERSION@
+Architecture: iphoneos-arm64
+Description: 设备内 iOS 逆向 / 自动化工作台（越狱版）
+ 全功能 MCP 工作台：App 管理、dylib 注入、抓包、SQLite 取证、
+ 跨环境文件、包解剖。本包把 App 装到 /Applications，并带上
+ 一个按需启动的 root 守护进程 wiki.qaq.xosvid（XPC 服务），
+ 取代 tipa 时代靠 rootd + App 容器自拼的提权路径。
+Depiction: https://weishixiao.github.io/Xosvi-deb/depiction.html
+Icon: https://raw.githubusercontent.com/weishixiao/Xosvi-deb/main/CydiaIcon.png
+Maintainer: weishixiao <weishixiao@users.noreply.github.com>
+Author: weishixiao
+Section: Utilities
+Priority: optional
+Depends: firmware (>= 15.0), uikittools, launchctl
+Installed-Size: 0

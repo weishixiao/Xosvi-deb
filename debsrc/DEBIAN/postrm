@@ -1,0 +1,20 @@
+#!/bin/bash
+# dpkg 在 prerm 被跳过（--force-remove / 半坏状态）时也会跑这里，
+# 所以每一步都必须可重复、在「什么都没剩下」时也安全。
+set -u
+
+LABEL=__XOSVID_LABEL__
+PREFIX=""
+[ -d /var/jb ] && [ ! -d /var/jb/var/jb ] && PREFIX="/var/jb"
+LCTL="$PREFIX/usr/bin/launchctl"
+[ -x "$LCTL" ] || LCTL=launchctl
+
+case "${1:-}" in
+    remove|purge|abort-install)
+        for DOMAIN in system user/501 gui/501; do
+            "$LCTL" bootout "$DOMAIN/$LABEL" 2>/dev/null || true
+        done
+        # /var/mobile/Documents/wiki.qaq.xosvi 刻意保留（重装不丢数据）
+        ;;
+esac
+exit 0

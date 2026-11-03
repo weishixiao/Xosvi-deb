@@ -1,0 +1,29 @@
+#!/bin/bash
+# 卸载 / 升级前：停掉守护进程。升级时 dpkg 传 "upgrade"，同样先停——
+# postinst 会把新版本重新注册起来（与报告 4.2 的 apelind 同策略）。
+set -u
+
+LABEL=__XOSVID_LABEL__
+PREFIX=""
+[ -d /var/jb ] && [ ! -d /var/jb/var/jb ] && PREFIX="/var/jb"
+LCTL="$PREFIX/usr/bin/launchctl"
+[ -x "$LCTL" ] || LCTL=launchctl
+
+case "${1:-}" in
+    remove|deconfigure|upgrade|failed-upgrade)
+        for DOMAIN in system user/501 gui/501; do
+            "$LCTL" bootout "$DOMAIN/$LABEL" 2>/dev/null || true
+        done
+        i=0
+        while [ "$i" -lt 20 ]; do
+            alive=0
+            for DOMAIN in system user/501 gui/501; do
+                "$LCTL" print "$DOMAIN/$LABEL" >/dev/null 2>&1 && alive=1
+            done
+            [ "$alive" -eq 0 ] && break
+            sleep 0.5
+            i=$((i + 1))
+        done
+        ;;
+esac
+exit 0

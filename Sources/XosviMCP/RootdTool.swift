@@ -243,6 +243,9 @@ final class RootdTool: MCPTool {
             "jbroot": JBEnvironment.jbrootPath ?? "",
             "rootfs": JBEnvironment.rootfsPrefix.isEmpty ? "无" : JBEnvironment.rootfsPrefix
         ]
+        // deb 版：原生 XPC 通道（wiki.qaq.xosvi.service）。与 rootd 并存，
+        // 可用时上层优先用它；不可用时保持旧行为，不影响现有功能。
+        out["xosvid"] = XosviDaemonClient.shared.status()
         // v7.16.12：诊断「launchd 反复拉起又秒死」——plist 里的脚本路径必须真实存在。
         // 现场就踩过：脚本被复制到 Library/Rootd，plist 仍指向旧位置 → 进程起不来，
         // 而 launchctl print 只显示 program（dash），看不到 arguments，极难发现。

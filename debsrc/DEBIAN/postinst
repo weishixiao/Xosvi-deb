@@ -1,0 +1,114 @@
+#!/bin/bash
+# Xosvi deb 安装后脚本。
+# dpkg 以 root 运行本脚本；除「服务注册不上」这种致命项外，
+# 任何一步失败都不应阻止 App 装上。
+set -u
+
+LABEL=__XOSVID_LABEL__
+SVC=__XOSVID_SERVICE__
+
+PREFIX=""
+[ -d /var/jb ] && [ ! -d /var/jb/var/jb ] && PREFIX="/var/jb"
+LCTL="$PREFIX/usr/bin/launchctl"
+[ -x "$LCTL" ] || LCTL=launchctl
+PLIST="$PREFIX/Library/LaunchDaemons/$LABEL.plist"
+
+log() { echo "[postinst] $*" >&2; }
+
+# ── 0. 认 bootstrap（roothide 下 dpkg 已把路径重定向进 jbroot） ──
+if [ -n "$PREFIX" ]; then
+    APP="$PREFIX/Applications/Xosvi.app"
+else
+    APP="/Applications/Xosvi.app"
+fi
+log "bootstrap prefix='${PREFIX:-<none>}' app=$APP"
+
+# ── 1. 属主 / 权限（dpkg 已做 root:wheel，这里兜底 + 拒软链接） ──
+for f in "$APP/Xosvi" "$APP/Xosvi-cli" "$PREFIX/usr/libexec/xosvid" \
+         "$PREFIX/usr/libexec/xosvi/xosvi-build" \
+         "$PREFIX/usr/libexec/xosvi/xosvi-install" \
+         "$PREFIX/usr/libexec/xosvi/xosvi-symbolicate"; do
+    [ -e "$f" ] || continue
+    if [ -L "$f" ]; then
+        log "ERROR: $f is a symlink, refusing to continue"
+        exit 1
+    fi
+    chown root:wheel "$f" 2>/dev/null || true
+    chmod 755 "$f" 2>/dev/null || true
+done
+[ -d "$APP" ] && chown -R root:wheel "$APP" 2>/dev/null || true
+[ -f "$PLIST" ] || { log "ERROR: $PLIST missing"; exit 1; }
+[ -L "$PLIST" ] && { log "ERROR: plist is a symlink"; exit 1; }
+chown root:wheel "$PLIST" 2>/dev/null || true
+chmod 644 "$PLIST"
+
+# ── 2. 逐域 bootout（roothide 会把 jbroot 守护落到 per-user 域） ──
+registered() {
+    for DOMAIN in system user/501 gui/501; do
+        if "$LCTL" print "$DOMAIN/$LABEL" >/dev/null 2>&1; then return 0; fi
+    done
+    return 1
+}
+for DOMAIN in system user/501 gui/501; do
+    "$LCTL" bootout "$DOMAIN/$LABEL" 2>/dev/null || true
+done
+
+# ── 3. 等旧实例真正卸载（bootout 返回早于 launchd 拆完） ──
+i=0
+while registered; do
+    [ "$i" -ge 30 ] && { log "WARN: old $LABEL still registered after 15s"; break; }
+    sleep 0.5
+    i=$((i + 1))
+done
+
+# ── 4. bootstrap，失败重试（roothide 上偶发 EALREADY） ──
+attempt=0
+while [ "$attempt" -lt 15 ]; do
+    "$LCTL" bootstrap system "$PLIST" 2>/dev/null || true
+    registered && break
+    "$LCTL" bootstrap user/501 "$PLIST" 2>/dev/null || true
+    registered && break
+    attempt=$((attempt + 1))
+    [ "$attempt" -lt 15 ] && sleep 1
+done
+if registered; then
+    log "OK: $LABEL registered"
+else
+    log "ERROR: $LABEL could not be registered; reinstall this package"
+    exit 1
+fi
+
+# ── 5. 数据目录（tipa 时代就在这个路径，保持不动，卸载不删） ──
+DATA=/var/mobile/Documents/wiki.qaq.xosvi
+mkdir -p "$DATA" 2>/dev/null || true
+chown mobile:mobile "$DATA" 2>/dev/null || true
+chmod 755 "$DATA" 2>/dev/null || true
+
+# ── 6. tipa -> deb 一次性数据迁移 ──
+# tipa 版本把数据放在 App 容器的 Documents 下。只在目标为空且未迁移过时搬，
+# 绝不覆盖用户已有数据。
+if [ ! -f "$DATA/.migrated" ]; then
+    for OLD in /var/mobile/Containers/Data/Application/*/Documents/wiki.qaq.xosvi; do
+        [ -d "$OLD" ] || continue
+        if [ -z "$(ls -A "$DATA" 2>/dev/null)" ]; then
+            log "migrating data from $OLD"
+            cp -a "$OLD/." "$DATA/" 2>/dev/null || true
+        else
+            log "target not empty, keeping existing data (old=$OLD)"
+        fi
+        touch "$DATA/.migrated" 2>/dev/null || true
+        break
+    done
+fi
+
+# ── 7. 图标缓存 ──
+if [ -x "$PREFIX/usr/bin/uicache" ]; then
+    "$PREFIX/usr/bin/uicache" -p "$APP" >/dev/null 2>&1 || true
+elif command -v uicache >/dev/null 2>&1; then
+    uicache -p "$APP" >/dev/null 2>&1 || true
+else
+    log "uicache not found; the icon appears after the next respring"
+fi
+
+echo "[postinst] Xosvi installed: $APP (service $SVC)"
+exit 0

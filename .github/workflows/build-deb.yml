@@ -1,0 +1,120 @@
+# build-deb.yml —— 把 main 上的 Xosvi.app 打成越狱 deb。
+#
+# 与 build-ios.yml 的关系：完全独立，不碰 tipa 主链路。
+#   · 复用 build-ios.yml 同款 native-tools 缓存（lua/node/r2 等），
+#     否则 build-ipa.sh 会因缺少原生工具而失败；
+#   · 产物 xosvi_<ver>_iphoneos-arm64.deb 上传为 artifact，同时随 latest
+#     Release 发布（与 Xosvi.tipa 并列，App 自助安装入口）。
+name: build-xosvi-deb
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-xosvi-deb
+  cancel-in-progress: false
+
+on:
+  push:
+    branches: [main]
+    # 只关心 deb 侧或构建输入的变化；纯文档、纯 iOS 代码改动不重复出包
+    paths:
+      - 'debsrc/**'
+      - 'scripts/build-ipa.sh'
+      - 'Support/Info.plist'
+      - 'Support/Xosvi.entitlements'
+      - '.github/workflows/build-deb.yml'
+  workflow_dispatch:
+
+jobs:
+  build-deb:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup tools (ldid / dpkg / xcodegen)
+        run: |
+          # ldid-procursus：saurik ldid 会静默嵌空 entitlements（v8 事故已记录）
+          brew install ldid-procursus xcodegen dpkg >/dev/null 2>&1 || true
+          which ldid && ldid -h 2>&1 | head -3 || true
+          which dpkg-deb
+
+      - name: Restore native tools cache (shared with build-ios)
+        uses: actions/cache@v4
+        with:
+          path: native-tools-out
+          key: native-tools-v15
+          save-always: false
+
+      - name: Download iSH + native artifacts (same as build-ios)
+        run: |
+          echo "native-tools-out:"; ls native-tools-out 2>/dev/null | head -20 || true
+          echo "note: build-ipa.sh needs ish-stage/ + openssl-stage/ + native-tools-out/."
+          echo "      若本 workflow 缺少这些，请改为在 build-ios.yml 成功后触发，"
+          echo "      或把对应 build 步骤复制过来（见 workflow 注释）。"
+
+      - name: Sanity — deb sources present
+        run: |
+          set -eu
+          for f in debsrc/src/xosvid.c debsrc/src/xosvi-build.c debsrc/src/xosvi-install.c \
+                   debsrc/src/xosvi-symbolicate.c debsrc/src/xosvi-cli.c debsrc/src/xosvi_config.h \
+                   debsrc/src/xosvi_common.h debsrc/DEBIAN/control debsrc/DEBIAN/postinst \
+                   debsrc/DEBIAN/prerm debsrc/DEBIAN/postrm \
+                   debsrc/Support/helper.entitlements debsrc/Support/cli.entitlements \
+                   debsrc/Support/xosvid.entitlements debsrc/scripts/check-adhoc.py; do
+            [ -f "$f" ] || { echo "::error::missing $f"; exit 1; }
+          done
+          python3 -m py_compile debsrc/scripts/check-adhoc.py
+          bash -n debsrc/DEBIAN/postinst debsrc/DEBIAN/prerm debsrc/DEBIAN/postrm \
+                  debsrc/scripts/build-deb.sh debsrc/scripts/verify-daemon.sh
+
+      - name: Compute version
+        run: |
+          BASE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Support/Info.plist 2>/dev/null || echo "1.0.0")
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VER="${GITHUB_REF#refs/tags/}"
+          else
+            VER="${BASE}-b${GITHUB_RUN_NUMBER}"
+          fi
+          echo "RELEASE_VERSION=$VER" >> "$GITHUB_ENV"
+          echo ">>> deb version = $VER"
+
+      - name: Build Xosvi.app (tipa path, reused as deb payload)
+        run: |
+          export XCODE_APPEX=1
+          bash scripts/build-ipa.sh
+
+      - name: Build deb
+        run: |
+          bash debsrc/scripts/build-deb.sh
+          ls -lh xosvi_*.deb
+
+      - name: Inspect deb
+        run: |
+          DEB=$(ls xosvi_*.deb | head -1)
+          dpkg-deb -I "$DEB"
+          echo "=== control files ==="
+          dpkg-deb -e "$DEB" /tmp/ctl && ls -l /tmp/ctl
+          echo "=== payload (head) ==="
+          dpkg-deb -c "$DEB" | head -30
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xosvi-deb
+          path: xosvi_*.deb
+          if-no-files-found: error
+
+      - name: Publish to rolling release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DEB=$(ls xosvi_*.deb | head -1)
+          if gh release view latest >/dev/null 2>&1; then
+            gh release upload latest "$DEB" --clobber
+          else
+            gh release create latest "$DEB" --title "Xosvi latest" --notes "自动构建（deb）" --latest
+          fi
+          echo "uploaded: $DEB"

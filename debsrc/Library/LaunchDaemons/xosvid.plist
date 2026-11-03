@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+	xosvid —— Xosvi 的 root 后端。
+
+	按需启动：不设 RunAtLoad、不设 KeepAlive。launchd 在第一条发往
+	wiki.qaq.xosvi.service 的消息时把它拉起；它自己空闲 __IDLE__ 秒后退出
+	（长于 launchd 的重启节流窗口，下一条消息会立刻重新拉起）。
+
+	安装前缀由构建脚本替换：roothide 为空（launchd 每次加载时自己加
+	bootstrap 根），rootless 为 /var/jb。
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>__XOSVID_LABEL__</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/libexec/xosvid</string>
+	</array>
+	<key>UserName</key>
+	<string>root</string>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+	<!-- 0022：守护创建的文件不对组 / 其他可写 -->
+	<key>Umask</key>
+	<integer>18</integer>
+	<key>MachServices</key>
+	<dict>
+		<key>__XOSVID_SERVICE__</key>
+		<true/>
+	</dict>
+	<key>SoftResourceLimits</key>
+	<dict>
+		<key>NumberOfFiles</key>
+		<integer>10240</integer>
+	</dict>
+	<!-- 任何第三方插件都不许注入到做特权操作的进程 -->
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>DISABLE_TWEAKS</key>
+		<string>1</string>
+	</dict>
+</dict>
+</plist>

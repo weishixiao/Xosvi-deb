@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+	守护的权限：对齐报告 7.2 里 apelind 的克制做法——重活交给 helper，
+	守护本身不给自己揽权限。注意这里**不**带 wiki.qaq.xosvi.client：
+	那是「可以连守护」的凭证，只能给 App / CLI，守护自己不需要。
+-->
+<plist version="1.0">
+<dict>
+	<key>platform-application</key>
+	<true/>
+	<key>com.apple.private.security.no-sandbox</key>
+	<true/>
+	<key>com.apple.private.security.storage.AppBundles</key>
+	<true/>
+	<key>com.apple.private.security.storage.AppDataContainers</key>
+	<true/>
+	<key>com.apple.private.usernotifications.bundle-identifiers</key>
+	<array>
+		<string>com.xosvi.app</string>
+	</array>
+</dict>
+</plist>
