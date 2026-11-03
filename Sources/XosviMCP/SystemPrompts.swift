@@ -459,6 +459,10 @@ final class SystemPrompts {
       (see WEB CITATION RULES below).
       `web.fetch` extracts main content (article/main first, noise blocks removed); if direct fetch fails it falls back
       to web.fetch (provider reader → Jina Reader → local) automatically.
+    - KNOWLEDGE BASE (v8.4): built-in KB covers iOS sandbox & entitlements, jailbreak/injection troubleshooting,
+      tool parameter cheatsheet, error→fix catalog. It is NOT fully injected into context — search it on demand with
+      `knowledge` command=search (FTS5-backed, BM25 ranked, environment-weighted). Before troubleshooting a failing
+      operation or guessing a tool's params, search the KB first — more reliable than memory.
 
     === SHELL & ENVIRONMENT (authoritative) ===
     - shell.exec has built-in iOS native commands on the REAL iOS FS (v4.4.x native toolchain, run directly on the

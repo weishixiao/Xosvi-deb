@@ -884,8 +884,6 @@ final class ConversationStore: ObservableObject {
         selectedId = conv.id
         // v2.9.22：新会话清空工具会话授权 (AI 需重新搜索/决定）
         ToolRegistry.shared.clearSessionApproval()
-        // v6.0.28：新会话清空TTS队列，不要读上一段的内容
-        TTSService.shared.stop()
         save()
     }
 
@@ -895,8 +893,6 @@ final class ConversationStore: ObservableObject {
             conversations[idx].updatedAt = Date()
         }
         selectedId = id
-        // v6.0.28：切换会话清空TTS队列，不要读上一段的内容
-        TTSService.shared.stop()
         sortAndSave()
     }
 
@@ -978,20 +974,15 @@ final class ConversationStore: ObservableObject {
                 return
             }
         }
-        // v7.9.10：按时间戳插到正确位置，而不是无脑 append。
+        // v8.4：**永远 append，不再按时间戳回插**。
         //
-        // 现场：上一轮还没跑完（工具循环）时用户又发了一条 → 新用户消息先 append；
-        // 随后旧轮的回复/工具结果才写回来，于是被追加到这条用户消息**下面**，
-        // 看起来就是「我发的消息跑到 AI 回复的下面」。
-        // 消息本身带创建时间，直接用时间戳归位即可：旧轮产物会插回用户消息之前。
-        if let last = conv.messages.last, message.timestamp < last.timestamp {
-            let insertAt = conv.messages.firstIndex {
-                $0.timestamp > message.timestamp
-            } ?? conv.messages.count
-            conv.messages.insert(message, at: insertAt)
-        } else {
-            conv.messages.append(message)
-        }
+        // 旧 v7.9.10 逻辑"按 timestamp 插到正确位置"正是「我发的消息跑到 AI 回复下面」的
+        // 根因之一：旧轮的回复晚到时被插回用户消息之前 → 用户视角消息顺序错乱；
+        // 且同秒时间戳（后台线程生成 Date）会让插入位置抖动。
+        // 新规则：写入顺序 = 展示顺序。晚到的旧轮产物排在后面是可接受的
+        // （同会话防重入已由 send 里的 cancelCurrent 保证，乱序窗口极小）；
+        // 时序归位交给 UI 层不需要、也不应该做。
+        conv.messages.append(message)
         conv.updatedAt = Date()
         conversations[idx] = conv
         sortAndSave()
@@ -1404,11 +1395,13 @@ final class ConversationStore: ObservableObject {
             // v7.15.3：改 main.async——originally 用 main.sync，若 completion 恰在主线程
             // 同步等待某个后台队列（URLSession delegate / 自定义串行队列），就是经典死锁。
             // 牺牲尾部几微秒的顺序性，换绝不卡死。
+            // v8.4：双保险——同步 flush 一次（在主线程时立即生效）+ 再 async 一次兜底
+            // "completion 在主线程但 delta 还在别的队列里排队"的竞态。done 处理里随后
+            // 还有"取更完整一方"的合并逻辑，最终内容以合并结果为准，不会丢字。
             if Thread.isMainThread {
                 self.flushStreamBuffers()
-            } else {
-                DispatchQueue.main.async { self.flushStreamBuffers() }
             }
+            DispatchQueue.main.async { self.flushStreamBuffers() }
             // v6.5.4：流式结束 → 停后台保活
             BackgroundKeepAlive.shared.stop()
             DispatchQueue.main.async {
@@ -1685,7 +1678,19 @@ final class ConversationStore: ObservableObject {
                     TaskNotify.shared.endBackground()
                     TaskNotify.shared.notifyIfBackground(title: "⚠️ 任务出错", body: String(error.localizedDescription.prefix(60)))
                     // 流式failed时保留已输出的部分文本，追加错误提示
-                    if self.streamingMessageId != nil {
+                    if let sid = self.streamingMessageId {
+                        // v8.4：断流时把已收到的部分落盘并标注中断——不再静默丢弃。
+                        // （此前只置 streamingMessageId=nil，已流式上屏的内容没存进消息本体，
+                        // 重发才看得到全文；用户反馈"回复断半句，重发才显示完整"）
+                        if let ci = self.activeConvIndex,
+                           let mi = self.conversations[ci].messages.firstIndex(where: { $0.id == sid }) {
+                            let partial = self.conversations[ci].messages[mi].content
+                            if !partial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                                self.conversations[ci].messages[mi].content =
+                                    partial + "\n\n[⚠️ 响应中断，以上为已收到部分：\(error.localizedDescription.prefix(80))]"
+                                self.conversations[ci].messages[mi].isError = true
+                            }
+                        }
                         self.streamingMessageId = nil
                     }
                     let errMsg = ChatMessage(role: "assistant", content: "⚠️ \(error.localizedDescription)", isError: true)

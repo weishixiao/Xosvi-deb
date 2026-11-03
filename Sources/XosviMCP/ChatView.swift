@@ -43,7 +43,7 @@ extension Notification.Name {
 struct ChatView: View {
     @ObservedObject private var store = ConversationStore.shared
     @ObservedObject private var modelStore = ModelStore.shared
-    @ObservedObject private var tts = TTSService.shared
+    // v8.4：TTSService 观察已随朗读功能删除
     @ObservedObject private var uiState = AppUIState.shared   // v7.1.2：抽屉开关（顶部栏 ≡ 键要用）
 
     @State private var inputText = ""
@@ -538,31 +538,29 @@ struct ChatView: View {
                     if store.isLoading {
                         // v2.9.34：请求过程可视化（对齐老 MCP 的"正在思考"面板）
                         // v2.9.127：改为实时执行轨迹（豆包工作任务/Codex 式步骤流）
-                        VStack(alignment: .trailing, spacing: 6) {
-                            HStack {
-                                Spacer()
-                                HStack(spacing: 8) {
-                                    ProgressView()
-                                        .scaleEffect(0.8)
-                                    Text(L10n.t("home_thinking"))
-                                        .font(.footnote.weight(.medium))
-                                }
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 8)
-                                // v3.1.66：tertiarySystemBackground 浅色模式≈白看不见，改 systemGray5
-                                .background(Color(.systemGray5).opacity(0.9))
-                                .cornerRadius(14)
-                                .padding(.trailing, 16)
+                        // v8.4：指示器移到左边（原 trailing 靠右，用户要求左对齐）
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                Text(L10n.t("home_thinking"))
+                                    .font(.footnote.weight(.medium))
                             }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            // v3.1.66：tertiarySystemBackground 浅色模式≈白看不见，改 systemGray5
+                            .background(Color(.systemGray5).opacity(0.9))
+                            .cornerRadius(14)
+                            .padding(.leading, 16)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             if store.isLoading, !store.liveTrail.isEmpty {
                                 LiveTrailCard(steps: store.liveTrail)
-                                    .padding(.trailing, 16)
                             }
                             if let status = store.statusText {
                                 Text(status)
                                     .font(.caption)
                                     .foregroundColor(.secondary)
-                                    .padding(.trailing, 16)
+                                    .padding(.leading, 16)
                             }
                             if store.requestRound > 0 {
                                 // v4.3.71：无轮次上限 (requestRounds==0) 只显示"第 N 轮"
@@ -570,12 +568,12 @@ struct ChatView: View {
                                     Text(L10n.t("ui_157", store.requestRound, store.requestRounds))
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
-                                        .padding(.trailing, 16)
+                                        .padding(.leading, 16)
                                 } else {
                                     Text("第 \(store.requestRound) 轮")
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
-                                        .padding(.trailing, 16)
+                                        .padding(.leading, 16)
                                 }
                             }
                         }
@@ -1632,8 +1630,7 @@ struct MessageBubble: View {
     // v3.5.4：用户反馈太慢 → 提速到 ~133 字/秒 (0.015s/tick × 2 字符），快但仍看得出打字感
     @State private var revealedCount = 0
     @State private var typeTimer: Timer?
-    // v4.4.18：流式自动朗读——记录已朗读到的字符位置，content 增长时只把新增整句送 TTS
-    @State private var autoSpokenUpTo = 0
+    // v8.4：autoSpokenUpTo 已随 TTS 删除
 
     // v3.5.4：自适应打字机（业界：平时 ~50 字/秒舒适，积压多自动提速追平网络，标点/换行稍停顿更自然）。
     // 不像固定 133 字/秒那样一快到底；也不像 25 字/秒那样拖沓。
@@ -1662,23 +1659,7 @@ struct MessageBubble: View {
         typeTimer?.invalidate()
         typeTimer = nil
     }
-    // v4.4.20：自动朗读——用 autoSpokenUpTo 增量读"没读过"的部分；流式/非流式 onAppear+onChange 双触发共用，防重复
-    // 句子边界：句末标点切分；无标点长段攒够 60 字也强制读（防一直憋着不读）
-    private func autoSpeak(_ full: String) {
-        let chars = Array(full)
-        if autoSpokenUpTo >= chars.count { return }
-        var boundary = autoSpokenUpTo
-        while boundary < chars.count {
-            let isPunct = "。！？!?\n…".contains(chars[boundary])
-            let overLimit = (boundary - autoSpokenUpTo) >= 60
-            if isPunct || overLimit {
-                let sentence = String(chars[autoSpokenUpTo...boundary]).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !sentence.isEmpty { TTSService.shared.speak(sentence) }
-                autoSpokenUpTo = boundary + 1
-            }
-            boundary += 1
-        }
-    }
+    // v8.4：autoSpeak 函数已随 TTS 功能删除
     // v3.5.4：思考黄泡——思考进行中(isStreaming)自动展开让用户看到模型在动；
     // 思考结束自动收起(除非用户手动展开)。业界(掘金/Koder/DeepSeek Harness)一致做法。
     private var thinkingExpanded: Bool {
@@ -1930,16 +1911,16 @@ struct MessageBubble: View {
                     if !isUser && shown.contains("```") {
                         messageBlocksView(shown)
                     } else {
-                    // v4.4.21：完成消息用 SelectableText(UITextView) 长按划词/复制；流式打字机+用户消息用 Text(轻量)
-                    messageTextView(shown)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        // v3.3.4：AI 回复气泡从左拉伸到右（全宽）；用户气泡保持靠右自适应
-                        .frame(maxWidth: isUser ? nil : .infinity, alignment: .leading)
-                        // v6.2.8：对齐 OpenMinis 会话样式——用户气泡改淡灰 tertiarySystemFill + 常规文字色
-                        // （原巨魔蓝渐变），AI 回复去气泡背景（纯文本，更干净）。字号 16.5 见 messageTextView
-                        .background(
-                            Group {
+                        // v4.4.21：完成消息用 SelectableText(UITextView) 长按划词/复制；流式打字机+用户消息用 Text(轻量)
+                        messageTextView(shown)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            // v3.3.4：AI 回复气泡从左拉伸到右（全宽）；用户气泡保持靠右自适应
+                            .frame(maxWidth: isUser ? nil : .infinity, alignment: .leading)
+                            // v6.2.8：对齐 OpenMinis 会话样式——用户气泡改淡灰 tertiarySystemFill + 常规文字色
+                            // （原巨魔蓝渐变），AI 回复去气泡背景（纯文本，更干净）。字号 16.5 见 messageTextView
+                            .background(
+                                Group {
                                     if isUser {
                                         Color(UIColor.tertiarySystemFill)
                                     } else if message.isError {
@@ -1948,39 +1929,18 @@ struct MessageBubble: View {
                                         Color.clear
                                     }
                                 }
-                        )
-                        .foregroundColor(.primary)
-                        .cornerRadius(18)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 18)
-                                .strokeBorder(isSelected ? Color.secondary.opacity(0.5) : Color.clear, lineWidth: 2)
-                        )
+                            )
+                            .foregroundColor(.primary)
+                            .cornerRadius(18)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18)
+                                    .strokeBorder(isSelected ? Color.secondary.opacity(0.5) : Color.clear, lineWidth: 2)
+                            )
                     }
-                    // v4.4.18：朗读喇叭按钮（assistant 消息）——点一下朗读这条全文；长按仍保留选字复制
-                    if !isUser && !message.isTool {
-                        HStack(spacing: 6) {
-                            Button(action: { TTSService.shared.speakForced(id: message.id.uuidString, message.content) }) {
-                                Image(systemName: TTSService.shared.speakingId == message.id.uuidString ? "speaker.wave.2.fill" : "speaker.wave.2")
-                                    .font(.system(size: 18, weight: .medium))
-                                    .foregroundColor(TTSService.shared.speakingId == message.id.uuidString ? .primary : .secondary)
-                                    .padding(.vertical, 6)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            Spacer()
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.bottom, 4)
-                    }
+                    // v8.4：朗读喇叭按钮已删（TTS 功能整体移除）
                 }
                 .frame(maxWidth: isUser ? nil : .infinity, alignment: .leading)
-                // v4.5.7：移除 onAppear 自动朗读——重开 App/切换会话时历史 assistant 消息
-                // 会触发 autoSpeak(全文) 复读(用户反馈)。只留 onChange 流式增量朗读新回复；
-                // 历史/完成消息不复读，需要时点气泡喇叭手动朗读。
-                .onChange(of: message.content) { newContent in
-                    guard message.role == "assistant", !message.isTool, TTSService.shared.speakerEnabled else { return }
-                    autoSpeak(newContent)
-                }
+                // v8.4：自动朗读（autoSpeak + onChange）已随 TTS 删除
             }
         }
     }

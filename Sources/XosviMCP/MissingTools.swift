@@ -552,7 +552,21 @@ final class KnowledgeSearchTool: MCPTool {
         guard let query = params["query"] as? String, !query.isEmpty else { throw MCPError.invalidParams("query required") }
         KnowledgeStore.shared.ensure()
         let limit = min(max(params["limit"] as? Int ?? 15, 1), 50)
-        // 主路径：BM25 加权检索
+
+        // v8.4 主路径 1：FTS5 全文索引（结构化知识包，BM25 加权 + 环境过滤）
+        let ftsHits = KnowledgeIndex.shared.search(query, context: KnowledgeLoader.deviceContext, limit: 3)
+        if !ftsHits.isEmpty {
+            AuditLog.shared.log("knowledge.search", detail: "\(query) → FTS5 \(ftsHits.count) 条")
+            return ["query": query, "engine": "fts5", "count": ftsHits.count,
+                    "hits": ftsHits.map { h in
+                        ["id": h.id, "title": h.title,
+                         "applies_if": h.appliesIf,
+                         "snippet": String(h.body.prefix(900)),
+                         "score": Double(round(h.score * 1000) / 1000)]
+                    }]
+        }
+
+        // v8.4 主路径 2：文件 BM25 检索（md 知识条目）
         let scored = KnowledgeStore.shared.bm25Search(query: query, limit: limit)
         if !scored.isEmpty {
             AuditLog.shared.log("knowledge.search", detail: "\(query) → BM25 \(scored.count) 条")

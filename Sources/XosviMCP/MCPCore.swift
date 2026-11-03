@@ -1884,8 +1884,17 @@ public final class ToolRegistry: ObservableObject {
 
     static func extractReturnedError(_ result: [String: Any]) -> String? {
         // ① 显式 ok:false
+        // v8.4：检查类工具的"诊断结论"不算失败——ok=false 但带 healthy/available/status
+        // 结论字段且无 error 字段时，是工具正常返回的诊断结果（如 ish.doctor 报"环境不健康"），
+        // 旧版把它当执行失败计数 → 模型盲试 → 熔断误杀整个 run。
         if result["ok"] as? Bool == false {
-            return Self.errorMessage(from: result["error"], fallback: "工具返回 ok=false")
+            let hasErrorField = !(result["error"] is NSNull) && result["error"] != nil
+            let isDiagnosticVerdict = result["healthy"] != nil || result["available"] != nil
+                || result["status"] is [String: Any] || result["checks"] != nil
+            if !hasErrorField && isDiagnosticVerdict {
+                return nil
+            }
+            return Self.errorMessage(from: result["error"], fallback: Self.diagnosticPayloadDesc(result))
         }
         // ② error 键 (String 或 [String:Any] 字典）
         // v3.1.8：nil error 不应该被当成错误——只有 error 有值时才算
@@ -1908,6 +1917,24 @@ public final class ToolRegistry: ObservableObject {
             if let s = d["description"] as? String, !s.isEmpty { return s }
         }
         return fallback
+    }
+
+    /// v8.4：诊断载荷摘要——"ok=false 但无 error"场景给模型看的不再是干巴巴一句
+    /// "工具返回 ok=false"，而是把关键结论字段（verdict/reason/fix）原样带出，模型能自救。
+    private static func diagnosticPayloadDesc(_ result: [String: Any]) -> String {
+        var parts: [String] = []
+        for k in ["verdict", "reason", "next_step", "hint"] {
+            if let s = result[k] as? String, !s.isEmpty { parts.append("\(k)=\(s.prefix(120))") }
+        }
+        if let checks = result["checks"] as? [[String: Any]] {
+            let failedChecks = checks.filter { ($0["passed"] as? Bool) == false }
+                .compactMap { $0["id"] as? String }
+            if !failedChecks.isEmpty { parts.append("failed_checks=\(failedChecks.joined(separator: ","))") }
+        }
+        if parts.isEmpty {
+            parts = result.keys.sorted().prefix(6).map { "\($0)=\(String(describing: result[$0] ?? "").prefix(60))" }
+        }
+        return "工具返回诊断结论(ok=false)：\(parts.joined(separator: "; "))"
     }
 
     // v2.9.36：权限标签 (对齐老 MCP readOnly/privilegedRead/write 语义，按工具名前缀粗分）

@@ -778,20 +778,33 @@ struct DeveloperInstructionsView: View {
             .padding(.vertical, 8)
 
             List {
-                // 破甲测试说明卡
-                Section {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Label("破甲测试专用", systemImage: "hammer.fill")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundColor(.orange)
-                        Text("这里的模型破甲提示词会作为补充提示词注入 AI，适合做破甲、越狱、注入、绕过等高级测试任务。")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        Text("选「开发者模式」系统指令 + 这里的破甲提示词 = 最强的破甲测试组合。")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                // v8.4：破甲测试说明卡已删（大段说明文字按需求移除，语义并入底部一行 footer）
+                // 新增：内置「技术测试」预设一键导入（扩充词库后的默认提示词）
+                Section(header: SettingSectionHeader(title: "预设")) {
+                    Button {
+                        let name = "1. 技术测试模式（内置）"
+                        if !DeveloperInstructionStore.shared.list().contains(where: { $0.name == name }) {
+                            DeveloperInstructionStore.shared.create(name: name, content: DeveloperInstructionStore.technicalModeSeed)
+                        }
+                        AuditLog.shared.log("dev_instructions", detail: "导入技术测试预设")
+                        reload()
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "hammer.fill")
+                                .font(.system(size: 18))
+                                .foregroundColor(.orange)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("导入「技术测试模式」预设")
+                                    .foregroundColor(.primary)
+                                Text("扩充词库版破甲提示词（TECHNICAL 模式）")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer()
+                            Image(systemName: "plus.circle")
+                                .foregroundColor(DoubaoTheme.accent)
+                        }
                     }
-                    .padding(.vertical, 4)
                 }
 
                 if items.isEmpty {
@@ -850,7 +863,7 @@ struct DeveloperInstructionsView: View {
                         }
                     }
                     Section {
-                        Text("所有开启的指令都会合并后注入 AI 请求。系统指令先注入，破甲指令后注入。")
+                        Text("作为补充提示词追加在系统指令之后，与「开发者模式」组合使用。")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }

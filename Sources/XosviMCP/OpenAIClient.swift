@@ -1697,8 +1697,15 @@ final class OpenAIClient {
                 }
             }
             // finish_reason 到达 = 本轮完成
-            if let fr = first["finish_reason"] as? String, fr == "stop" || fr == "tool_calls" {
-                sawDone = true
+            // v8.4：length 截断不再静默断句——maxTokens 打满时尾部加提示（旧版直接丢 finish_reason，
+            // 用户看到"回复断半句"却不知道原因）
+            if let fr = first["finish_reason"] as? String {
+                if fr == "stop" || fr == "tool_calls" {
+                    sawDone = true
+                } else if fr == "length" {
+                    sawDone = true
+                    DispatchQueue.main.async { onDelta?("\n\n[已达到 Max Tokens 上限被截断，可在 设置 → 模型API → Max Tokens 调大]") }
+                }
             }
         }
 

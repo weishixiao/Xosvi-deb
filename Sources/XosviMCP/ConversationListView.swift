@@ -115,21 +115,39 @@ struct ConversationListView: View {
     @State private var renameText = ""
     @State private var confirmDeleteIds: Set<UUID> = []
     @State private var showDeleteAlert = false
+    // v8.4：搜索结果缓存 + 防抖——旧版 filtered 是计算属性，body 每次重算都把
+    // 所有会话的所有消息全文扫一遍（localizedCaseInsensitiveContains 是语言环境感知
+    // 比较，慢一个数量级），流式期间每秒几十次 publish 直接卡死主线程。
+    @State private var filteredCache: [ChatConversation] = []
+    @State private var searchDebounce: DispatchWorkItem?
 
-    private var filtered: [ChatConversation] {
+    private func recomputeFilter() {
         let q = searchText.trimmingCharacters(in: .whitespaces)
-        if q.isEmpty { return store.conversations }
-        return store.conversations.filter { conv in
-            conv.title.localizedCaseInsensitiveContains(q)
-                || conv.messages.contains { $0.content.localizedCaseInsensitiveContains(q) }
+        if q.isEmpty {
+            filteredCache = store.conversations
+            return
         }
+        filteredCache = store.conversations.filter { conv in
+            // 搜索也要有边界：标题全扫，消息只扫最近 20 条 × 前 200 字符
+            if conv.title.range(of: q, options: .caseInsensitive) != nil { return true }
+            return conv.messages.suffix(20).contains { m in
+                m.content.prefix(200).range(of: q, options: .caseInsensitive) != nil
+            }
+        }
+    }
+
+    private func scheduleFilter() {
+        searchDebounce?.cancel()
+        let work = DispatchWorkItem { recomputeFilter() }
+        searchDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
     }
 
     var body: some View {
         VStack(spacing: 0) {
             header
             ConversationListBody(
-                conversations: filtered,
+                conversations: filteredCache,
                 selectedId: store.selectedId,
                 searchText: $searchText,
                 onOpen: onOpen,
@@ -144,6 +162,9 @@ struct ConversationListView: View {
             )
         }
         .background(DoubaoTheme.bg.ignoresSafeArea())
+        .onAppear { recomputeFilter() }
+        .onChange(of: searchText) { _ in scheduleFilter() }
+        .onChange(of: store.conversations.count) { _ in recomputeFilter() }
         .alert(isPresented: $showDeleteAlert) {
             Alert(
                 title: Text("删除对话"),
@@ -448,7 +469,7 @@ struct ConversationListBody: View {
                 Button { onDelete(conv) } label: { Label("删除", systemImage: "trash") }
             }
         }
-        .clipped()
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))   // v8.4：.clipped() → 圆角裁切，离屏行不继续绘制
     }
 
     // MARK: 时间工具
@@ -463,18 +484,41 @@ struct ConversationRow: View {
     let conv: ChatConversation
     let selected: Bool
 
-    private var preview: String {
-        // DeepSeek 每行第二行是最后一条消息的摘要
-        let last = conv.messages.last(where: { !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
-        let text = (last?.content ?? conv.messages.last?.content ?? "")
-            .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? "空对话" : text
+    // v8.4：preview 缓存——旧版每帧反向遍历 + 两份字符串操作 × 每行每帧。
+    // 按 (id, updatedAt) 做 key：会话没更新就直接用上次结果。
+    private var preview: String { Self.previewCache.value(for: conv) }
+
+    /// v8.4：外圈色——按标题哈希取稳定色相，饱和度压低（DeepSeek 黑白风格不刺眼）
+    private var ringColor: Color {
+        var h: UInt64 = 1469598103934665603
+        for b in (conv.title.isEmpty ? "新对话" : conv.title).utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
+        let hue = Double(h % 360) / 360.0
+        return Color(hue: hue, saturation: 0.45, brightness: 0.72)
+    }
+
+    /// v8.4：首字（中文取首字，英文取首字母大写）
+    private var initial: String {
+        let t = conv.title.trimmingCharacters(in: .whitespaces)
+        guard let first = t.first else { return "新" }
+        return first.isLetter ? String(first).uppercased() : "新"
     }
 
     var body: some View {
-        // v6.9.14（DeepSeek）：无头像、无彩色标签——标题一行 + 消息摘要一行 + 右侧相对时间
-        HStack(alignment: .center, spacing: 10) {
+        // v6.9.14（DeepSeek）：标题一行 + 消息摘要一行 + 右侧相对时间
+        // v8.4：行首加圆形外圈 + 首字头像（描边环风格）
+        HStack(alignment: .center, spacing: 12) {
+            ZStack {
+                Circle()
+                    .strokeBorder(ringColor.opacity(selected ? 1.0 : 0.65), lineWidth: 1.5)
+                    .frame(width: 34, height: 34)
+                Circle()
+                    .fill(ringColor.opacity(selected ? 0.16 : 0.08))
+                    .frame(width: 34, height: 34)
+                Text(initial)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(ringColor)
+            }
+
             VStack(alignment: .leading, spacing: 3) {
                 Text(conv.title)
                     .font(.system(size: 15, weight: .medium))
@@ -496,26 +540,50 @@ struct ConversationRow: View {
                 .foregroundColor(DoubaoTheme.subText.opacity(0.85))
                 .fixedSize()
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(selected ? DoubaoTheme.rowSelected : Color.clear)
         )
-        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
+
+    private static let previewCache = PreviewCache()
+
+    /// v8.4：预览缓存（文档次优解，改动小收益大）
+    final class PreviewCache {
+        private var store: [UUID: (Date, String)] = [:]
+        func value(for conv: ChatConversation) -> String {
+            if let c = store[conv.id], c.0 == conv.updatedAt { return c.1 }
+            let last = conv.messages.last { !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            let text = (last?.content ?? conv.messages.last?.content ?? "")
+                .replacingOccurrences(of: "\n", with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let out = text.isEmpty ? "空对话" : String(text.prefix(80))
+            store[conv.id] = (conv.updatedAt, out)
+            return out
+        }
+    }
+
+    // v8.4：DateFormatter 创建极贵（Apple 明确要求缓存复用）——静态复用，旧版每次渲染新建
+    private static let hmFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "HH:mm"; return f
+    }()
+    private static let mdFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "M/d"; return f
+    }()
+    private static let ymdFormatter: DateFormatter = {
+        let f = DateFormatter(); f.dateFormat = "yy/M/d"; return f
+    }()
 
     static func shortTime(_ d: Date) -> String {
         let cal = Calendar.current
-        if cal.isDateInToday(d) {
-            let f = DateFormatter()
-            f.dateFormat = "HH:mm"
-            return f.string(from: d)
-        }
+        if cal.isDateInToday(d) { return hmFormatter.string(from: d) }
         if cal.isDateInYesterday(d) { return "昨天" }
-        let f = DateFormatter()
-        f.dateFormat = cal.isDate(d, equalTo: Date(), toGranularity: .year) ? "M/d" : "yy/M/d"
-        return f.string(from: d)
+        return cal.isDate(d, equalTo: Date(), toGranularity: .year)
+            ? mdFormatter.string(from: d)
+            : ymdFormatter.string(from: d)
     }
 }
 

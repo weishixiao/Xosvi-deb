@@ -148,95 +148,6 @@ struct ApprovalSheet: View {
     }
 }
 
-// MARK: - 会话完整记录（原版 ConversationTranscriptView）
-
-struct ConversationTranscriptView: View {
-    @ObservedObject private var store = ConversationStore.shared
-
-    private var messages: [ChatMessage] {
-        guard let idx = store.selectedIndex else { return [] }
-        return store.conversations[idx].messages
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            // v2.9.77：美化头部
-            PageHeader(
-                icon: "text.bubble.fill",
-                title: L10n.t("page_transcripts"),
-                subtitle: L10n.t("page_transcripts_sub"),
-                colors: [.blue, .tmCyan]
-            )
-            .padding(.vertical, 8)
-
-            List {
-                if messages.isEmpty {
-                    Text(L10n.t("ui_80"))
-                        .foregroundColor(.secondary)
-                } else {
-                    ForEach(messages) { msg in
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text(msg.role == "user" ? "我" : (msg.role == "assistant" ? "助手" : "系统"))
-                                    .font(.caption)
-                                    .fontWeight(.semibold)
-                                    .foregroundColor(msg.role == "user" ? .blue : .green)
-                                Spacer()
-                                Text(Self.tf.string(from: msg.timestamp))
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            }
-                            Text(msg.content)
-                                .font(.subheadline)
-                        }
-                        .padding(.vertical, 2)
-                    }
-                }
-            }
-            .listStyle(.insetGrouped)
-        .deepseekList()
-            .toolbar {
-                if !messages.isEmpty {
-                    // v6.9.7：副标题一直写着"导出"，但根本没有导出入口。
-                    // 走 ShareCenter 自建菜单——本设备侧载环境下 UIActivityViewController /
-                    // ShareLink 会崩，项目统一用 SharePresenter 绕开 ShareSheet。
-                    SharePresenter.toolbarShare(text: Self.markdownTranscript(messages))
-                    Button(L10n.t("btn_clear")) { store.clearCurrent() }
-                }
-            }
-        }
-        .background(DoubaoTheme.bg)
-        .navigationTitle(L10n.t("page_transcripts"))
-        .navigationBarTitleDisplayMode(.inline)
-    }
-
-    static let tf: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "MM-dd HH:mm"
-        return f
-    }()
-
-    /// v6.9.7：把当前会话导出为 Markdown。
-    /// 角色用 `## 我` / `## 助手`，时间放行尾，便于直接粘进笔记/文档。
-    static func markdownTranscript(_ messages: [ChatMessage]) -> String {
-        var out = "# 会话记录\n\n"
-        out += "导出时间：" + ISO8601DateFormatter().string(from: Date()) + "\n"
-        out += "消息数：\(messages.count)\n\n---\n\n"
-        for msg in messages {
-            let who: String
-            switch msg.role {
-            case "user": who = "我"
-            case "assistant": who = "助手"
-            default: who = "系统"
-            }
-            out += "## \(who)\n\n"
-            out += msg.content
-            out += "\n\n*\(tf.string(from: msg.timestamp))*\n\n---\n\n"
-        }
-        return out
-    }
-}
-
 // MARK: - 助手角色配置（原版 AssistantProfilesView）
 
 struct AssistantProfile: Identifiable, Codable, Hashable {
@@ -480,7 +391,7 @@ struct AutomationCenterView: View {
                         ForEach(Array(history), id: \.id) { e in
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(e.detail).font(.subheadline)
-                                Text("\(e.category) · \(ConversationTranscriptView.tf.string(from: e.timestamp))")
+                                Text("\(e.category) · \(TranscriptTimeFormat.tf.string(from: e.timestamp))")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                             }
@@ -811,7 +722,7 @@ struct SettingsActivityView: View {
                                         .fontWeight(.semibold)
                                         .foregroundColor(e.level == .error ? .red : (e.level == .warning ? .orange : .blue))
                                     Spacer()
-                                    Text(ConversationTranscriptView.tf.string(from: e.timestamp))
+                                    Text(TranscriptTimeFormat.tf.string(from: e.timestamp))
                                         .font(.caption2)
                                         .foregroundColor(.secondary)
                                 }

@@ -50,11 +50,17 @@ struct SettingsView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .navigationBarLeading) {
-                        // v2.9.241：全屏设置页左上角"完成"=关闭设置回聊天
+                        // v8.4：左上角返回键（chevron 图标，对齐系统返回样式）——
+                        // 旧"完成"文字按钮换成返回箭头；点击仍=关闭设置回聊天
+                        // （设置页是全屏 cover 呈现，返回键即关闭入口；列表左滑删除不受影响）
                         Button(action: { presentationMode.wrappedValue.dismiss() }) {
-                            Text(L10n.t("done"))
+                            Image(systemName: "chevron.left")
                                 .font(.system(size: 17, weight: .semibold))
+                                .foregroundColor(.primary)
+                                .frame(width: 32, height: 32)
+                                .contentShape(Rectangle())
                         }
+                        .accessibilityLabel(Text("返回"))
                     }
                     // v2.9.245：移除右上角卡片/列表切换按钮——卡片模式在部分机型(iPhone XS等小屏)渲染不稳定(图标/文字显示不全/内容裁剪),统一为列表模式
                 }
@@ -168,10 +174,8 @@ struct SettingsView: View {
                 // v7.16.11：按用户要求删除「工具权限」入口。
                 // 实测它只是工具清单展示（开关早已移除，isEnabled 由白名单决定），
                 // 对用户没有任何可操作项，属纯信息噪音。
-                SettingsItem(title: L10n.t("row_transcripts"),
-                             subtitle: "完整对话存档",
-                             icon: "text.book.closed.fill", color: .tmBrown,
-                             destination: AnyView(ConversationTranscriptView())),
+                // v8.4：「会话记录」入口已删（ConversationTranscriptView 整个移除——
+                // 聊天页本身可见全部历史，独立存档页冗余）
                 SettingsItem(title: "远程访问",
                              subtitle: "SSH 连接远程服务器 · 远程终端被控制",
                              icon: "terminal.fill", color: .teal,
@@ -182,6 +186,11 @@ struct SettingsView: View {
                              subtitle: "服务商 / API Key / 自动读全文",
                              icon: "magnifyingglass", color: .gray,
                              destination: AnyView(WebSearchSettingsView())),
+                // v8.4：知识库——FTS5 索引管理 + 试检索
+                SettingsItem(title: "知识库",
+                             subtitle: "内置知识包 · FTS5 检索 · 试查询",
+                             icon: "books.vertical", color: .tmCyan,
+                             destination: AnyView(KnowledgeSettingsView())),
                 // v7.11.0：控制台——把 control 的 10 个子命令做成可点操作
                 SettingsItem(title: "控制台",
                              subtitle: "注入 · UI 树 · 截图 · 点按 · 滑动 · 输入 · 按键",

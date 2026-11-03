@@ -164,15 +164,23 @@ final class ISHDoctorTool: MCPTool {
         else if failed.count <= 2 { verdict = "ISH_DEGRADED" }
         else { verdict = "ISH_BROKEN" }
 
+        // v8.4：检查类工具的 ok 只表示"检查动作本身执行成功"，健康与否放 healthy 字段。
+        // 旧版 ok=failed.isEmpty → "环境不健康"被循环守卫当成"工具执行失败"计数，
+        // 模型看不到原因盲试 3 次触发熔断终止整个 run（误杀诊断结论）。
+        let reason: String
+        switch verdict {
+        case "ISH_OK": reason = "环境健康；iSH 内继续用 http 源即可（apk/knowledge/编译均在 Alpine 侧）"
+        default: reason = "环境异常(\(verdict))。按 checks 里 fix 字段逐条处理；auto_fix=true 可自动修复 apk 锁与源协议"
+        }
         return [
-            "ok": failed.isEmpty,
+            "ok": true,                 // 检查动作已成功执行——诊断结论不是执行失败
+            "healthy": failed.isEmpty,
             "verdict": verdict,
             "checks": checks,
             "fixes_applied": fixes,
             "deep": deep,
-            "next_step": failed.isEmpty
-                ? "环境健康；iSH 内继续用 http 源即可（apk/knowledge/编译均在 Alpine 侧）"
-                : "按 checks 里 fix 字段逐条处理；auto_fix=true 可自动修复 apk 锁与源协议",
+            "reason": reason,
+            "next_step": reason,
         ]
     }
 }
