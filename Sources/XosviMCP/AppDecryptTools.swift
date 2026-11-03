@@ -415,7 +415,7 @@ final class AppInjectPackageTool: MCPTool {
             workDir = ipaPath
         } else {
             try? FileManager.default.createDirectory(atPath: workDir, withIntermediateDirectories: true)
-            // v7.8.0：/usr/bin/python3 也要 posix_spawn（本机可能 ENOSYS 85）→ 改进程内解释器
+            // v7.8.0：不 exec 任何 python3（系统 /usr/bin/python3 未必存在，自带 bin/python3 是坏壳）→ 进程内解释器
             let py = "import zipfile\n"
                 + "zipfile.ZipFile(" + PythonInProcessBridge.pyStringLiteral(ipaPath) + ").extractall("
                 + PythonInProcessBridge.pyStringLiteral(workDir) + ")"

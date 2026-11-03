@@ -5,8 +5,8 @@ import ZIPFoundation
 // MARK: - v7.16.0：原生 Git（无子进程 / 无 iSH / 不受 jailbreak 拦截）
 //
 // 为什么必须自己写：
-//   1. 越狱（rootHide/Relaxin）对 posix_spawn 直接返回 ENOSYS 85 → 真 git 起不来；
-//   2. 内置 python3 同样被拦 → scripts/git.py（dulwich）也跑不了；
+//   1. 包内不附带可独立 exec 的 git（系统 /usr/bin/git 在 iOS 上不存在）；
+//   2. 自带 bin/python3 是 69 KB 启动壳（-V 即 SIGBUS）→ scripts/git.py（dulwich）跑不了；
 //   3. 内置 curl 是极简实现，**忽略 -H**，无法带 Authorization；
 //   4. web.fetch 走 Jina Reader，会剥掉 Authorization 与 URL userinfo。
 //   → 结论：任何"靠外部程序或代理转发"的路都不通，只能在本进程内用 URLSession

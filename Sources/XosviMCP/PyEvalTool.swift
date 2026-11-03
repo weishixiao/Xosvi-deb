@@ -1,7 +1,8 @@
 // PyEvalTool.swift — 进程内 CPython 执行（不 spawn 任何子进程）
 //
-// 背景：进程内解释器，不依赖子进程；bin/python3 在 App 内置路径下可正常 exec，
-// 但无子进程的实现更省内存、启动更快，且不受未来签名/策略变化影响。
+// 背景：进程内解释器，不依赖子进程。注意 App 内置的 bin/python3 是 69 KB 启动壳，
+// 独立 exec 时加载不到 @rpath 上的 Python.framework，-V 就 SIGBUS——不要用它。
+// 真正可用的 CPython 3.14 就在本文件这条 dlopen 路径里。
 // Python.framework + stdlib 本来就在包里，改成 dlopen 进当前进程后
 // 直接跑解释器，一次 spawn 都不需要。
 

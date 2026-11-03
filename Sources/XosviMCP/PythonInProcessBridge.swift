@@ -1,9 +1,10 @@
 // PythonInProcessBridge.swift — 把 shell 语法的 `python3 ...` 转成 PyEvalTool 的进程内调用
 //
-// 动机：越狱（rootHide / Relaxin）对 posix_spawn 返回 ENOSYS(85)，App 内 bin/python3
-// 早期误判为「永远起不来」；实测 App 内 bin/python3 用绝对路径可 exec。
-// PyEvalTool（dlopen Python.framework + pyx_init/pyx_run_file）作为无子进程路径保留。
-// 于是 shell 里的 python3 不再 spawn，转调同一条进程内腿——两套腿合成一套。
+// 结论（2026-11 实测）：环境是健康的——entitlements 里 com.apple.private.security.no-sandbox
+// = true，jq / bsdtar / ldid 等纯 C 工具直接 exec 全部成功，posix_spawn 并不返 ENOSYS(85)。
+// 唯一坏掉的是我们自己打的 69 KB bin/python3 壳：它加载不了 @rpath 上的 Python.framework，
+// 连 -V 都 SIGBUS。所以 shell 里的 python3 不再 exec 它，统一转调进程内 CPython
+// （PyEvalTool：dlopen Python.framework + pyx_init/pyx_run_file），两条腿合成一条。
 //
 // 本文件只做「argv 解析 + 返回结构转换」，绝不 spawn。
 
@@ -79,7 +80,7 @@ enum PythonInProcessBridge {
         } catch {
             // pyx_init 失败（Python.framework / stdlib 缺失）也走这里，不回退 spawn
             return failure(echo, String(describing: error), 1,
-                           hint: "进程内解释器初始化失败；可回退到 bin/python3 绝对路径，或用 diagnose spawn 复检 errno。"
+                           hint: "进程内解释器初始化失败；先看 Python.framework 与 stdlib 是否随包分发（不要回退到 bin/python3——那个壳本身就起不来）。"
                                + "跑 `py command:status` 看 framework / stdlib 路径。")
         }
     }

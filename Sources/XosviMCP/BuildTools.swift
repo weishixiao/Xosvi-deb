@@ -39,9 +39,10 @@ final class BuildRunner {
     ///   - timeout: 超时秒数 (0 = 不超时）
     // MARK: - 越狱 spawn 拦截（v6.6.14）
     //
-    // rootHide / Relaxin 这类越狱会 hook posix_spawn，对 App 容器内的第三方
-    // Mach-O 直接返回 ENOSYS(85)，Apple 系统二进制（如 /usr/bin/plutil）不受影响。
-    // 表现就是 python3/r2/bsdtar 全部 "Bad executable (or shared library)"。
+    // 历史误判：曾把「第三方 Mach-O 起不来」归因于 rootHide/Relaxin hook posix_spawn
+    // 返回 ENOSYS(85)。2026-11 实测否定：no-sandbox=true，jq/bsdtar/ldid 直接 exec 全部成功。
+    // 真正起不来的是自带 bin/python3（69 KB 启动壳，加载不到 @rpath 的 Python.framework）。
+    // 这段记录只保留 errno 分类用途，不再作为「环境拦截」的证据。
     // 不记住这个事实的话，模型会把它当瞬时错误反复重试（实测 6 次以上）。
     private static let spawnBlockedKey = "spawnBlockedBundledENOSYS"
 

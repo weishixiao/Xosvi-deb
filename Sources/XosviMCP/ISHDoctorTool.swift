@@ -122,7 +122,7 @@ final class ISHDoctorTool: MCPTool {
         // 9) 桥接双向探针
         checks.append(bridgeProbe(exec))
 
-        // 10) spawn 限制（iSH 内 fork/exec 受限，实测 ENOSYS 85）
+        // 10) 子进程自检（iSH 模拟层对 fork 支持有限；越狱侧 posix_spawn 本身是正常的）
         let spawn = exec("sh -c 'true' 2>&1; echo SPAWN_EXIT=$?", 5)
         checks.append(["id": "spawn", "passed": spawn.contains("SPAWN_EXIT=0"),
                        "detail": spawn,

@@ -75,16 +75,15 @@ public enum JBPlot {
 
     // MARK: - 执行
 
-    // v7.14.1（Relaxin 适配）：Relaxin 是 rootHide 式重挂载越狱，会 hook App 内的
-    // posix_spawn/execve，对 App 容器里的第三方 Mach-O 直接返回 ENOSYS(85)。
-    // 宿主二进制恰好装在 App 容器 → 本机 spawn 失败时给精确诊断 + 替代路径，
-    // 而不是让模型反复重试（BuildRunner 里已经踩过同样的坑）。
+    // v7.14.1：宿主二进制装在 App 容器内。2026-11 实测 App 未沙盒化、纯 C 工具可 exec，
+    // 所以这里的失败多半是宿主自身（架构/@rpath/签名）而不是「越狱拦截」。
+    // 仍然给替代路径，但不再断言 ENOSYS(85) 是 rootHide 的锅。
     static let spawnBlockedHint = """
-    本机 spawn 被 Relaxin 的进程 hook 拦截（App 沙盒内第三方 Mach-O → ENOSYS/bad executable）。可选路径：
-      1) 设置 → jb-p1lot →「拷贝到越狱路径」（relaxin 可写区 /var/jb/usr/local/bin），
-         再点「远程 SSH · 本机」用 ssh 方式跑——rootHide 视图下 App 内 spawn 是被拦的，ssh 出去不受影响；
+    本机执行 jb-p1lot 失败。实测环境是健康的（no-sandbox=true，jq/bsdtar/ldid 可直接 exec），
+    所以更可能是宿主二进制自身的架构/@rpath/签名问题，而不是越狱拦截。可选路径：
+      1) 设置 → jb-p1lot →「拷贝到越狱路径」，再点「远程 SSH · 本机」用 ssh 方式跑；
       2) 在另一台电脑/手机上跑 jb-p1lot CLI（命令行或 MCP），Xosvi 只负责生成与审阅代码；
-      3) 本机能力退回 shell.exec（Relaxin 下 App 内处于不越狱视图，root 操作本来就不可用）。
+      3) 本机能力退回 shell.exec（root 操作需要 rootd 模板里的 root 会话）。
     """
 
     static func looksLikeSpawnBlocked(_ stderr: String, code: Int32) -> Bool {

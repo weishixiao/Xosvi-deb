@@ -589,7 +589,7 @@ final class ShellExecTool: MCPTool {
         // v4.4.9-fix3cd: python3/python 首词无管道也走原生——之前 36 个快捷路径都不匹配 → 兜底送 Alpine
         // (3.12)，与提示词"python3 首词走原生 ARM64 CPython(3.14+numpy/pandas)"矛盾。要 Alpine 版仍用 sh -c 'python3 ...'。
         if iosCmd == "python3" || iosCmd.hasPrefix("python3 ") || iosCmd == "python" || iosCmd.hasPrefix("python ") {
-            // v7.8.0：默认走 PyEvalTool 进程内解释器（更省内存、启动更快）；bin/python3 仍可用绝对路径直跑
+            // v7.8.0：一律走 PyEvalTool 进程内解释器（更省内存、启动更快）；bin/python3 是 69KB 坏壳，不再 exec
             let result = PythonInProcessBridge.run(command: iosCmd, limit: outLimit)
             AuditLog.shared.log("shell.exec (in-process python)", detail: String(trimmed.prefix(100)))
             return result
@@ -771,7 +771,7 @@ final class ShellExecTool: MCPTool {
     /// 动机：iSH 里的 file 二进制在 arm64 真机执行即段错误（用户实测 + 日志解读一致），
     /// 而"看文件类型"完全可本地判定（魔数），无需外部命令。
     static func runFileViaPython(_ command: String, limit: Int, timeout: TimeInterval) -> [String: Any]? {
-        // v7.8.0：同一段脚本交进程内解释器执行（bin/python3 亦可，见 diagnose spawn）
+        // v7.8.0：同一段脚本交进程内解释器执行（不再 exec bin/python3）
         let paths = command.split(separator: " ").map(String.init).dropFirst().filter { !$0.hasPrefix("-") }
         guard !paths.isEmpty else { return nil }
         // 注意：全部用 fromhex 构造魔数，避免反斜杠转义问题

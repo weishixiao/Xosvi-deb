@@ -1,7 +1,8 @@
 // SpawnDiag.swift — 内置二进制为什么起不来（进程内诊断，不依赖任何子进程）
 //
-// 真机现象：bin/python3、bin/r2、bin/bsdtar 全部
-//   posix_spawn failed: Bad executable (or shared library)
+// 真机现象：bin/python3 单独 exec 时 SIGBUS / Bad executable（它是 69 KB 启动壳，
+//   加载不了 @rpath 上的 Python.framework）；jq / bsdtar / ldid 等纯 C 工具全部正常 exec，
+//   环境未沙盒化（no-sandbox=true）。
 // 这条错误只说"坏可执行文件"，不区分：
 //   ① 文件不存在 / 没有执行位
 //   ② 不是 Mach-O（被 ELF 覆盖、下载损坏）

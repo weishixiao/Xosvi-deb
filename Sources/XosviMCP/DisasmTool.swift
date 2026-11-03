@@ -1,8 +1,8 @@
 // DisasmTool.swift — 进程内 arm64 / x86 反汇编（capstone）
 //
-// 背景：本机越狱（rootHide / Relaxin）hook 了 posix_spawn，App 容器内的
-// 第三方二进制一律 ENOSYS(85)，r2 / cstool / objdump 全部起不来。
-// capstone 静态库随包分发，这里直接链接进主进程，反汇编不再依赖子进程。
+// 背景：不依赖子进程即可用（App 未被沙盒化，jq/bsdtar 都能 exec，但多带一份
+// r2/cstool 既费包体又易受签名/路径影响）。capstone 静态库随包分发，
+// 这里直接链接进主进程，反汇编零依赖。
 
 import Foundation
 import CCapstone
