@@ -456,7 +456,7 @@ final class UpdateManager: ObservableObject {
                 return
             }
             // v9：只认单一固定名资产 Xosvi.tipa（发布侧已不再生成版本化副本）
-            let asset = assets.first(where: { ($0["name"] as? String) == "Xosvi.tipa" })
+            guard let asset = assets.first(where: { ($0["name"] as? String) == "Xosvi.tipa" }),
                   let id = asset["id"] as? Int,
                   let url = URL(string: "https://api.github.com/repos/\(self.repo)/releases/assets/\(id)") else {
                 DispatchQueue.main.async { fallback() }
