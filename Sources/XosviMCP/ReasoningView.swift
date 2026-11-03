@@ -131,6 +131,38 @@ struct ReasoningRichText: View {
                 case .code(let lang, let body):
                     CodeBlockView(lang: lang, code: body)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                // v8.5：结构化块（列表/标题/引用）——思考内容里同样按层级渲染，
+                // 字号统一 12.5 灰字（思考块视觉权重最轻）
+                case .list(let items, let ordered):
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(Array(items.enumerated()), id: \.offset) { i, item in
+                            HStack(alignment: .top, spacing: 6) {
+                                Text(ordered ? "\(i + 1)." : "•")
+                                    .font(.system(size: 12.5))
+                                    .foregroundColor(.secondary)
+                                    .frame(minWidth: 14, alignment: .trailing)
+                                Text(inline(item))
+                                    .font(.system(size: 12.5))
+                                    .foregroundColor(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                case .heading(_, let s):
+                    Text(inline(s))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                case .quote(let t):
+                    HStack(alignment: .top, spacing: 7) {
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(Color.secondary.opacity(0.25))
+                            .frame(width: 2)
+                        Text(inline(t))
+                            .font(.system(size: 12.5))
+                            .foregroundColor(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
         }
