@@ -6,7 +6,6 @@ struct AuditLogView: View {
     @State private var exportPath: String?
     @State private var showExportAlert = false
     @State private var tab = 0
-    @State private var fileLogText = ""
     @State private var sortOrder: SortOrder = .newest
     @State private var sortBy: SortBy = .time
     // v6.0.28：崩溃日志tab（v6.6.8 应本机工具审计界面要求加回）
@@ -28,12 +27,12 @@ struct AuditLogView: View {
             )
             .padding(.vertical, 8)
 
-            // v6.6.8：四 Tab——调用记录 / 健康度（失败归因）/ 文件日志 / 崩溃日志
+            // v8.2：三 Tab——调用记录 / 工具记录（结构化，含失败原因）/ 崩溃日志。
+            // 健康度与文件日志 Tab 已按需求移除（HealthSummaryTool 一并删除）。
             Picker("", selection: $tab) {
                 Text(L10n.t("ui_135")).tag(0)
-                Text(L10n.t("ui_29")).tag(1)
-                Text(L10n.t("ui_75")).tag(2)
-                Text("崩溃").tag(3)
+                Text("工具记录").tag(1)
+                Text("崩溃日志").tag(2)
             }
             .pickerStyle(.segmented)
             .padding(.horizontal, 16)
@@ -43,11 +42,9 @@ struct AuditLogView: View {
                 sortBar
                 callLogList
             } else if tab == 1 {
-                healthView
-            } else if tab == 2 {
-                fileLogView
+                ToolAuditView()
             } else {
-                crashLogView
+                CrashLogsView()
             }
         }
         .background(Color(.systemGroupedBackground))
@@ -59,16 +56,15 @@ struct AuditLogView: View {
             // 条件构建需要 iOS 16+（CI 报 'buildIf' is only available in iOS 16.0）。
             // 改为按钮内部判断，容器结构保持静态。
             ToolbarItemGroup(placement: .navigationBarTrailing) {
-                if tab != 3 {
+                if tab != 2 {
                     Button(action: exportLog) { Label(L10n.t("btn_export"), systemImage: "square.and.arrow.up") }
                     Button(L10n.t("btn_clear")) {
                         if tab == 0 { log.clear() }
-                        else if tab == 2 { loadFileLog() }
                     }
                 }
             }
         }
-        .onAppear { loadFileLog() }
+        .onAppear { }   // v8.2：文件日志已移除，onAppear 占位保持链式修饰完整
         .alert(isPresented: $showExportAlert) {
             // v4.3.43：Alert 按钮只记录待分享路径，等 Alert dismiss 完成后
             // 由 onChange(showExportAlert) 触发分享——避免在 Alert dismiss 转场中
@@ -97,13 +93,9 @@ struct AuditLogView: View {
         }
     }
 
-    // v6.0.28：崩溃日志tab（v6.6.8 加回——本机工具审计界面应展示崩溃现场）
+    // v8.2：崩溃日志 Tab——CrashReporter 采集（Documents/CrashLogs/）+ CrashCatcher 旧记录均可看
     private var crashLogView: some View {
-        // v6.9.9：直接复用 CrashLogView（CrashCatcher.swift）。
-        // 旧实现在这里重写了一份简陋列表：不能点开、没有导出，与
-        // CrashLogView 里已有的"点开详情 + 单条复制/分享"完全脱节，
-        // 用户在设置里看到的正是这份残缺版本。
-        CrashLogView()
+        CrashLogsView()
     }
 
     // MARK: 排序栏
@@ -282,103 +274,10 @@ struct AuditLogView: View {
         .deepseekList()
     }
 
-    // MARK: Tab2 健康度——失败归因（用户/AI 都能看到"哪些工具有问题、为什么"）
-    private var healthView: some View {
-        let summary = log.healthSummary(limit: 40)
-        let dist = log.codeDistribution()
-        return List {
-            Section(header: SettingSectionHeader(title: "错误码分布（env=环境 / target=目标 / param=参数 / tool=工具自身）")) {
-                if dist.isEmpty {
-                    Text(L10n.t("ui_82")).font(.footnote).foregroundColor(.secondary)
-                } else {
-                    HStack(spacing: 8) {
-                        ForEach(dist) { d in
-                            HStack(spacing: 4) {
-                                Text(d.code)
-                                    .font(.caption2).fontWeight(.bold)
-                                    .foregroundColor(codeColor(d.code))
-                                Text("×\(d.count)")
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(codeColor(d.code).opacity(0.12))
-                            .clipShape(Capsule())
-                        }
-                    }
-                }
-            }
-            Section(header: SettingSectionHeader(title: "工具健康度排行（按失败次数）")) {
-                if summary.isEmpty {
-                    Text(L10n.t("ui_84")).font(.footnote).foregroundColor(.secondary)
-                } else {
-                    ForEach(summary) { h in
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text(h.tool)
-                                    .font(.system(.subheadline, design: .monospaced))
-                                    .fontWeight(.semibold)
-                                Spacer()
-                                if h.failure > 0 {
-                                    Text(L10n.t("ui_150", h.failure))
-                                        .font(.caption2).fontWeight(.bold)
-                                        .foregroundColor(.red)
-                                } else {
-                                    Text(L10n.t("ui_30"))
-                                        .font(.caption2).fontWeight(.semibold)
-                                        .foregroundColor(.green)
-                                }
-                                Text(String(format: "%.0f%%", h.failureRate * 100))
-                                    .font(.caption2)
-                                    .foregroundColor(h.failureRate > 0.5 ? .red : (h.failureRate > 0 ? .orange : .green))
-                            }
-                            HStack(spacing: 6) {
-                                Text(L10n.t("ui_151", h.success))
-                                    .font(.caption2).foregroundColor(.secondary)
-                                Text(L10n.t("ui_152", h.avgMs))
-                                    .font(.caption2).foregroundColor(.secondary)
-                                if h.failure > 0 {
-                                    Text(L10n.t("ui_153", h.topCode))
-                                        .font(.caption2).fontWeight(.semibold)
-                                        .foregroundColor(codeColor(h.topCode))
-                                }
-                            }
-                            if h.failure > 0 && !h.lastFailureDetail.isEmpty {
-                                Text(L10n.t("ui_154", h.lastFailureDetail))
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(2)
-                            }
-                        }
-                        .padding(.vertical, 3)
-                    }
-                }
-            }
-        }
-        .listStyle(.insetGrouped)
-        .deepseekList()
-    }
+    // MARK: Tab2 健康度（v8.2 已移除——健康度 Tab 与 HealthSummaryTool 按需求删除，
+    // 失败归因由「工具记录」Tab 的结构化失败明细承接）
 
-    // MARK: Tab3 文件日志（按天滚动，读当天）
-    private var fileLogView: some View {
-        ScrollView {
-            Text(fileLogText.isEmpty ? "暂无文件日志" : fileLogText)
-                .font(.system(.caption2, design: .monospaced))
-                .foregroundColor(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(12)
-        }
-        .background(Color(.systemGroupedBackground))
-    }
-
-    private func loadFileLog() {
-        let logsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Logs", isDirectory: true)
-        let df = DateFormatter(); df.dateFormat = "yyyyMMdd"
-        let file = logsDir.appendingPathComponent("audit-\(df.string(from: Date())).log")
-        fileLogText = (try? String(contentsOf: file, encoding: .utf8)) ?? "（今天暂无文件日志）"
-    }
+    // MARK: Tab3 文件日志（v8.2 已移除——行式文件日志改为结构化 tool_log.jsonl）
 
     private func codeColor(_ code: String) -> Color {
         switch code {
@@ -434,6 +333,159 @@ struct AuditLogView: View {
         guard let b = bytes else { return "-" }
         if b < 1024 { return "\(b) B" }
         return String(format: "%.1f KB", Double(b) / 1024.0)
+    }
+}
+
+// MARK: - v8.2：工具调用结构化记录（失败原因展示）
+//
+// 数据来自 AuditLog.logResult 写的 Documents/audit/tool_log.jsonl。
+// 失败置顶聚合（展开看错误原因+参数摘要），下面是全部记录流水。
+
+struct ToolAuditView: View {
+    @State private var entries: [AuditLog.AuditEntry] = []
+    @State private var expanded: Set<UUID> = []
+
+    var body: some View {
+        List {
+            let fails = entries.filter { !$0.ok }
+            if !fails.isEmpty {
+                Section(header: Text("失败 (\(fails.count))")) {
+                    ForEach(fails.prefix(30)) { e in
+                        DisclosureGroup(isExpanded: Binding(
+                            get: { expanded.contains(e.id) },
+                            set: { v in
+                                if v { expanded.insert(e.id) } else { expanded.remove(e.id) }
+                            })) {
+                            Text(e.error)
+                                .font(.caption)
+                                .foregroundColor(.red)
+                            Text(e.paramsDigest)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        } label: {
+                            HStack {
+                                Image(systemName: "xmark.octagon.fill")
+                                    .foregroundColor(.red)
+                                Text(e.tool)
+                                    .font(.callout)
+                                    .lineLimit(1)
+                                Spacer()
+                                Text("\(e.durationMs)ms")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+            Section(header: Text("全部记录")) {
+                if entries.isEmpty {
+                    Text("暂无调用记录")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+                ForEach(entries.prefix(200)) { e in
+                    HStack {
+                        Circle()
+                            .fill(e.ok ? Color.green : Color.red)
+                            .frame(width: 7, height: 7)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(e.tool)
+                                .font(.callout)
+                                .lineLimit(1)
+                            Text(Self.timeString(e.ts))
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        if !e.ok {
+                            Image(systemName: "chevron.down")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .deepseekList()
+        .onAppear { entries = AuditLog.shared.loadEntries() }
+    }
+
+    /// iOS15 兼容的时间格式（.formatted(date:time:) 要 iOS15+，部署目标是 iOS15 边界，
+    /// 统一用 DateFormatter 稳妥）
+    private static func timeString(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f.string(from: date)
+    }
+}
+
+// MARK: - v8.2：崩溃日志查看页（CrashReporter 采集的 Documents/CrashLogs/）
+//
+// 审计页「崩溃日志」Tab 的目的地。列表可删除；点开看全文（含 breadcrumb——
+// 崩前最后一次工具调用），长按复制交给 textSelection。
+
+struct CrashLogsView: View {
+    @State private var logs: [URL] = []
+    @State private var content = ""
+    @State private var showing = false
+
+    var body: some View {
+        List {
+            if logs.isEmpty {
+                HStack(spacing: 10) {
+                    Image(systemName: "checkmark.shield")
+                        .foregroundColor(.green)
+                    Text("暂无崩溃记录")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.vertical, 8)
+            }
+            Section(header: SettingSectionHeader(title: logs.isEmpty ? "暂无记录" : "共 \(logs.count) 条 · 点开看全文")) {
+                ForEach(logs, id: \.self) { url in
+                    Button {
+                        content = (try? String(contentsOf: url, encoding: .utf8)) ?? "(无法读取)"
+                        showing = true
+                    } label: {
+                        HStack {
+                            Image(systemName: "burst.fill")
+                                .font(.caption)
+                                .foregroundColor(.red)
+                            Text(url.lastPathComponent)
+                                .font(.footnote)
+                                .foregroundColor(.primary)
+                                .lineLimit(1)
+                            Spacer()
+                            if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+                               let size = attrs[.size] as? Int {
+                                Text("\(size)B")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                }
+                .onDelete { offsets in
+                    for i in offsets { try? FileManager.default.removeItem(at: logs[i]) }
+                    logs = CrashReporter.logs()
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .deepseekList()
+        .navigationTitle("崩溃日志")
+        .onAppear { logs = CrashReporter.logs() }
+        .sheet(isPresented: $showing) {
+            ScrollView {
+                Text(content)
+                    .font(.system(.caption2, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding()
+            }
+        }
     }
 }
 

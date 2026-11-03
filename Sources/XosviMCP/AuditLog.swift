@@ -186,4 +186,84 @@ final class AuditLog: ObservableObject {
     func recentFailures(limit: Int = 20) -> [Entry] {
         entries.filter { $0.status == .failure }.prefix(limit).map { $0 }
     }
+
+    // MARK: - v8.2 结构化工具调用记录（JSONL 持久化，含失败原因）
+    //
+    // 旧 logTool 只写人读的行式文件；这里补机器可读的 JSONL（Documents/audit/tool_log.jsonl），
+    // 审计页按记录展示失败原因/耗时/参数摘要。滚动保留最近 500 条。
+
+    struct AuditEntry: Codable, Identifiable, Hashable {
+        var id = UUID()
+        var ts: Date = Date()
+        var tool: String
+        /// 参数摘要（键=值 截断），不存全量（可能含 path/key）
+        var paramsDigest: String
+        var ok: Bool
+        /// 失败原因，成功时空串
+        var error: String
+        var durationMs: Int
+    }
+
+    private static let jsonlLimit = 500
+    private var jsonlURL: URL {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("audit", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("tool_log.jsonl")
+    }
+
+    /// 工具调度处统一调用：失败原因（throw 与返回 error 字典两种形态都进这里）
+    func logResult(tool: String, params: [String: Any], ok: Bool,
+                   error: String? = nil, durationMs: Int) {
+        let digest = params.keys.sorted()
+            .map { "\($0)=\(String(describing: params[$0] ?? "").prefix(40))" }
+            .joined(separator: "&")
+        let e = AuditEntry(tool: tool,
+                           paramsDigest: String(digest.prefix(200)),
+                           ok: ok,
+                           error: String((error ?? "").prefix(600)),
+                           durationMs: durationMs)
+        appendEntry(e)
+        // 崩溃现场Breadcrumb：崩前最后一次调了什么工具（配合 CrashReporter 排障）
+        CrashReporter.setBreadcrumb("\(tool) \(ok ? "ok" : "fail") \(durationMs)ms")
+    }
+
+    private func appendEntry(_ e: AuditEntry) {
+        logQueue.async { [weak self] in
+            guard let self = self else { return }
+            let url = self.jsonlURL
+            guard let data = try? JSONEncoder().encode(e) else { return }
+            var line = data
+            line.append(0x0A) // \n
+            if let handle = try? FileHandle(forWritingTo: url) {
+                handle.seekToEndOfFile()
+                handle.write(line)
+                try? handle.close()
+            } else {
+                try? line.write(to: url)
+            }
+            // 滚动：超过上限截掉最旧的
+            if let content = try? String(contentsOf: url, encoding: .utf8) {
+                let lines = content.components(separatedBy: "\n").filter { !$0.isEmpty }
+                if lines.count > Self.jsonlLimit {
+                    let kept = lines.suffix(Self.jsonlLimit).joined(separator: "\n") + "\n"
+                    try? kept.data(using: .utf8)?.write(to: url)
+                }
+            }
+        }
+    }
+
+    /// 审计页读取（最新的在前）
+    func loadEntries(limit: Int = 500) -> [AuditEntry] {
+        guard let content = try? String(contentsOf: jsonlURL, encoding: .utf8) else { return [] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var out: [AuditEntry] = []
+        for line in content.components(separatedBy: "\n").reversed() where !line.isEmpty {
+            guard out.count < limit, let data = line.data(using: .utf8),
+                  let e = try? decoder.decode(AuditEntry.self, from: data) else { continue }
+            out.append(e)
+        }
+        return out
+    }
 }

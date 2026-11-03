@@ -42,6 +42,58 @@ final class ControlAgentTools {
     static let shared = ControlAgentTools()
     private let port = 4789
     private let timeout: TimeInterval = 5
+    /// v8.2：最近一次成功注入的目标（ensureAgent 自动前置用——screenshot 等子命令
+    /// 本身不带 bundle_id，需要知道该确保哪个 App 的 agent）
+    private var lastInjectedBundleId: String?
+
+    // MARK: - v8.2：自动前置注入门
+    //
+    // "AI 只能唤起程序"的根因：launch 不需要注入，而 screenshot/ui_tree/tap_text 等全部
+    // 依赖 ControlAgent 注入 + 回连。别指望模型每次记得先 inject——需要 agent 的命令
+    // 统一走这个门：
+    //   1. agent 已回连 → 直接放行（记下 bundle_id 备用）
+    //   2. 未回连但知道目标 → 自动注入 → 轮询等回连（最多 3s）
+    //   3. 不知道目标 → 返回结构化错误 agent_not_injected，AI 知道该先调 inject
+    // 返回 [:] 表示放行；返回含 "error" 的字典则直接作为工具结果返回。
+    func ensureAgent(_ bundleId: String?) -> [String: Any] {
+        let st = status(retries: 1)
+        if st["connected"] as? Bool == true {
+            if let b = bundleId { lastInjectedBundleId = b }
+            return [:]
+        }
+        // agent 不在。有目标就自动注入
+        let target = bundleId ?? lastInjectedBundleId
+        guard let target, !target.isEmpty else {
+            return [
+                "error": "ControlAgent 未注入，且无法推断目标 App",
+                "code": "agent_not_injected",
+                "hint": "先调 control command:inject bundle_id:<目标App>，再重试本操作"
+            ]
+        }
+        let r = inject(bundleId: target)
+        if let err = r["error"] as? String {
+            return [
+                "error": "自动注入失败: \(err)",
+                "code": "agent_not_injected",
+                "bundle_id": target,
+                "hint": "当前越狱环境（rootless）下确认走 RootHide/ElleKit 注入链路，ControlAgent.dylib 需为 rootless 构建；注入失败不要重试超过 1 次，向用户说明环境限制"
+            ]
+        }
+        // 注入成功后等 agent 回连（目标 App 需已启动；最多 3s）
+        for _ in 0..<30 {
+            if status(retries: 1)["connected"] as? Bool == true {
+                lastInjectedBundleId = target
+                return [:]
+            }
+            usleep(100_000)
+        }
+        return [
+            "error": "注入已执行但 agent 未回连（目标 App 可能未启动/未重启）",
+            "code": "agent_no_response",
+            "bundle_id": target,
+            "hint": "先 app command:launch 启动目标 App（注入后需重启进程加载 dylib），等 2s 后重试；仍失败说明该 App 在当前环境可能不支持注入"
+        ]
+    }
 
     // MARK: - 通用 HTTP 请求
 
@@ -458,10 +510,10 @@ final class ControlTypeTextTool: MCPTool {
 final class ControlExecTool: MCPTool {
     let definition = ToolDefinition(
         name: "control",
-        summary: "Control target app UI. Subcommands: inject / status / ui_tree / screenshot / tap / swipe / type / key / tap_text / type_text. Params per subcommand: tap→x,y(Number); swipe→x1,y1,x2,y2(Number); type→text; tap_text→text; type_text→placeholder+text; key→key(home/back/enter); inject→bundle_id; others none. Use for: UI automation / app screen control. 先 inject 注入 ControlAgent 后再调其他子命令.",
+        summary: "Control target app UI. Subcommands: inject / status / ui_tree / screenshot / tap / swipe / type / key / tap_text / type_text. Params per subcommand: tap→x,y(Number); swipe→x1,y1,x2,y2(Number); type→text; tap_text→text; type_text→placeholder+text; key→key(home/back/enter); inject→bundle_id; others optionally bundle_id. Use for: UI automation / app screen control. v8.2: screenshot/ui_tree/tap_text/type_text auto-inject ControlAgent first (ensureAgent gate) — no need to call inject manually; on agent_not_injected/agent_no_response follow the hint, don't retry more than once.",
         parameters: [
             "command": "Subcommand (required): inject / status / ui_tree / screenshot / tap / swipe / type / key / tap_text / type_text",
-            "bundle_id": "App bundle ID — REQUIRED for inject only",
+            "bundle_id": "App bundle ID — REQUIRED for inject; optional for ui_tree/screenshot/tap_text/type_text (v8.2 自动前置注入用，不带则用最近注入目标)",
             "x": "X coordinate Number — REQUIRED for tap",
             "y": "Y coordinate Number — REQUIRED for tap",
             "x1": "Start X Number — REQUIRED for swipe",
@@ -496,6 +548,9 @@ final class ControlExecTool: MCPTool {
             return st
             
         case "ui_tree":
+            // v8.2：自动前置注入（bundle_id 可选，未带时用最近注入目标）
+            let gate = ControlAgentTools.shared.ensureAgent(params["bundle_id"] as? String)
+            if let err = gate["error"] as? String { return gate }
             var tree = ControlAgentTools.shared.uiTree()
             // v8（PR-B5）：UI 树文案属外部内容——恶意 App 可在界面写注入指令
             if let text = tree["tree"] as? String, ExternalContent.looksInjected(text) {
@@ -511,6 +566,9 @@ final class ControlExecTool: MCPTool {
             return tree
             
         case "screenshot":
+            // v8.2：自动前置注入——"能 launch 拿不到界面"的主治药
+            let gate = ControlAgentTools.shared.ensureAgent(params["bundle_id"] as? String)
+            if let err = gate["error"] as? String { return gate }
             return ControlAgentTools.shared.screenshot()
             
         case "tap":
@@ -556,6 +614,9 @@ final class ControlExecTool: MCPTool {
             guard let text = params["text"] as? String else {
                 throw MCPError.invalidParams("text required. Usage: control tap_text text:'login'")
             }
+            // v8.2：自动前置注入（tap_text 走 ui_tree → 需要 agent）
+            let gate = ControlAgentTools.shared.ensureAgent(params["bundle_id"] as? String)
+            if let err = gate["error"] as? String { return gate }
             return try ControlTapTextTool().invoke(["text": text])
             
         case "type_text":
@@ -563,6 +624,9 @@ final class ControlExecTool: MCPTool {
                   let text = params["text"] as? String else {
                 throw MCPError.invalidParams("placeholder and text required")
             }
+            // v8.2：自动前置注入
+            let gate2 = ControlAgentTools.shared.ensureAgent(params["bundle_id"] as? String)
+            if let err = gate2["error"] as? String { return gate2 }
             return try ControlTypeTextTool().invoke(["placeholder": placeholder, "text": text])
             
         default:

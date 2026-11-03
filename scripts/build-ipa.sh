@@ -95,7 +95,9 @@ if [ -n "${RELEASE_VERSION:-}" ]; then
     if command -v /usr/libexec/PlistBuddy >/dev/null 2>&1; then
         /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $RELEASE_VERSION" "$APP/Info.plist" 2>/dev/null || \
         /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $RELEASE_VERSION" "$APP/Info.plist"
-        /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $(git rev-parse --short HEAD 2>/dev/null || echo 1)" "$APP/Info.plist" 2>/dev/null || true
+        # v8.2：CFBundleVersion 从 git 短 SHA 改为纯递增数字（commit 数）——
+        # App 内"比大小判断新版"的逻辑对数字递增更友好，SHA 不可比
+        /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${BUILD_NUM:-$(git rev-list --count HEAD)}" "$APP/Info.plist" 2>/dev/null || true
     else
         /usr/bin/sed -i '' "s#<string>2\.9\.[0-9]*</string>#<string>$RELEASE_VERSION</string>#" "$APP/Info.plist" || true
     fi

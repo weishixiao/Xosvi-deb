@@ -31,6 +31,7 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         UITextView.appearance().textContainerInset = .zero
 
         CrashCatcher.install()  // v2.9.145c：最先注册崩溃捕获，闪退自动落盘 crash/ 可查
+        CrashReporter.shared.start()   // v8.2：补 NSException 捕获 + 工具面包屑（与 CrashCatcher 互补）
 
         // v7.16.11：卸载即清空数据。
         // 必须在任何 Store 单例读 UserDefaults **之前**执行，否则内存里会先加载旧值。

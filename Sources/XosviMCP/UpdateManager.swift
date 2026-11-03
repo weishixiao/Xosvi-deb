@@ -362,7 +362,10 @@ final class UpdateManager: ObservableObject {
     }
 
     private func extractVersion(from name: String) -> String {
-        let pattern = #"v?(\d+\.\d+\.\d+)"#
+        // v8.2：支持 base-b<N> 形态（CI 版本化构建 7.17.0-b1423）——
+        // 旧正则只认 \d+\.\d+\.\d+，会把 7.17.0-b1423 提取成 7.17.0，
+        // 导致"每次构建版本号都一样"，永远判不出新版本。
+        let pattern = #"v?(\d+\.\d+\.\d+(?:-b\d+)?)"#
         if let regex = try? NSRegularExpression(pattern: pattern),
            let match = regex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)),
            let range = Range(match.range(at: 1), in: name) {
@@ -372,15 +375,23 @@ final class UpdateManager: ObservableObject {
     }
 
     private func isVersionNewer(_ v1: String, than v2: String) -> Bool {
-        let parts1 = v1.split(separator: ".").compactMap { Int($0) }
-        let parts2 = v2.split(separator: ".").compactMap { Int($0) }
-        for i in 0..<max(parts1.count, parts2.count) {
-            let p1 = i < parts1.count ? parts1[i] : 0
-            let p2 = i < parts2.count ? parts2[i] : 0
+        // v8.2：拆出 base 与 build 号分别比较（7.17.0-b1423 vs 7.17.0-b1422 → 新版）
+        func parts(_ v: String) -> (base: [Int], build: Int) {
+            let comps = v.split(separator: "-")
+            let base = comps.first.map { $0.split(separator: ".").compactMap { Int($0) } } ?? []
+            var build = 0
+            if comps.count > 1, comps[1].hasPrefix("b"),
+               let n = Int(comps[1].dropFirst()) { build = n }
+            return (base, build)
+        }
+        let a = parts(v1), b = parts(v2)
+        for i in 0..<max(a.base.count, b.base.count) {
+            let p1 = i < a.base.count ? a.base[i] : 0
+            let p2 = i < b.base.count ? b.base[i] : 0
             if p1 > p2 { return true }
             if p1 < p2 { return false }
         }
-        return false
+        return a.build > b.build
     }
 
     // MARK: - 一键更新（v4.3.29）
@@ -440,8 +451,23 @@ final class UpdateManager: ObservableObject {
             guard let self = self else { return }
             guard status == 200, let data = data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let assets = json["assets"] as? [[String: Any]],
-                  let asset = assets.first(where: { ($0["name"] as? String) == "Xosvi.tipa" }),
+                  let assets = json["assets"] as? [[String: Any]] else {
+                DispatchQueue.main.async { fallback() }
+                return
+            }
+            // v8.2：优先选版本化资产 Xosvi-<ver>.tipa（URL 每次发布都变，绕开 CDN/镜像缓存，
+            // 手机端不会再拉到 clobber 前的旧包）；固定名 Xosvi.tipa 只作兜底。
+            let versioned = assets.first(where: { asset -> Bool in
+                if let name = asset["name"] as? String,
+                   name.hasPrefix("Xosvi-"), name.hasSuffix(".tipa") {
+                    if let v = self.latestVersion, !v.isEmpty {
+                        return name == "Xosvi-\(v).tipa"
+                    }
+                    return true
+                }
+                return false
+            }) ?? assets.first(where: { ($0["name"] as? String) == "Xosvi.tipa" })
+            guard let asset = versioned,
                   let id = asset["id"] as? Int,
                   let url = URL(string: "https://api.github.com/repos/\(self.repo)/releases/assets/\(id)") else {
                 DispatchQueue.main.async { fallback() }

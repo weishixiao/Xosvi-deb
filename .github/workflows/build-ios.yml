@@ -426,8 +426,6 @@ jobs:
     # 下载因账号 egress 限流失败，整个出包就没了。这里改成只校验 native-tools。
     if: always() && needs.native-tools.result == 'success'
     runs-on: macos-latest
-    env:
-      RELEASE_VERSION: 7.17.0
     steps:
       - uses: actions/checkout@v4
 
@@ -744,6 +742,21 @@ jobs:
           merge-multiple: true
         continue-on-error: true
 
+      - name: Compute version (single source = Info.plist base + commit count)
+        run: |
+          # v8.2：RELEASE_VERSION 不再写死在 env——每次构建必变（base-b<commit 数>），
+          # 打 tag 发版用 tag 名。Build IPA / Publish release 两个步骤统一从这里取。
+          BASE=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Support/Info.plist 2>/dev/null || echo "1.0.0")
+          BUILD=$(git rev-list --count HEAD)
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VER="${GITHUB_REF#refs/tags/}"          # 打 tag 发版用 tag 名
+          else
+            VER="${BASE}-b${BUILD}"                 # 日常构建: 7.17.0-b1423，每次必变
+          fi
+          echo "RELEASE_VERSION=$VER" >> "$GITHUB_ENV"
+          echo "BUILD_NUM=$BUILD" >> "$GITHUB_ENV"
+          echo ">>> version = $VER"
+
       - name: Build IPA (with native Python integration)
         run: |
           ls -la python-ios/ 2>/dev/null | head -5 || true
@@ -834,16 +847,21 @@ jobs:
           # v7.16.4：不再 delete + create——tag "latest" 受保护/被引用时 delete 会静默失败，
           # 紧接着 create 报 "tag already exists"，导致构建成功但 Release 一直是旧包（2026-10-30 事故）。
           # 改成幂等更新：存在就 clobber 上传 + 改标题，不存在才 create。
-          NOTES="滚动构建（main 分支最新）。供 App 内多源自动更新使用：GitHub 被墙时经镜像前缀或 Releases 直链下载。下载地址：https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/Xosvi.tipa"
+          NOTES="滚动构建（main 分支最新，版本 $VER）。供 App 内多源自动更新使用：GitHub 被墙时经镜像前缀或 Releases 直链下载。下载地址（版本化文件名，绕 CDN 缓存）：https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/Xosvi-${VER}.tipa"
           set -e
+          # v8.2：版本化文件名双资产——固定名 Xosvi.tipa 的 URL 恒定，ghfast/gh-proxy 等
+          # 镜像与 GitHub 资产重定向会长期缓存它，clobber 后手机端仍可能拉到旧包；
+          # 版本化文件名 URL 每次都变，天然无缓存问题。固定名保留作外部直链兜底。
+          FNAME="Xosvi-${VER}.tipa"
+          cp Xosvi.tipa "$FNAME"
           if gh release view latest >/dev/null 2>&1; then
             echo "release latest exists -> update in place"
-            gh release upload latest Xosvi.tipa --clobber
+            gh release upload latest "$FNAME" Xosvi.tipa --clobber
             gh release edit latest --title "Xosvi latest (v${VER})" --notes "$NOTES"
             gh api -X PATCH "repos/${GITHUB_REPOSITORY}/releases/latest" -f make_latest=true >/dev/null || true
           else
-            # v6.6.7：只上传 Xosvi.tipa（Bundle ID 已改 com.xosvi.app，老用户需卸载重装）
-            gh release create latest Xosvi.tipa \
+            # v6.6.7：只上传双资产（Bundle ID 已改 com.xosvi.app，老用户需卸载重装）
+            gh release create latest "$FNAME" Xosvi.tipa \
               --title "Xosvi latest (v${VER})" \
               --notes "$NOTES" --latest
           fi

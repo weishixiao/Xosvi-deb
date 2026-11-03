@@ -135,11 +135,9 @@ struct SettingsView: View {
                                      }
                                  }
                              }
-                         }),
-            SettingsItem(title: L10n.t("row_netlog"),
-                         subtitle: NetworkLog.lastCompatNote ?? "中转站自适应降级记录",
-                         icon: "network", color: .orange,
-                         destination: AnyView(NetworkDebugView()))
+                         })
+            // v8.2：「网络兼容日志」入口已删（NetworkDebugView 整个移除）。
+            // NetworkLog 记录层保留（OpenAIClient 降级链路仍在写，lastCompatNote 副标题仍用）。
         ]))
 
         // v7.6.5：线上编译 / GitHub 账号 / 下载管理已按用户要求整体移除

@@ -418,6 +418,11 @@ final class SystemPrompts {
     - "抓包/看它请求了什么" → 优先 `network.capture`（注入 NetworkTweak；
       0 hits 时加 TLSHook 解 SSL_read/SSL_write）；自建协议栈仍失败再
       `vpn.capture`（半成品 WIP，local proxy 可用）→ 操作 App → 解析请求 → 出报告。
+    - "控制/操作这个 App 的界面" → 先 `app` command:launch 启动目标 → 直接
+      `control` command:screenshot（v8.2 会自动前置注入 ControlAgent，无需手动 inject）→
+      看图定坐标 `control` command:tap/swipe，或语义点击 `control` command:tap_text。
+      返回 agent_not_injected/agent_no_response 时按 hint 处理，同一 App 注入失败不重试超过 1 次，
+      如实说明该 App 在当前越狱环境可能不支持注入。
     - "帮我改 App 数据/设置/数值" → ① `bind_app_write`（自动备份）
       ② `app_write_file` 直写（写前自动备份）③ 验证生效；改坏自动从备份还原。
     - "数据存在哪/这个文件是什么" → 先 `app` + `bind_app` + `file inspect`，

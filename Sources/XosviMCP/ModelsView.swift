@@ -156,6 +156,10 @@ struct ModelRow: View {
     @State private var testing = false
     @State private var latencyText = ""
     @State private var latencyColor: Color = .secondary
+    // v8.2：余额查询状态（菜单手动查；余额低于 $1 变红）
+    @State private var checkingBalance = false
+    @State private var balanceText = ""
+    @State private var balanceLow = false
 
     var body: some View {
         let info = ModelStore.shared.breaker(for: config.id).stateInfo
@@ -191,6 +195,16 @@ struct ModelRow: View {
                         .font(.system(size: 10.5, design: .monospaced))
                         .foregroundColor(latencyColor)
                 }
+                // v8.2：余额显示（查询后出现；低于 $1 变红，与熔断状态呼应）
+                if checkingBalance {
+                    Text("查询余额中…")
+                        .font(.system(size: 10.5))
+                        .foregroundColor(.secondary)
+                } else if !balanceText.isEmpty {
+                    Text(balanceText)
+                        .font(.system(size: 10.5))
+                        .foregroundColor(balanceLow ? .red : .green)
+                }
             }
 
             Spacer(minLength: 6)
@@ -204,6 +218,9 @@ struct ModelRow: View {
                 Button {
                     speedTest()
                 } label: { Label("测速", systemImage: "gauge") }
+                Button {
+                    checkBalance()
+                } label: { Label("查询余额", systemImage: "creditcard") }
                 Button {
                     duplicate()
                 } label: { Label("复制为副本", systemImage: "doc.on.doc") }
@@ -265,9 +282,32 @@ struct ModelRow: View {
         return link
     }
 
+    /// v8.2：查询余额（分级策略：DeepSeek 官方 → new-api/one-api 中转 → 统一失败文案）
+    private func checkBalance() {
+        checkingBalance = true
+        balanceText = ""
+        BalanceChecker.check(config: config) { result in
+            checkingBalance = false
+            switch result {
+            case .success(let r):
+                balanceText = "余额 \(r.remaining)（\(r.via)）"
+                // 低于 $1 变红提示（配合熔断器状态显示）
+                balanceLow = r.remaining.contains("$") && {
+                    let nums = r.remaining.split(separator: " ")
+                        .compactMap { Double($0.replacingOccurrences(of: "$", with: "")) }
+                    return nums.first.map { $0 < 1.0 } ?? false
+                }()
+                AuditLog.shared.log("balance.check", detail: "\(config.name) OK: \(r.remaining)")
+            case .failure(let e):
+                balanceText = "余额查询失败"
+                balanceLow = false
+                AuditLog.shared.log("balance.check", detail: "\(config.name) 失败: \(e)", level: .warning)
+            }
+        }
+    }
+
     /// v2.9.107：供应商测速（GET /models，8s 超时）
-    private func speedTest() {
-        testing = true
+    private func speedTest() {        testing = true
         latencyText = ""
         let base = config.baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: base + "/models") else {

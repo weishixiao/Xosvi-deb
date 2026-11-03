@@ -923,7 +923,9 @@ public final class ToolRegistry: ObservableObject {
         // skills.* 让技能系统真正按需加载生效
         "file", "db", "package", "vpn.capture",
         "skills.list", "skills.read", "skills.set_enabled",
-        "ish.doctor", "health.summary", "gateway",
+        // v8.2：ish.doctor / health.summary 移出默认白名单（健康度体系已删；ish.doctor 仍注册，
+        // 需要时用户可在工具权限页手动开启；gateway 不动）
+        "gateway",
         // v4.3.65：恢复注册的联网检索工具（多引擎回退 + 多 query 并行 + 正文抽取）
         "web.search", "web.fetch",
         // v4.3.66：按需绑定 App 数据容器（bind_app 只读安全，bind_app_write 可写先备份，
@@ -1365,6 +1367,9 @@ public final class ToolRegistry: ObservableObject {
                                     permission: Self.permissionLabel(r.name),
                                     detail: issue.message, code: "PARAM_INVALID",
                                     reason: "parameter", nextStep: issue.usage)
+            // v8.2：结构化失败记录（参数校验失败）
+            AuditLog.shared.logResult(tool: r.name, params: params,
+                                      ok: false, error: issue.message, durationMs: 0)
             var body: [String: Any] = [
                 "ok": false, "code": "PARAM_INVALID",
                 "message": issue.message,
@@ -1640,6 +1645,9 @@ public final class ToolRegistry: ObservableObject {
                         AuditLog.shared.logTool(originalName, status: .failure,
                                                 elapsedMs: elapsedMs, dataBytes: 0, permission: perm,
                                                 detail: errMsg, code: info.code, reason: info.reason, nextStep: info.nextStep)
+                        // v8.2：结构化失败记录（throw 形态）
+                        AuditLog.shared.logResult(tool: originalName, params: params,
+                                                  ok: false, error: errMsg, durationMs: elapsedMs)
                         WorkflowManager.shared.updateStep(tool: originalName, detail: errMsg, success: false)
                         // v6.9.0: 连续同参数+同错误 2 次即熔断，并给出替代工具（见 loopBlockedError）
                         let streak = noteFailure(callKey: ck, errorMessage: errMsg)
@@ -1653,6 +1661,15 @@ public final class ToolRegistry: ObservableObject {
                 let bytes = Self.resultBytes(result)
                 AuditLog.shared.logTool(originalName, status: .success,
                                         elapsedMs: elapsedMs, dataBytes: bytes, permission: perm)
+                // v8.2：返回式 error 字典也算失败——很多工具失败走 return ["error":...] 而不是 throw，
+                // 旧 logTool 把它当成功记，审计页看不到失败原因。这里补结构化失败记录。
+                if let returnedErr = Self.extractReturnedError(result) {
+                    AuditLog.shared.logResult(tool: originalName, params: params,
+                                              ok: false, error: returnedErr, durationMs: elapsedMs)
+                } else {
+                    AuditLog.shared.logResult(tool: originalName, params: params,
+                                              ok: true, error: nil, durationMs: elapsedMs)
+                }
                 WorkflowManager.shared.updateStep(tool: originalName, detail: "\(elapsedMs)ms", success: true)
                 // v6.9.0：成功即清零该调用的失败计数，避免历史失败影响后续判断
                 clearFailure(callKey: ck)
@@ -2044,7 +2061,7 @@ public final class ToolRegistry: ObservableObject {
         // v3.1.33: 删 ProcessListTool (用 shell ps 代替）
         register(ShellExecTool())   // v3.0.28：内置终端，执行 shell 命令
         register(ISHDoctorTool())   // v8（PR-C4）：iSH 运行时自检（锁/源/DNS/桥接/spawn）
-        register(HealthSummaryTool()) // v8（PR-F-40）：工具健康度自查
+        // v8.2：HealthSummaryTool 已删（健康度自查由 tools.audit / 审计页「工具记录」Tab 承接）
         register(GatewayTool())      // v8（PR-D1a/b）：外部 MCP 客户端网关
         register(RootdTool())       // v7.16.6：rootd 桥——root 命令通道（走 deb 装的 LaunchDaemon，不新增 App 特权）
 
