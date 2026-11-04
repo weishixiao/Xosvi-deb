@@ -45,8 +45,9 @@ extern struct _xpc_type_s _xpc_type_error;
 #define XPC_CONNECTION_MACH_SERVICE_LISTENER (1ull << 0)
 #define XPC_ARRAY_APPEND ((size_t)-1)
 
-// 错误对象里取描述文本用的键（libxpc 导出的常量字符串）
-extern const char *const XPC_ERROR_KEY_DESCRIPTION;
+// 错误对象里取描述文本用的键。libxpc 里它是字符串字面量而非导出符号，
+// 用 extern 声明会在链接期报 undefined，这里直接给字面量。
+#define XPC_ERROR_KEY_DESCRIPTION "XPCErrorDescription"
 
 // ── 连接 ────────────────────────────────────────────────────────────────
 xpc_connection_t xpc_connection_create_mach_service(const char *name,
