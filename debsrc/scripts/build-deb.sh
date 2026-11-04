@@ -96,14 +96,15 @@ for ARCH in $ARCHS; do
     echo "=== $ARCH (payload prefix '${PREFIX:-<none>}')"
 
     STAGE="$WORK/stage-$ARCH"
-    mkdir -p "$STAGE/Applications" "$STAGE/Library/LaunchDaemons" "$STAGE/DEBIAN"
+    mkdir -p "$STAGE/DEBIAN"
 
     if [ -n "$PREFIX" ]; then
         DEST="$STAGE$PREFIX"
     else
         DEST="$STAGE"
     fi
-    mkdir -p "$DEST/usr/libexec/xosvi" "$DEST/usr/bin"
+    mkdir -p "$DEST/Applications" "$DEST/usr/libexec/xosvi" "$DEST/usr/bin" \
+             "$DEST/Library/LaunchDaemons"
     cp -R "$APP_SRC" "$DEST/Applications/Xosvi.app"
     cp "$NEUTRAL/usr/libexec/xosvid" "$DEST/usr/libexec/xosvid"
     cp "$NEUTRAL/usr/libexec/xosvi/"* "$DEST/usr/libexec/xosvi/"
@@ -115,8 +116,8 @@ for ARCH in $ARCHS; do
         -e "s#__IDLE__#$IDLE#g" \
         -e "s#@PREFIX@#$PREFIX#g" \
         "$DEB/Library/LaunchDaemons/xosvid.plist" \
-        > "$STAGE/Library/LaunchDaemons/$LABEL.plist"
-    plutil -lint "$STAGE/Library/LaunchDaemons/$LABEL.plist" >/dev/null
+        > "$DEST/Library/LaunchDaemons/$LABEL.plist"
+    plutil -lint "$DEST/Library/LaunchDaemons/$LABEL.plist" >/dev/null
 
     for f in control postinst prerm postrm; do
         sed -e "s#@VERSION@#$VERSION#g" \
@@ -134,7 +135,7 @@ for ARCH in $ARCHS; do
     find "$STAGE" -type d -exec chmod 755 {} \;
     find "$DEST/usr" -type f -exec chmod 755 {} \;
     chmod 755 "$DEST/Applications/Xosvi.app/Xosvi"
-    chmod 644 "$STAGE/Library/LaunchDaemons/$LABEL.plist"
+    chmod 644 "$DEST/Library/LaunchDaemons/$LABEL.plist"
     chown -R root:wheel "$STAGE" 2>/dev/null || true
 
     OUT="$ROOT/xosvi_${VERSION}_${ARCH}.deb"
