@@ -35,9 +35,26 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 40
     steps:
+      # 两个显式 checkout：条件表达式在 dispatch 下会被解析成空串，
+      # 实测导致检出到上一个提交（构建用旧源码白跑）。分支写死最稳。
       - uses: actions/checkout@v4
+        if: github.event_name == 'workflow_run'
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - uses: actions/checkout@v4
+        if: github.event_name != 'workflow_run'
+        with:
+          ref: main
+
+      - name: Show checked out revision
+        run: |
+          echo "event=$GITHUB_EVENT_NAME"
+          echo "sha=$GITHUB_SHA"
+          git rev-parse HEAD
+          git log --oneline -1
+          echo "--- 关键源码指纹（便于确认没有跑到旧提交）"
+          grep -n 'xosvi_audit_token_pid\|XPC_ERROR_KEY_DESCRIPTION' debsrc/src/xosvi_xpc.h || true
 
       - name: Install tools
         run: |
