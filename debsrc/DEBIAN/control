@@ -1,7 +1,7 @@
 Package: com.xosvi.app
 Name: Xosvi
 Version: @VERSION@
-Architecture: iphoneos-arm64
+Architecture: @ARCH@
 Description: 设备内 iOS 逆向 / 自动化工作台（越狱版）
  全功能 MCP 工作台：App 管理、dylib 注入、抓包、SQLite 取证、
  跨环境文件、包解剖。本包把 App 装到 /Applications，并带上

@@ -16,7 +16,10 @@
 	<string>__XOSVID_LABEL__</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>/usr/libexec/xosvid</string>
+		<!-- @PREFIX@ 由构建期替换：roothide 为空（launchctl 每次加载时自己
+		     加上 bootstrap 根），rootless 为 /var/jb。写成空串会让 launchd
+		     在 rootless 上找不到二进制，守护永远起不来。 -->
+		<string>@PREFIX@/usr/libexec/xosvid</string>
 	</array>
 	<key>UserName</key>
 	<string>root</string>

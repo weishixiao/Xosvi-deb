@@ -15,6 +15,27 @@ debsrc/
 └── scripts/        build-deb.sh / check-adhoc.py / verify-daemon.sh
 ```
 
+
+## 两种 bootstrap
+
+同一个仓库出两个包，**装哪个取决于设备用的是哪种越狱**：
+
+| 包 | Architecture | payload 路径 | plist 里的守护路径 |
+|---|---|---|---|
+| `xosvi_<ver>_iphoneos-arm64e.deb` | `iphoneos-arm64e` | rootful（`/Applications`、`/usr/libexec`），dpkg 安装时重定向进随机 `.jbroot-*` | `/usr/libexec/xosvid`（roothide 的 launchctl 每次加载时自己加 bootstrap 根） |
+| `xosvi_<ver>_iphoneos-arm64.deb` | `iphoneos-arm64` | `/var/jb/Applications`、`/var/jb/usr/libexec` | `/var/jb/usr/libexec/xosvid` |
+
+三处容易踩的差异，缺一个都会表现为「装上了但守护起不来」：
+
+1. **Architecture 必须匹配设备的 dpkg 架构**。roothide 只认 `iphoneos-arm64e`，
+   写 `arm64` 会被 Sileo/Zebra 直接拒装（"package architecture does not match system"）。
+2. **维护脚本必须 `#!/bin/sh`**。roothide bootstrap 不保证有 `/bin/bash`，
+   用 bash 会以 `postinst: not found` 结束，包停在 half-configured。
+3. **plist 的 `ProgramArguments` 前缀随 bootstrap 变**。roothide 为空
+   （launchctl 会加），rootless 必须写全 `/var/jb/...`，否则 launchd 找不到二进制。
+
+只出一种：`DEB_ARCHS="iphoneos-arm64e" bash debsrc/scripts/build-deb.sh`。
+
 ## 本地构建
 
 ```sh

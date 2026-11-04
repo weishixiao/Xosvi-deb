@@ -113,15 +113,22 @@ jobs:
           echo "RELEASE_VERSION=$VER" >> "$GITHUB_ENV"
           echo ">>> deb version = $VER"
 
-      - name: Build deb
+      - name: Build deb (roothide + rootless)
         run: |
           APP_SRC="$APP" bash debsrc/scripts/build-deb.sh
           ls -lh xosvi_*.deb
 
       - name: Inspect deb
         run: |
-          DEB=$(ls xosvi_*.deb | head -1)
+          for DEB in xosvi_*.deb; do
+            echo "=================== $DEB"
+            dpkg-deb -I "$DEB" | sed -n '1,12p'
+            echo "--- 关键项"
+            dpkg-deb -c "$DEB" | grep -E 'xosvid|xosvi-cli|LaunchDaemons|Xosvi.app/Xosvi$' | head -8
+          done
+          DEB=$(ls xosvi_*arm64e.deb 2>/dev/null | head -1); DEB=${DEB:-$(ls xosvi_*.deb|head -1)}
           dpkg-deb -I "$DEB"
+          true
           echo "=== control files ==="
           rm -rf /tmp/ctl && dpkg-deb -e "$DEB" /tmp/ctl && ls -l /tmp/ctl
           echo "=== payload ==="
@@ -139,10 +146,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          DEB=$(ls xosvi_*.deb | head -1)
           if gh release view latest >/dev/null 2>&1; then
-            gh release upload latest "$DEB" --clobber
+            gh release upload latest xosvi_*.deb --clobber
+            gh release edit latest --notes "自动构建（deb）：iphoneos-arm64e = roothide，iphoneos-arm64 = rootless。按设备 bootstrap 选一个装。"
           else
-            gh release create latest "$DEB" --title "Xosvi latest" --notes "自动构建（deb）" --latest
+            gh release create latest xosvi_*.deb --title "Xosvi latest" \
+              --notes "自动构建（deb）：iphoneos-arm64e = roothide，iphoneos-arm64 = rootless。" --latest
           fi
-          echo "uploaded: $DEB"
+          ls -lh xosvi_*.deb

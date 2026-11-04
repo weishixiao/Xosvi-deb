@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # Xosvi deb 安装后脚本。
 # dpkg 以 root 运行本脚本；除「服务注册不上」这种致命项外，
 # 任何一步失败都不应阻止 App 装上。
@@ -15,7 +15,10 @@ PLIST="$PREFIX/Library/LaunchDaemons/$LABEL.plist"
 
 log() { echo "[postinst] $*" >&2; }
 
-# ── 0. 认 bootstrap（roothide 下 dpkg 已把路径重定向进 jbroot） ──
+# ── 0. 认 bootstrap ──
+# roothide：没有 /var/jb，jbroot 是 .jbroot-<hash> 随机目录，由 dpkg 在安装时
+# 把 rootful 路径重定向进去；因此脚本里照常写 /Applications、/usr/libexec，
+# 前缀为空。rootless：所有路径都要显式带 /var/jb。
 if [ -n "$PREFIX" ]; then
     APP="$PREFIX/Applications/Xosvi.app"
 else

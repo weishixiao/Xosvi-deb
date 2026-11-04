@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/sh
 # dpkg 在 prerm 被跳过（--force-remove / 半坏状态）时也会跑这里，
 # 所以每一步都必须可重复、在「什么都没剩下」时也安全。
 set -u
