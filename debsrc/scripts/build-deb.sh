@@ -12,12 +12,22 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DEB="$ROOT/debsrc"
 STAGE="$ROOT/build-deb/layout"
 
-VERSION="${RELEASE_VERSION:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/Support/Info.plist")}"
-APP_SRC="${APP_SRC:-$ROOT/build/Xosvi.app}"
-if [ ! -d "$APP_SRC" ]; then
-    APP_SRC="$(find "$ROOT" -maxdepth 3 -name 'Xosvi.app' -type d -not -path '*/build-deb/*' | head -1)"
+# App 来源优先级：$APP_SRC（CI 从 tipa 解出来的）> build/Xosvi.app > 仓库里任意一个
+APP_SRC="${APP_SRC:-}"
+if [ -z "$APP_SRC" ] || [ ! -d "$APP_SRC" ]; then
+    if [ -d "$ROOT/build/Xosvi.app" ]; then
+        APP_SRC="$ROOT/build/Xosvi.app"
+    else
+        APP_SRC="$(find "$ROOT" -maxdepth 4 -name 'Xosvi.app' -type d -not -path '*/build-deb/*' | head -1)"
+    fi
 fi
-[ -n "$APP_SRC" ] && [ -d "$APP_SRC" ] || { echo "!!! Xosvi.app not found (run scripts/build-ipa.sh first)" >&2; exit 1; }
+[ -n "$APP_SRC" ] && [ -d "$APP_SRC" ] || {
+    echo "!!! Xosvi.app not found" >&2
+    echo "    set APP_SRC=<path> or run scripts/build-ipa.sh first" >&2
+    exit 1
+}
+VERSION="${RELEASE_VERSION:-$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_SRC/Info.plist" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ROOT/Support/Info.plist")}"
 
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 MINVER="$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$ROOT/Support/Info.plist" 2>/dev/null || echo 15.0)"
