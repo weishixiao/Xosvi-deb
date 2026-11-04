@@ -83,7 +83,7 @@ final class XosviDaemonClient {
     private var connection: UnsafeMutableRawPointer?
 
     private init() {
-        guard XPCShim.createMachService != nil else {
+        if XPCShim.createMachService == nil {
             NSLog("[XosviDaemonClient] libxpc symbols unavailable — daemon channel disabled")
         }
     }
