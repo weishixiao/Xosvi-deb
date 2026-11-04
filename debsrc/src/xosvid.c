@@ -200,7 +200,7 @@ static void handle_message(xpc_connection_t conn, xpc_object_t msg) {
         if (!reply) return;
         xpc_dictionary_set_bool(reply, "ok", true);
         xpc_dictionary_set_string(reply, "peer", buf);
-        xpc_dictionary_set_int64(reply, "audit_pid", (int64_t)audit_token_to_pid(tok));
+        xpc_dictionary_set_int64(reply, "audit_pid", (int64_t)xosvi_audit_token_pid(tok));
         xpc_connection_send_message(conn, reply);
         xpc_release(reply);
         return;

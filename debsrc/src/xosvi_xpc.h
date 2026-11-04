@@ -95,7 +95,10 @@ const char *xpc_array_get_string(xpc_object_t array, size_t index);
 // ── 生命周期 ────────────────────────────────────────────────────────────
 void xpc_release(xpc_object_t object);
 
-// audit_token_to_pid 在 <bsm/libbsm.h>；iOS SDK 不导出该头，这里直接声明。
-int audit_token_to_pid(xosvi_audit_token_t token);
+// audit_token_to_pid 在 libbsm（iOS 上没有导出头，且不一定可链接），
+// 这里按内核 ABI 直接取：audit_token_t 的 val[5] 就是 pid。
+static inline int xosvi_audit_token_pid(xosvi_audit_token_t token) {
+    return (int)token.val[5];
+}
 
 #endif
