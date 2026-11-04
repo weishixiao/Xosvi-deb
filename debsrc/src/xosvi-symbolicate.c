@@ -16,6 +16,13 @@
 #include <mach-o/fat.h>
 #include <mach-o/loader.h>
 
+// fat 头是大端，自己拼字节，省掉 libkern/OSByteOrder.h 依赖
+static uint32_t be32(uint32_t v) {
+    const unsigned char *p = (const unsigned char *)&v;
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
 static int macho_uuid(const char *path, char out[64], char arch_out[32], char *is_dsym) {
     out[0] = '\0';
     arch_out[0] = '\0';
@@ -61,13 +68,13 @@ static int macho_uuid(const char *path, char out[64], char arch_out[32], char *i
         struct fat_header fh;
         rewind(f);
         if (fread(&fh, sizeof fh, 1, f) != 1) { fclose(f); return -1; }
-        uint32_t nfat = OSSwapBigToHostInt32(fh.nfat_arch);
+        uint32_t nfat = be32(fh.nfat_arch);
         struct fat_arch fa;
         for (uint32_t i = 0; i < nfat; i++) {
             if (fread(&fa, sizeof fa, 1, f) != 1) break;
-            uint32_t cpu = OSSwapBigToHostInt32(fa.cputype);
+            uint32_t cpu = be32((uint32_t)fa.cputype);
             if (cpu == CPU_TYPE_ARM64 || i == 0) {
-                slice_off = (long)OSSwapBigToHostInt32(fa.offset);
+                slice_off = (long)be32(fa.offset);
                 break;
             }
         }

@@ -13,7 +13,9 @@
 #include "xosvi_common.h"
 
 #include <dispatch/dispatch.h>
-#include <xpc/xpc.h>
+
+// 自带声明的 libxpc 私有接口（见 xosvi_xpc.h 顶部说明）
+#include "xosvi_xpc.h"
 
 // 请求在一个块里完成：发出去 → 起超时 → 等信号量 → 收尾。
 // 不用 dispatch_main()——它不返回，超时分支无处收尾。

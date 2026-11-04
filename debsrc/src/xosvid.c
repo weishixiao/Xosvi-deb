@@ -14,13 +14,14 @@
 #include "xosvi_common.h"
 
 #include <dispatch/dispatch.h>
-#include <mach/mach.h>
-#include <xpc/xpc.h>
+
+// 自带声明的 libxpc 私有接口（iOS SDK 把 mach-service 相关符号标成 unavailable）
+#include "xosvi_xpc.h"
 
 // 私有 SPI：检查对端连接的 audit token 上是否带指定 entitlement。
 // 公开头里没有声明，这里手工 extern（与 libxpc 导出的签名一致）。
 extern xpc_object_t xpc_copy_entitlement_for_token(const char *key,
-                                                   const audit_token_t *token);
+                                                   const xosvi_audit_token_t *token);
 
 #define HELPER_TIMEOUT_SEC 300
 
@@ -46,7 +47,7 @@ static void arm_idle(void) {
 
 // ── 对端鉴权：内核给的 audit token 不可伪造；bundle id / pid 可以 ──────
 static int peer_is_authorized(xpc_connection_t conn) {
-    audit_token_t token;
+    xosvi_audit_token_t token;
     xpc_connection_get_audit_token(conn, &token);
 
     xpc_object_t ent = xpc_copy_entitlement_for_token(XOSVI_CLIENT_ENT, &token);
@@ -190,7 +191,7 @@ static void handle_message(xpc_connection_t conn, xpc_object_t msg) {
     }
     if (!strcmp(cmd, "xpc-diag")) {
         // 身份探测：确认 App -> 守护 这条路以及 audit token 是否可用
-        audit_token_t tok;
+        xosvi_audit_token_t tok;
         xpc_connection_get_audit_token(conn, &tok);
         char buf[128];
         snprintf(buf, sizeof buf, "pid=%d euid=%d",

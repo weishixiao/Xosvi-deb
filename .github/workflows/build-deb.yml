@@ -107,7 +107,7 @@ jobs:
           set -eu
           for f in debsrc/src/xosvid.c debsrc/src/xosvi-build.c debsrc/src/xosvi-install.c \
                    debsrc/src/xosvi-symbolicate.c debsrc/src/xosvi-cli.c debsrc/src/xosvi_config.h \
-                   debsrc/src/xosvi_common.h debsrc/DEBIAN/control debsrc/DEBIAN/postinst \
+                   debsrc/src/xosvi_common.h debsrc/src/xosvi_xpc.h debsrc/DEBIAN/control debsrc/DEBIAN/postinst \
                    debsrc/DEBIAN/prerm debsrc/DEBIAN/postrm \
                    debsrc/Support/helper.entitlements debsrc/Support/cli.entitlements \
                    debsrc/Support/xosvid.entitlements debsrc/scripts/check-adhoc.py; do
